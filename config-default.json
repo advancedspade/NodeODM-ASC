@@ -18,5 +18,12 @@
 	"testSkipDems": false,
 	"token": "",
 	"authorizedIps": [],
-	"maxImages": ""
+	"maxImages": "",
+
+	"gcsBucket": "",
+	"gcsProjectId": "",
+	"gcsKeyPath": "",
+	"gcsParallelUploads": 16,
+	"gcsUploadPaths": "orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif",
+	"gcsCleanupAfterUpload": false
 }

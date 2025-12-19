@@ -1,0 +1,34 @@
+[Unit]
+Description=NodeODM Service with GCS Integration
+After=network.target
+
+[Service]
+Type=simple
+PIDFile=/run/nodeodm.pid
+User=odm
+Group=odm
+WorkingDirectory=/opt/nodeodm
+
+# Environment variables for GCS
+Environment="NODE_ENV=production"
+# GCS bucket is configured via command line args or config file
+
+# Use config file for all settings
+ExecStart=/usr/bin/node index.js --config /opt/nodeodm/config.json
+ExecStop=/bin/kill -s QUIT $MAINPID
+
+# Restart policy
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nodeodm
+
+# Resource limits (adjust based on VM size)
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+

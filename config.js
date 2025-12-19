@@ -57,6 +57,15 @@ Options:
 	--s3_ignore_ssl Whether to ignore SSL errors while connecting to S3. (default: false)
 	--max_concurrency   <number>	Place a cap on the max-concurrency option to use for each task. (default: no limit)
 	--max_runtime	<number> Number of minutes (approximate) that a task is allowed to run before being forcibly canceled (timeout). (default: no limit)
+
+GCS (Google Cloud Storage) Options:
+	--gcs_bucket <bucket>	GCS bucket name for uploading results. (default: none)
+	--gcs_project_id <id>	GCS project ID. (default: auto-detect from credentials)
+	--gcs_key_path <path>	Path to GCS service account JSON key file. (default: use default credentials)
+	--gcs_parallel_uploads <number>	Number of parallel file uploads to GCS. (default: 16)
+	--gcs_upload_paths <paths>	Comma-separated list of paths to upload to GCS. (default: orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif)
+	--gcs_cleanup_after_upload	Delete local files after successful GCS upload. (default: false)
+
 Log Levels: 
 error | debug | info | verbose | debug | silly 
 `);
@@ -69,7 +78,9 @@ const allOpts = ["slice","help","config","odm_path","log_level","port","p",
 "test_skip_dems","test_drop_uploads","test_fail_tasks","test_seconds",
 "powercycle","token","max_images","webhook","s3_endpoint","s3_bucket",
 "s3_force_path_style","s3_access_key","s3_secret_key","s3_signature_version",
-"s3_acl","s3_upload_everything","s3_ignore_ssl","max_concurrency","max_runtime"];
+"s3_acl","s3_upload_everything","s3_ignore_ssl","max_concurrency","max_runtime",
+"gcs_bucket","gcs_project_id","gcs_key_path","gcs_parallel_uploads",
+"gcs_upload_paths","gcs_cleanup_after_upload"];
 
 // Support for "-" or "_" style params syntax
 for (let k in argv){
@@ -142,6 +153,14 @@ config.s3UploadEverything = argv.s3_upload_everything || fromConfigFile("s3Uploa
 config.s3IgnoreSSL = argv.s3_ignore_ssl || fromConfigFile("s3IgnoreSSL", false);
 config.maxConcurrency = parseInt(argv.max_concurrency || fromConfigFile("maxConcurrency", 0));
 config.maxRuntime = parseInt(argv.max_runtime || fromConfigFile("maxRuntime", -1));
+
+// GCS (Google Cloud Storage) configuration
+config.gcsBucket = argv.gcs_bucket || fromConfigFile("gcsBucket", process.env.GCS_BUCKET || "");
+config.gcsProjectId = argv.gcs_project_id || fromConfigFile("gcsProjectId", process.env.GCS_PROJECT_ID || "");
+config.gcsKeyPath = argv.gcs_key_path || fromConfigFile("gcsKeyPath", process.env.GOOGLE_APPLICATION_CREDENTIALS || "");
+config.gcsParallelUploads = parseInt(argv.gcs_parallel_uploads || fromConfigFile("gcsParallelUploads", 16));
+config.gcsUploadPaths = argv.gcs_upload_paths || fromConfigFile("gcsUploadPaths", "orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif");
+config.gcsCleanupAfterUpload = argv.gcs_cleanup_after_upload || fromConfigFile("gcsCleanupAfterUpload", false);
 
 // Detect 7z availability
 config.has7z = spawnSync(apps.sevenZ, ['--help']).status === 0;

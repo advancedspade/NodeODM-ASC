@@ -8,9 +8,11 @@ on:
 
 env:
   GCE_PROJECT: tools-471222
-  GCE_ZONE: ${{ secrets.GCE_ZONE }}
+  GCE_ZONE: us-central1-a
   INSTANCE_NAME: nodeodm-asc-vm
   IMAGE_NAME: gcr.io/tools-471222/nodeodm-asc
+  WIF_PROVIDER: projects/221915286772/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+  SA_EMAIL: nodeodm-service@tools-471222.iam.gserviceaccount.com
 
 # Required for Workload Identity Federation
 permissions:
@@ -29,8 +31,8 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.GCE_SA_EMAIL }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SA_EMAIL }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
@@ -59,14 +61,14 @@ jobs:
     name: Deploy to Production VM
     runs-on: ubuntu-latest
     needs: build-and-push
-    environment: production  # Requires approval if configured in GitHub settings
+    environment: production
     
     steps:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
-          service_account: ${{ secrets.GCE_SA_EMAIL }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SA_EMAIL }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2

@@ -8,7 +8,7 @@ on:
 
 env:
   GCE_PROJECT: tools-471222
-  GCE_ZONE: us-central1-c
+  GCE_ZONE: us-central1-a
   INSTANCE_NAME: nodeodm-asc-vm-staging
   IMAGE_NAME: gcr.io/tools-471222/nodeodm-asc-staging
   WIF_PROVIDER: projects/221915286772/locations/global/workloadIdentityPools/github-pool/providers/github-provider

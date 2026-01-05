@@ -1,0 +1,36 @@
+{
+	"instance": "asc-odm",
+	"odm_path": "/code",
+
+	"logger": {
+		"level": "info",
+		"maxFileSize": 104857600,
+		"maxFiles": 10,
+		"logDirectory": "/var/log/nodeodm"
+	},
+
+	"port": 3000,
+	"deamon": false,
+	"parallelQueueProcessing": 1,
+	"cleanupTasksAfter": 1440,
+	"cleanupUploadsAfter": 1440,
+	"test": false,
+	"token": "",
+	"authorizedIps": [],
+	"maxImages": "",
+
+	"_comment_gcs": "GCS Configuration - Set gcsBucket to enable GCS uploads",
+	"gcsBucket": "your-gcs-bucket-name",
+	"gcsProjectId": "your-gcp-project-id",
+	"gcsKeyPath": "/path/to/service-account-key.json",
+	"gcsParallelUploads": 16,
+	"gcsUploadPaths": "orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif",
+	"gcsCleanupAfterUpload": true,
+
+	"_comment_s3": "S3 Configuration - Leave empty if using GCS",
+	"s3Endpoint": "",
+	"s3Bucket": "",
+	"s3AccessKey": "",
+	"s3SecretKey": ""
+}
+

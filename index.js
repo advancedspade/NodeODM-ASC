@@ -37,6 +37,7 @@ const TaskManager = require('./libs/TaskManager');
 const odmInfo = require('./libs/odmInfo');
 const si = require('systeminformation');
 const S3 = require('./libs/S3');
+const GCS = require('./libs/GCS');
 
 const auth = require('./libs/auth/factory').fromConfig(config);
 const authCheck = auth.getMiddleware();
@@ -918,6 +919,7 @@ let commands = [
     cb => odmInfo.initialize(cb),
     cb => auth.initialize(cb),
     cb => S3.initialize(cb),
+    cb => GCS.initialize(cb),
     cb => { 
         TaskManager.initialize(cb);
         taskManager = TaskManager.singleton();

@@ -18,7 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 '''
 
 import sys
-import imp
+import importlib.util
 import argparse
 import json
 import os
@@ -27,15 +27,23 @@ dest_file = os.environ.get("ODM_OPTIONS_TMP_FILE")
 
 sys.path.append(sys.argv[2])
 
+def load_source(name, path):
+    """Load a Python source file as a module (replacement for deprecated imp.load_source)"""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
 try:
-    imp.load_source('opendm', sys.argv[2] + '/opendm/__init__.py')
+    load_source('opendm', sys.argv[2] + '/opendm/__init__.py')
 except:
     pass
 try:
-    imp.load_source('context', sys.argv[2] + '/opendm/context.py')
+    load_source('context', sys.argv[2] + '/opendm/context.py')
 except:
     pass
-odm = imp.load_source('config', sys.argv[2] + '/opendm/config.py')
+odm = load_source('config', sys.argv[2] + '/opendm/config.py')
 
 options = {}
 class ArgumentParserStub(argparse.ArgumentParser):

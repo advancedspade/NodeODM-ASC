@@ -31,6 +31,7 @@ const processRunner = require('./processRunner');
 const Directories = require('./Directories');
 const kill = require('tree-kill');
 const S3 = require('./S3');
+const GCS = require('./GCS');
 const request = require('request');
 const utils = require('./utils');
 const archiver = require('archiver');
@@ -525,6 +526,51 @@ module.exports = class Task{
                             if (!err) this.output.push("Done uploading to S3!");
                             done(err);
                         }, output => this.output.push(output));
+                });
+            }
+
+            // Upload to GCS (Google Cloud Storage) - specific paths only
+            if (GCS.enabled()){
+                const gcsUploadPaths = config.gcsUploadPaths
+                    .split(',')
+                    .map(p => p.trim())
+                    .filter(p => p.length > 0);
+
+                tasks.push((done) => {
+                    this.output.push(`Starting GCS upload for paths: ${gcsUploadPaths.join(', ')}`);
+                    
+                    GCS.uploadPaths(
+                        this.getProjectFolderPath(),
+                        config.gcsBucket,
+                        this.uuid,
+                        gcsUploadPaths,
+                        err => {
+                            if (err) {
+                                this.output.push(`GCS upload failed: ${err.message}`);
+                                done(err);
+                            } else {
+                                this.output.push("Done uploading to GCS!");
+                                
+                                // Cleanup local files after successful upload if configured
+                                if (config.gcsCleanupAfterUpload) {
+                                    GCS.cleanupLocalPaths(
+                                        this.getProjectFolderPath(),
+                                        gcsUploadPaths,
+                                        cleanupErr => {
+                                            if (cleanupErr) {
+                                                this.output.push(`Warning: Cleanup failed: ${cleanupErr.message}`);
+                                            }
+                                            done(); // Don't fail task on cleanup error
+                                        },
+                                        output => this.output.push(output)
+                                    );
+                                } else {
+                                    done();
+                                }
+                            }
+                        },
+                        output => this.output.push(output)
+                    );
                 });
             }
 

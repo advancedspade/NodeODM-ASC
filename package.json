@@ -21,6 +21,7 @@
   },
   "homepage": "https://github.com/OpenDroneMap/NodeODM#readme",
   "dependencies": {
+    "@google-cloud/storage": "^7.7.0",
     "archiver": "^3.0.0",
     "async": "^2.6.1",
     "aws-sdk": "^2.368.0",

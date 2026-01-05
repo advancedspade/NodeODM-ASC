@@ -85,17 +85,17 @@ jobs:
             --command="
               set -e
               echo '=== Configuring Docker for GCR ==='
-              gcloud auth configure-docker gcr.io --quiet
+              sudo gcloud auth configure-docker gcr.io --quiet
               
               echo '=== Pulling new image ==='
-              docker pull ${{ env.IMAGE_NAME }}:latest
+              sudo docker pull ${{ env.IMAGE_NAME }}:latest
               
               echo '=== Stopping existing container ==='
-              docker stop nodeodm || true
-              docker rm nodeodm || true
+              sudo docker stop nodeodm || true
+              sudo docker rm nodeodm || true
               
               echo '=== Starting new container ==='
-              docker run -d \
+              sudo docker run -d \
                 --name nodeodm \
                 --restart unless-stopped \
                 -p 3000:3000 \
@@ -104,10 +104,10 @@ jobs:
               
               echo '=== Checking container status ==='
               sleep 5
-              docker ps | grep nodeodm
+              sudo docker ps | grep nodeodm
               
               echo '=== Cleaning up old images ==='
-              docker image prune -f
+              sudo docker image prune -f
               
               echo '=== Deployment complete ==='
             "

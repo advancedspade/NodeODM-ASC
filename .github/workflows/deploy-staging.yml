@@ -99,7 +99,11 @@ jobs:
                 --restart unless-stopped \
                 -p 3000:3000 \
                 -v /var/www/data:/var/www/data \
-                ${{ env.IMAGE_NAME }}:latest
+                ${{ env.IMAGE_NAME }}:latest \
+                --gcs_bucket nodeodm-outputs-v1 \
+                --gcs_upload_prefix outputs \
+                --gcs_upload_paths 'orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif' \
+                --gcs_cleanup_after_upload
               
               echo '=== Checking container status ==='
               sleep 5

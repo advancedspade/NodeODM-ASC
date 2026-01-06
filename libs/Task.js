@@ -536,13 +536,19 @@ module.exports = class Task{
                     .map(p => p.trim())
                     .filter(p => p.length > 0);
 
+                // Build destination path with optional prefix
+                const gcsDestPath = config.gcsUploadPrefix 
+                    ? path.join(config.gcsUploadPrefix, this.uuid)
+                    : this.uuid;
+
                 tasks.push((done) => {
                     this.output.push(`Starting GCS upload for paths: ${gcsUploadPaths.join(', ')}`);
+                    this.output.push(`Destination: gs://${config.gcsBucket}/${gcsDestPath}/`);
                     
                     GCS.uploadPaths(
                         this.getProjectFolderPath(),
                         config.gcsBucket,
-                        this.uuid,
+                        gcsDestPath,
                         gcsUploadPaths,
                         err => {
                             if (err) {

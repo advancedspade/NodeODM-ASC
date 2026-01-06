@@ -64,6 +64,7 @@ GCS (Google Cloud Storage) Options:
 	--gcs_key_path <path>	Path to GCS service account JSON key file. (default: use default credentials)
 	--gcs_parallel_uploads <number>	Number of parallel file uploads to GCS. (default: 16)
 	--gcs_upload_paths <paths>	Comma-separated list of paths to upload to GCS. (default: orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif)
+	--gcs_upload_prefix <prefix>	Prefix path in GCS bucket (e.g., 'outputs' results in gs://bucket/outputs/task-uuid/). (default: none)
 	--gcs_cleanup_after_upload	Delete local files after successful GCS upload. (default: false)
 
 Log Levels: 
@@ -80,7 +81,7 @@ const allOpts = ["slice","help","config","odm_path","log_level","port","p",
 "s3_force_path_style","s3_access_key","s3_secret_key","s3_signature_version",
 "s3_acl","s3_upload_everything","s3_ignore_ssl","max_concurrency","max_runtime",
 "gcs_bucket","gcs_project_id","gcs_key_path","gcs_parallel_uploads",
-"gcs_upload_paths","gcs_cleanup_after_upload"];
+"gcs_upload_paths","gcs_upload_prefix","gcs_cleanup_after_upload"];
 
 // Support for "-" or "_" style params syntax
 for (let k in argv){
@@ -160,6 +161,7 @@ config.gcsProjectId = argv.gcs_project_id || fromConfigFile("gcsProjectId", proc
 config.gcsKeyPath = argv.gcs_key_path || fromConfigFile("gcsKeyPath", process.env.GOOGLE_APPLICATION_CREDENTIALS || "");
 config.gcsParallelUploads = parseInt(argv.gcs_parallel_uploads || fromConfigFile("gcsParallelUploads", 16));
 config.gcsUploadPaths = argv.gcs_upload_paths || fromConfigFile("gcsUploadPaths", "orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif");
+config.gcsUploadPrefix = argv.gcs_upload_prefix || fromConfigFile("gcsUploadPrefix", "");
 config.gcsCleanupAfterUpload = argv.gcs_cleanup_after_upload || fromConfigFile("gcsCleanupAfterUpload", false);
 
 // Detect 7z availability

@@ -536,10 +536,17 @@ module.exports = class Task{
                     .map(p => p.trim())
                     .filter(p => p.length > 0);
 
+                // Sanitize task name for use as folder name (remove special chars, replace spaces)
+                const sanitizedName = this.name
+                    .replace(/[^a-zA-Z0-9_\-\s]/g, '')  // Remove special characters
+                    .replace(/\s+/g, '_')               // Replace spaces with underscores
+                    .substring(0, 100)                  // Limit length
+                    || this.uuid;                       // Fallback to UUID if name is empty
+
                 // Build destination path with optional prefix
                 const gcsDestPath = config.gcsUploadPrefix 
-                    ? path.join(config.gcsUploadPrefix, this.uuid)
-                    : this.uuid;
+                    ? path.join(config.gcsUploadPrefix, sanitizedName)
+                    : sanitizedName;
 
                 tasks.push((done) => {
                     this.output.push(`Starting GCS upload for paths: ${gcsUploadPaths.join(', ')}`);

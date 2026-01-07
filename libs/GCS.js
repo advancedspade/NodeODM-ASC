@@ -221,35 +221,44 @@ module.exports = {
      */
     cleanupLocalPaths: function(srcFolder, paths, cb, onOutput) {
         if (onOutput) onOutput("Cleaning up local files after GCS upload...");
+        logger.info(`Starting cleanup of ${paths.length} paths in ${srcFolder}`);
 
         async.eachSeries(paths, (p, done) => {
             const fullPath = path.join(srcFolder, p);
 
             if (!fs.existsSync(fullPath)) {
+                if (onOutput) onOutput(`Skipping non-existent: ${p}`);
                 return done();
             }
 
             if (fs.lstatSync(fullPath).isDirectory()) {
+                if (onOutput) onOutput(`Deleting directory: ${p}`);
                 rmdir(fullPath, err => {
                     if (err) {
                         logger.warn(`Failed to delete directory ${fullPath}: ${err.message}`);
+                        if (onOutput) onOutput(`Warning: Failed to delete ${p}: ${err.message}`);
                     } else {
-                        logger.debug(`Deleted directory: ${fullPath}`);
+                        logger.info(`Deleted directory: ${fullPath}`);
+                        if (onOutput) onOutput(`Deleted directory: ${p}`);
                     }
                     done(); // Continue even on error
                 });
             } else {
+                if (onOutput) onOutput(`Deleting file: ${p}`);
                 fs.unlink(fullPath, err => {
                     if (err) {
                         logger.warn(`Failed to delete file ${fullPath}: ${err.message}`);
+                        if (onOutput) onOutput(`Warning: Failed to delete ${p}: ${err.message}`);
                     } else {
-                        logger.debug(`Deleted file: ${fullPath}`);
+                        logger.info(`Deleted file: ${fullPath}`);
+                        if (onOutput) onOutput(`Deleted file: ${p}`);
                     }
                     done(); // Continue even on error
                 });
             }
         }, err => {
             if (onOutput) onOutput("Local cleanup completed");
+            logger.info("Local cleanup completed");
             cb(err);
         });
     }

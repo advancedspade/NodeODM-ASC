@@ -529,19 +529,43 @@ module.exports = class Task{
                 });
             }
 
+            // Sanitize task name for use as folder name and title (remove special chars, replace spaces)
+            const sanitizedName = this.name
+                .replace(/[^a-zA-Z0-9_\-\s]/g, '')  // Remove special characters
+                .replace(/\s+/g, '_')               // Replace spaces with underscores
+                .substring(0, 100)                  // Limit length
+                || this.uuid;                       // Fallback to UUID if name is empty
+
+            // Update tilemapresource.xml Title to use project name instead of default
+            const tilemapPath = path.join(this.getProjectFolderPath(), 'orthophoto_tiles', 'tilemapresource.xml');
+            if (fs.existsSync(tilemapPath)) {
+                tasks.push((done) => {
+                    try {
+                        let xmlContent = fs.readFileSync(tilemapPath, 'utf8');
+                        const originalTitle = xmlContent.match(/<Title>([^<]*)<\/Title>/);
+                        
+                        if (originalTitle) {
+                            xmlContent = xmlContent.replace(
+                                /<Title>[^<]*<\/Title>/,
+                                `<Title>${sanitizedName}</Title>`
+                            );
+                            fs.writeFileSync(tilemapPath, xmlContent, 'utf8');
+                            this.output.push(`Updated tilemapresource.xml Title: "${originalTitle[1]}" → "${sanitizedName}"`);
+                        }
+                        done();
+                    } catch (err) {
+                        this.output.push(`Warning: Failed to update tilemapresource.xml: ${err.message}`);
+                        done(); // Don't fail task on this error
+                    }
+                });
+            }
+
             // Upload to GCS (Google Cloud Storage) - specific paths only
             if (GCS.enabled()){
                 const gcsUploadPaths = config.gcsUploadPaths
                     .split(',')
                     .map(p => p.trim())
                     .filter(p => p.length > 0);
-
-                // Sanitize task name for use as folder name (remove special chars, replace spaces)
-                const sanitizedName = this.name
-                    .replace(/[^a-zA-Z0-9_\-\s]/g, '')  // Remove special characters
-                    .replace(/\s+/g, '_')               // Replace spaces with underscores
-                    .substring(0, 100)                  // Limit length
-                    || this.uuid;                       // Fallback to UUID if name is empty
 
                 // Build destination path with optional prefix
                 const gcsDestPath = config.gcsUploadPrefix 
@@ -565,6 +589,7 @@ module.exports = class Task{
                                 this.output.push("Done uploading to GCS!");
                                 
                                 // Cleanup local files after successful upload if configured
+                                this.output.push(`Cleanup after upload setting: ${config.gcsCleanupAfterUpload}`);
                                 if (config.gcsCleanupAfterUpload) {
                                     GCS.cleanupLocalPaths(
                                         this.getProjectFolderPath(),

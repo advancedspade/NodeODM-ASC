@@ -162,7 +162,10 @@ config.gcsKeyPath = argv.gcs_key_path || fromConfigFile("gcsKeyPath", process.en
 config.gcsParallelUploads = parseInt(argv.gcs_parallel_uploads || fromConfigFile("gcsParallelUploads", 16));
 config.gcsUploadPaths = argv.gcs_upload_paths || fromConfigFile("gcsUploadPaths", "orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif");
 config.gcsUploadPrefix = argv.gcs_upload_prefix || fromConfigFile("gcsUploadPrefix", "");
-config.gcsCleanupAfterUpload = argv.gcs_cleanup_after_upload || fromConfigFile("gcsCleanupAfterUpload", false);
+// Boolean flag - check for explicit true/false or presence of flag
+config.gcsCleanupAfterUpload = argv.gcs_cleanup_after_upload === true || 
+    argv.gcs_cleanup_after_upload === 'true' || 
+    fromConfigFile("gcsCleanupAfterUpload", false) === true;
 
 // Detect 7z availability
 config.has7z = spawnSync(apps.sevenZ, ['--help']).status === 0;

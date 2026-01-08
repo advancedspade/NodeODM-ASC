@@ -288,10 +288,16 @@ module.exports = {
             let maxConcurrencyIsAnOption = false;
             let tilesFound = false;
             let tilesIsAnOption = false;
+            let cogFound = false;
+            let cogIsAnOption = false;
+            let matcherNeighborsFound = false;
+            let matcherNeighborsIsAnOption = false;
 
             for (let odmOption of odmOptions){
                 if (odmOption.name === 'max-concurrency') maxConcurrencyIsAnOption = true;
                 if (odmOption.name === 'tiles') tilesIsAnOption = true;
+                if (odmOption.name === 'cog') cogIsAnOption = true;
+                if (odmOption.name === 'matcher-neighbors') matcherNeighborsIsAnOption = true;
                 
                 // Was this option selected by the user?
                 /*jshint loopfunc: true */
@@ -322,6 +328,16 @@ module.exports = {
                             tilesFound = true;
                         }
 
+                        // Track if cog option was provided
+                        if (opt.name === 'cog'){
+                            cogFound = true;
+                        }
+
+                        // Track if matcher-neighbors option was provided
+                        if (opt.name === 'matcher-neighbors'){
+                            matcherNeighborsFound = true;
+                        }
+
                         result.push({
                             name: odmOption.name,
                             value: value
@@ -347,6 +363,22 @@ module.exports = {
                 result.push({
                     name: "tiles",
                     value: true
+                });
+            }
+
+            // Auto-enable COG (Cloud Optimized GeoTIFF) if not explicitly set
+            if (!cogFound && cogIsAnOption){
+                result.push({
+                    name: "cog",
+                    value: true
+                });
+            }
+
+            // Set matcher-neighbors to 8 if not explicitly set
+            if (!matcherNeighborsFound && matcherNeighborsIsAnOption){
+                result.push({
+                    name: "matcher-neighbors",
+                    value: 8
                 });
             }
 

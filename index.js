@@ -703,10 +703,16 @@ app.get('/options', authCheck, (req, res) => {
     odmInfo.getOptions((err, options) => {
         if (err) res.json({ error: err.message });
         else {
-            // Set tiles to true by default so it shows checked in the UI
+            // Set default values for certain options in the UI
             const modifiedOptions = options.map(opt => {
                 if (opt.name === 'tiles') {
                     return { ...opt, value: 'true' };
+                }
+                if (opt.name === 'cog') {
+                    return { ...opt, value: 'true' };
+                }
+                if (opt.name === 'matcher-neighbors') {
+                    return { ...opt, value: '8' };
                 }
                 return opt;
             });

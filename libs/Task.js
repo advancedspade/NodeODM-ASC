@@ -588,20 +588,20 @@ module.exports = class Task{
                             } else {
                                 this.output.push("Done uploading to GCS!");
                                 
-                                // Cleanup local files after successful upload if configured
+                                // Cleanup entire project folder after successful upload if configured
                                 this.output.push(`Cleanup after upload setting: ${config.gcsCleanupAfterUpload}`);
                                 if (config.gcsCleanupAfterUpload) {
-                                    GCS.cleanupLocalPaths(
-                                        this.getProjectFolderPath(),
-                                        gcsUploadPaths,
-                                        cleanupErr => {
-                                            if (cleanupErr) {
-                                                this.output.push(`Warning: Cleanup failed: ${cleanupErr.message}`);
-                                            }
-                                            done(); // Don't fail task on cleanup error
-                                        },
-                                        output => this.output.push(output)
-                                    );
+                                    const projectFolder = this.getProjectFolderPath();
+                                    this.output.push(`Deleting entire project folder: ${projectFolder}`);
+                                    
+                                    rmdir(projectFolder, cleanupErr => {
+                                        if (cleanupErr) {
+                                            this.output.push(`Warning: Cleanup failed: ${cleanupErr.message}`);
+                                        } else {
+                                            this.output.push(`Deleted project folder: ${projectFolder}`);
+                                        }
+                                        done(); // Don't fail task on cleanup error
+                                    });
                                 } else {
                                     done();
                                 }

@@ -286,9 +286,12 @@ module.exports = {
             // Scan through all possible options
             let maxConcurrencyFound = false;
             let maxConcurrencyIsAnOption = false;
+            let tilesFound = false;
+            let tilesIsAnOption = false;
 
             for (let odmOption of odmOptions){
                 if (odmOption.name === 'max-concurrency') maxConcurrencyIsAnOption = true;
+                if (odmOption.name === 'tiles') tilesIsAnOption = true;
                 
                 // Was this option selected by the user?
                 /*jshint loopfunc: true */
@@ -314,6 +317,11 @@ module.exports = {
                             }
                         }
 
+                        // Track if tiles option was provided
+                        if (opt.name === 'tiles'){
+                            tilesFound = true;
+                        }
+
                         result.push({
                             name: odmOption.name,
                             value: value
@@ -330,6 +338,15 @@ module.exports = {
                 result.push({
                     name: "max-concurrency",
                     value: config.maxConcurrency
+                });
+            }
+
+            // Auto-enable tiles generation if not explicitly set
+            // This ensures orthophoto_tiles folder is always created
+            if (!tilesFound && tilesIsAnOption){
+                result.push({
+                    name: "tiles",
+                    value: true
                 });
             }
 

@@ -702,7 +702,16 @@ app.post('/task/restart', urlEncodedBodyParser, jsonBodyParser, authCheck, uuidC
 app.get('/options', authCheck, (req, res) => {
     odmInfo.getOptions((err, options) => {
         if (err) res.json({ error: err.message });
-        else res.json(options);
+        else {
+            // Set tiles to true by default so it shows checked in the UI
+            const modifiedOptions = options.map(opt => {
+                if (opt.name === 'tiles') {
+                    return { ...opt, value: 'true' };
+                }
+                return opt;
+            });
+            res.json(modifiedOptions);
+        }
     });
 });
 

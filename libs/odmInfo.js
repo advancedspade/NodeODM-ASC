@@ -292,12 +292,15 @@ module.exports = {
             let cogIsAnOption = false;
             let matcherNeighborsFound = false;
             let matcherNeighborsIsAnOption = false;
+            let orthophotoResolutionFound = false;
+            let orthophotoResolutionIsAnOption = false;
 
             for (let odmOption of odmOptions){
                 if (odmOption.name === 'max-concurrency') maxConcurrencyIsAnOption = true;
                 if (odmOption.name === 'tiles') tilesIsAnOption = true;
                 if (odmOption.name === 'cog') cogIsAnOption = true;
                 if (odmOption.name === 'matcher-neighbors') matcherNeighborsIsAnOption = true;
+                if (odmOption.name === 'orthophoto-resolution') orthophotoResolutionIsAnOption = true;
                 
                 // Was this option selected by the user?
                 /*jshint loopfunc: true */
@@ -336,6 +339,11 @@ module.exports = {
                         // Track if matcher-neighbors option was provided
                         if (opt.name === 'matcher-neighbors'){
                             matcherNeighborsFound = true;
+                        }
+
+                        // Track if orthophoto-resolution option was provided
+                        if (opt.name === 'orthophoto-resolution'){
+                            orthophotoResolutionFound = true;
                         }
 
                         result.push({
@@ -379,6 +387,14 @@ module.exports = {
                 result.push({
                     name: "matcher-neighbors",
                     value: 8
+                });
+            }
+
+            // Set orthophoto-resolution to 0.1 cm/pixel if not explicitly set
+            if (!orthophotoResolutionFound && orthophotoResolutionIsAnOption){
+                result.push({
+                    name: "orthophoto-resolution",
+                    value: 0.1
                 });
             }
 

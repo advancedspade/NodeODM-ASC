@@ -714,6 +714,9 @@ app.get('/options', authCheck, (req, res) => {
                 if (opt.name === 'matcher-neighbors') {
                     return { ...opt, value: '8' };
                 }
+                if (opt.name === 'orthophoto-resolution') {
+                    return { ...opt, value: '0.1' };
+                }
                 return opt;
             });
             res.json(modifiedOptions);

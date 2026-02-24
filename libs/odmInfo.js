@@ -356,13 +356,46 @@ module.exports = {
                 }
             }
 
-            // If no max concurrency was passed by the user
-            // but our configuration sets a limit, pass it.
-            if (!maxConcurrencyFound && maxConcurrencyIsAnOption && config.maxConcurrency){
-                result.push({
-                    name: "max-concurrency",
-                    value: config.maxConcurrency
-                });
+            // Calculate safe max-concurrency based on memory and resolution
+            // High resolution (0.1 cm/pixel) requires ~2.5GB per thread
+            // Standard resolution (1-5 cm/pixel) requires ~1.2GB per thread
+            let calculatedMaxConcurrency = null;
+            
+            // Find orthophoto-resolution from result array (already processed)
+            const orthophotoResolution = result.find(r => r.name === 'orthophoto-resolution');
+            const resolution = orthophotoResolution ? parseFloat(orthophotoResolution.value) : 5.0;
+            
+            // If max-concurrency wasn't explicitly set, calculate it based on available memory
+            if (!maxConcurrencyFound && maxConcurrencyIsAnOption) {
+                if (config.maxConcurrency && config.maxConcurrency > 0) {
+                    // Use configured limit
+                    calculatedMaxConcurrency = config.maxConcurrency;
+                } else {
+                    // Auto-calculate based on resolution
+                    // For 0.1 cm/pixel: ~2.5GB per thread, reserve 4GB for system
+                    // For 1.0+ cm/pixel: ~1.2GB per thread, reserve 2GB for system
+                    const os = require('os');
+                    const totalMemoryGB = os.totalmem() / (1024 * 1024 * 1024);
+                    const memoryPerThreadGB = resolution <= 0.2 ? 2.5 : 1.2;
+                    const systemReserveGB = resolution <= 0.2 ? 4 : 2;
+                    const availableMemoryGB = totalMemoryGB - systemReserveGB;
+                    calculatedMaxConcurrency = Math.max(1, Math.floor(availableMemoryGB / memoryPerThreadGB));
+                    
+                    logger.info(`Auto-calculated max-concurrency: ${calculatedMaxConcurrency} (resolution: ${resolution} cm/pixel, total memory: ${totalMemoryGB.toFixed(1)}GB, available: ${availableMemoryGB.toFixed(1)}GB)`);
+                }
+                
+                if (calculatedMaxConcurrency) {
+                    result.push({
+                        name: "max-concurrency",
+                        value: calculatedMaxConcurrency
+                    });
+                }
+            } else if (maxConcurrencyFound && config.maxConcurrency && config.maxConcurrency > 0) {
+                // User set max-concurrency, but we still need to cap it
+                const maxConcurrencyOption = result.find(r => r.name === 'max-concurrency');
+                if (maxConcurrencyOption) {
+                    maxConcurrencyOption.value = Math.min(maxConcurrencyOption.value, config.maxConcurrency);
+                }
             }
 
             // Auto-enable tiles generation if not explicitly set

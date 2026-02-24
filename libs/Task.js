@@ -442,22 +442,9 @@ module.exports = class Task{
             }
 
             // All paths are relative to the project directory (./data/<uuid>/)
+            // Only include orthophoto tiles and the main GeoTIFF in all.zip
             let allPaths = ['odm_orthophoto/odm_orthophoto.tif',
-                              'odm_orthophoto/odm_orthophoto.tfw',
-                              'odm_orthophoto/odm_orthophoto.png',
-                              'odm_orthophoto/odm_orthophoto.wld',
-                              'odm_orthophoto/odm_orthophoto.mbtiles',
-                              'odm_orthophoto/odm_orthophoto.kmz',
-                              'odm_orthophoto/odm_orthophoto_extent.dxf',
-                              'odm_orthophoto/cutline.gpkg',
-                              'odm_georeferencing', 'odm_texturing',
-                              'odm_dem/dsm.tif', 'odm_dem/dtm.tif', 'dsm_tiles', 'dtm_tiles',
-                              'odm_dem/dsm.euclideand.tif', 'odm_dem/dtm.euclideand.tif',
-                              'orthophoto_tiles', 'potree_pointcloud', 'entwine_pointcloud',
-                              '3d_tiles',
-                              'images.json', 'cameras.json',
-                              'task_output.txt', 'log.json',
-                              'odm_report'];
+                              'orthophoto_tiles'];
 
             // Did the user request different outputs than the default?
             if (this.outputs.length > 0) allPaths = this.outputs;
@@ -589,10 +576,22 @@ module.exports = class Task{
                                 this.output.push("Done uploading to GCS!");
                                 
                                 // Cleanup entire project folder after successful upload if configured
+                                // BUT preserve all.zip so users can still download it
                                 this.output.push(`Cleanup after upload setting: ${config.gcsCleanupAfterUpload}`);
                                 if (config.gcsCleanupAfterUpload) {
                                     const projectFolder = this.getProjectFolderPath();
-                                    this.output.push(`Deleting entire project folder: ${projectFolder}`);
+                                    const allZipPath = path.join(projectFolder, 'all.zip');
+                                    
+                                    // Temporarily move all.zip outside the folder before deletion
+                                    const tempZipPath = path.join(path.dirname(projectFolder), `${path.basename(projectFolder)}_all.zip`);
+                                    
+                                    // Move all.zip to temp location if it exists
+                                    if (fs.existsSync(allZipPath)) {
+                                        fs.renameSync(allZipPath, tempZipPath);
+                                        this.output.push(`Preserved all.zip outside project folder`);
+                                    }
+                                    
+                                    this.output.push(`Deleting project folder: ${projectFolder}`);
                                     
                                     rmdir(projectFolder, cleanupErr => {
                                         if (cleanupErr) {
@@ -600,6 +599,15 @@ module.exports = class Task{
                                         } else {
                                             this.output.push(`Deleted project folder: ${projectFolder}`);
                                         }
+                                        
+                                        // Move all.zip back into the (now empty) project folder
+                                        if (fs.existsSync(tempZipPath)) {
+                                            // Recreate the project folder
+                                            fs.mkdirSync(projectFolder, { recursive: true });
+                                            fs.renameSync(tempZipPath, allZipPath);
+                                            this.output.push(`Restored all.zip to project folder for download`);
+                                        }
+                                        
                                         done(); // Don't fail task on cleanup error
                                     });
                                 } else {

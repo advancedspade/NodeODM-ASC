@@ -98,13 +98,16 @@ jobs:
               sudo docker run -d \
                 --name nodeodm \
                 --restart unless-stopped \
+                --memory=64g \
+                --memory-swap=64g \
                 -p 3000:3000 \
                 -v /var/www/data:/var/www/data \
                 ${{ env.IMAGE_NAME }}:latest \
                 --gcs_bucket nodeodm-outputs-v1 \
                 --gcs_upload_prefix outputs \
                 --gcs_upload_paths 'orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif' \
-                --gcs_cleanup_after_upload
+                --gcs_cleanup_after_upload \
+                --max_concurrency 6
               
               echo '=== Checking container status ==='
               sleep 5

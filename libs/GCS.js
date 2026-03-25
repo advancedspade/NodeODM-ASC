@@ -95,7 +95,8 @@ module.exports = {
 
         // Build upload list from paths
         paths.forEach(p => {
-            const fullPath = path.join(srcFolder, p);
+            const normalized = (p === '*' ? '.' : p);
+            const fullPath = path.join(srcFolder, normalized);
 
             // Skip non-existing items
             if (!fs.existsSync(fullPath)) {
@@ -104,8 +105,10 @@ module.exports = {
             }
 
             if (fs.lstatSync(fullPath).isDirectory()) {
-                // Glob all files in directory
-                const globPaths = glob.sync(`${p}/**`, { cwd: srcFolder, nodir: true, nosort: true });
+                // Glob all files in directory.
+                // Special-case '.' to mean "everything under srcFolder" without leading './' in keys.
+                const globPattern = normalized === '.' ? `**/*` : `${normalized}/**/*`;
+                const globPaths = glob.sync(globPattern, { cwd: srcFolder, nodir: true, nosort: true });
                 globPaths.forEach(gp => {
                     uploadList.push({
                         src: path.join(srcFolder, gp),
@@ -117,8 +120,8 @@ module.exports = {
             } else {
                 uploadList.push({
                     src: fullPath,
-                    dest: path.join(dstFolder, p),
-                    relativePath: p,
+                    dest: path.join(dstFolder, normalized),
+                    relativePath: normalized,
                     retries: 0
                 });
             }

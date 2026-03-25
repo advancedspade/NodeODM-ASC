@@ -46,3 +46,8 @@ package-lock.json
 apps/
 nodeodm.exe
 dist/
+
+# Local GCS / secrets (never commit)
+.env.gcs
+secrets/
+*.json.key

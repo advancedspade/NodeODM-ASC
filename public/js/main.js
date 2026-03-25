@@ -67,7 +67,7 @@ $(function() {
         formData.append("name", $("#taskName").val());
         formData.append("webhook", $("#webhook").val());
         formData.append("skipPostProcessing", !$("#doPostProcessing").prop('checked'));
-        formData.append("options", JSON.stringify(optionsModel.getUserOptions()));
+        formData.append("options", JSON.stringify(buildTaskOptions()));
         // formData.append("outputs", JSON.stringify(['odm_orthophoto/odm_orthophoto.tif']));
 
         if (this.mode() === 'file'){
@@ -123,10 +123,172 @@ $(function() {
         autoProcessQueue: false,
         createImageThumbnails: false,
         previewTemplate: '<div style="display:none"></div>',
-        clickable: document.getElementById("btnSelectFiles"),
+        clickable: true,
+        dictDefaultMessage: "Drop files here or click to browse<br><span class=\"dz-hint\">Images, GCP, or other supported inputs.</span>",
         chunkSize: 2147483647,
         timeout: 2147483647
     });
+
+    var DEFAULT_GPS_VIEW = { center: [20, 0], zoom: 2 };
+    var ndmGpsMap = null;
+    var ndmGpsMarkers = null;
+    var gpsMapTimer = null;
+
+    function setMapGpsStatus(text, loading) {
+        var el = document.getElementById("mapGpsStatus");
+        if (!el) return;
+        el.textContent = text;
+        if (loading) el.classList.add("loading");
+        else el.classList.remove("loading");
+    }
+
+    function ndmIsImageFile(file) {
+        if (file.type && file.type.indexOf("image/") === 0) return true;
+        return /\.(jpe?g|png|tiff?|heic|heif|webp|avif)$/i.test(file.name);
+    }
+
+    function initNdmGpsMap() {
+        if (ndmGpsMap || typeof L === "undefined" || !document.getElementById("mapGps")) return;
+        ndmGpsMap = L.map("mapGps", { scrollWheelZoom: true }).setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
+        L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+            attribution: "&copy; OpenStreetMap &copy; CARTO",
+            subdomains: "abcd",
+            maxZoom: 20
+        }).addTo(ndmGpsMap);
+        ndmGpsMarkers = L.layerGroup().addTo(ndmGpsMap);
+        $(window).on("resize.ndmGps", function() {
+            if (ndmGpsMap) ndmGpsMap.invalidateSize();
+        });
+    }
+
+    function ndmEscapeHtml(s) {
+        var div = document.createElement("div");
+        div.textContent = s;
+        return div.innerHTML;
+    }
+
+    function ndmFormatCoord(n) {
+        return (typeof n === "number" && !isNaN(n)) ? n.toFixed(6) : "—";
+    }
+
+    function renderNdmFileRows(results) {
+        var panel = document.getElementById("ndmFilePanel");
+        var list = document.getElementById("ndmFileList");
+        if (!panel || !list) return;
+        list.innerHTML = "";
+
+        if (!results.length) {
+            panel.hidden = true;
+            return;
+        }
+        panel.hidden = false;
+
+        results.forEach(function(r) {
+            var li = document.createElement("li");
+            var hasGps = r.lat != null && r.lng != null;
+
+            var name = document.createElement("span");
+            name.className = "name";
+            name.textContent = r.file.name;
+
+            var meta = document.createElement("span");
+            meta.className = "meta";
+            meta.textContent = (r.file.size / (1024 * 1024)).toFixed(2) + " MB";
+
+            var gps = document.createElement("span");
+            gps.className = "gps";
+            if (hasGps) {
+                gps.classList.add("has");
+                gps.textContent = "GPS " + ndmFormatCoord(r.lat) + ", " + ndmFormatCoord(r.lng);
+            } else {
+                gps.classList.add("missing");
+                gps.textContent = r.error ? ("Could not read GPS (" + r.error + ")") : "No GPS in EXIF";
+            }
+
+            li.appendChild(name);
+            li.appendChild(meta);
+            li.appendChild(gps);
+            list.appendChild(li);
+        });
+    }
+
+    function readGpsForNdmFile(file) {
+        if (typeof exifr === "undefined") {
+            return Promise.resolve({ file: file, lat: null, lng: null, error: "exifr not loaded" });
+        }
+        return exifr.gps(file).then(function(gps) {
+            if (gps && typeof gps.latitude === "number" && typeof gps.longitude === "number") {
+                return { file: file, lat: gps.latitude, lng: gps.longitude };
+            }
+            return { file: file, lat: null, lng: null };
+        }).catch(function(err) {
+            return { file: file, lat: null, lng: null, error: (err && err.message) ? err.message : "parse error" };
+        });
+    }
+
+    function updateNdmGpsMap(points) {
+        initNdmGpsMap();
+        if (!ndmGpsMap || !ndmGpsMarkers) return;
+        ndmGpsMarkers.clearLayers();
+        if (!points.length) {
+            ndmGpsMap.setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
+            return;
+        }
+        var latlngs = points.map(function(p) { return [p.lat, p.lng]; });
+        points.forEach(function(p) {
+            var m = L.marker([p.lat, p.lng], {
+                icon: L.divIcon({
+                    className: "map-marker-wrap",
+                    html: "<div class=\"map-pin\"></div>",
+                    iconSize: [16, 16],
+                    iconAnchor: [8, 8],
+                    popupAnchor: [0, -8]
+                })
+            });
+            m.bindPopup(
+                "<div class=\"map-popup\"><strong>" + ndmEscapeHtml(p.file.name) + "</strong><br>" +
+                "Lat " + ndmFormatCoord(p.lat) + ", Lng " + ndmFormatCoord(p.lng) + "</div>"
+            );
+            ndmGpsMarkers.addLayer(m);
+        });
+        if (latlngs.length === 1) {
+            ndmGpsMap.setView(latlngs[0], 17);
+        } else {
+            ndmGpsMap.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40], maxZoom: 18 });
+        }
+        setTimeout(function() { if (ndmGpsMap) ndmGpsMap.invalidateSize(); }, 100);
+    }
+
+    function refreshGpsFromDropzone() {
+        initNdmGpsMap();
+        var files = (dz.files || []).filter(ndmIsImageFile);
+        if (!files.length) {
+            updateNdmGpsMap([]);
+            renderNdmFileRows([]);
+            setMapGpsStatus("Add images in the drop zone to read GPS from EXIF.", false);
+            return;
+        }
+        setMapGpsStatus("Reading GPS from EXIF…", true);
+        Promise.all(files.map(readGpsForNdmFile)).then(function(results) {
+            var withGps = results.filter(function(r) { return r.lat != null && r.lng != null; });
+            renderNdmFileRows(results);
+            updateNdmGpsMap(withGps);
+            if (typeof exifr === "undefined") {
+                setMapGpsStatus("GPS preview unavailable (exifr failed to load).", false);
+            } else if (!withGps.length) {
+                setMapGpsStatus("No GPS tags found in " + files.length + " image(s).", false);
+            } else if (withGps.length < files.length) {
+                setMapGpsStatus(withGps.length + " of " + files.length + " images have GPS — shown on the map.", false);
+            } else {
+                setMapGpsStatus(withGps.length + " images plotted from EXIF GPS.", false);
+            }
+        });
+    }
+
+    function scheduleGpsFromDropzone() {
+        clearTimeout(gpsMapTimer);
+        gpsMapTimer = setTimeout(refreshGpsFromDropzone, 220);
+    }
 
     dz.on("processing", function(file){
         this.options.url = '/task/new/upload/' + app.uuid() + "?token=" + token;
@@ -145,6 +307,7 @@ $(function() {
     })
     .on("addedfiles", function(files){
         app.filesCount(app.filesCount() + files.length);
+        scheduleGpsFromDropzone();
     })
     .on("complete", function(file){
         if (file.status === "success"){
@@ -172,10 +335,19 @@ $(function() {
     })
     .on("reset", function(){
         app.filesCount(0);
+        scheduleGpsFromDropzone();
+    })
+    .on("removedfile", function(){
+        scheduleGpsFromDropzone();
     });
 
+    setTimeout(scheduleGpsFromDropzone, 400);
+
     app = new App();
-    ko.applyBindings(app, document.getElementById('app'));
+    var appRoot = document.getElementById("app");
+    if (appRoot) {
+        ko.applyBindings(app, appRoot);
+    }
 
     function query(key) {
         key = key.replace(/[*+?^$.\[\]{}()|\\\/]/g, "\\$&"); // escape RegEx meta chars
@@ -207,8 +379,13 @@ $(function() {
         var self = this;
         var url = "/task/list?token=" + token;
         this.error = ko.observable("");
-        this.loading = ko.observable(true);
+        this.listLoading = ko.observable(true);
+        this.listLoadingSlow = ko.observable(false);
         this.tasks = ko.observableArray();
+
+        var listSlowTimer = setTimeout(function() {
+            if (self.listLoading()) self.listLoadingSlow(true);
+        }, 280);
 
         $.get(url)
             .done(function(tasksJson) {
@@ -223,7 +400,11 @@ $(function() {
             .fail(function() {
                 self.error(url + " is unreachable.");
             })
-            .always(function() { self.loading(false); });
+            .always(function() {
+                clearTimeout(listSlowTimer);
+                self.listLoadingSlow(false);
+                self.listLoading(false);
+            });
     }
     TaskList.prototype.add = function(task) {
         this.tasks.push(task);
@@ -254,26 +435,11 @@ $(function() {
         this.timeElapsed = ko.observable("00:00:00");
 
         var statusCodes = {
-            10: {
-                descr: "Queued",
-                icon: "glyphicon-hourglass"
-            },
-            20: {
-                descr: "Running",
-                icon: "glyphicon-cog spinning"
-            },
-            30: {
-                descr: "Failed",
-                icon: "glyphicon-remove-circle"
-            },
-            40: {
-                descr: "Completed",
-                icon: "glyphicon-ok-circle"
-            },
-            50: {
-                descr: "Canceled",
-                icon: "glyphicon-ban-circle"
-            }
+            10: { descr: "Queued" },
+            20: { descr: "Running" },
+            30: { descr: "Failed" },
+            40: { descr: "Completed" },
+            50: { descr: "Canceled" }
         };
 
         this.statusDescr = ko.pureComputed(function() {
@@ -283,12 +449,15 @@ $(function() {
                 } else return "Unknown (Status Code: " + this.info().status.code + ")";
             } else return "-";
         }, this);
-        this.icon = ko.pureComputed(function() {
-            if (this.info().status && this.info().status.code) {
-                if (statusCodes[this.info().status.code]) {
-                    return statusCodes[this.info().status.code].icon;
-                } else return "glyphicon-question-sign";
-            } else return "";
+        this.iconSymbol = ko.pureComputed(function() {
+            var code = this.info().status && this.info().status.code;
+            if (!code) return "";
+            if (code === 10) return "⏳";
+            if (code === 20) return "⚙";
+            if (code === 30) return "✕";
+            if (code === 40) return "✓";
+            if (code === 50) return "⊘";
+            return "?";
         }, this);
         this.showCancel = ko.pureComputed(function() {
             return this.info().status &&
@@ -471,7 +640,10 @@ $(function() {
     };
 
     var taskList = new TaskList();
-    ko.applyBindings(taskList, document.getElementById('taskList'));
+    var taskListRoot = document.getElementById("taskList");
+    if (taskListRoot) {
+        ko.applyBindings(taskList, taskListRoot);
+    }
 
     $('#resetWebhook').on('click', function(){
         $("#webhook").val('');
@@ -482,6 +654,10 @@ $(function() {
     });
     $('#resetTaskName').on('click', function(){
         $("#taskName").val('');
+    });
+
+    $('#btnClearFiles').on('click', function(){
+        app.resetUpload();
     });
 
     // Load options
@@ -501,7 +677,16 @@ $(function() {
             this.properties.help = this.properties.help.replace(/\%\(choices\)s/g, choicesStr);
             this.properties.help = this.properties.help.replace(/\%\(default\)s/g, this.properties.value);
         }
-        
+
+        var dom = this.properties.domain;
+        this.domainTooltipText = "";
+        if (dom !== undefined && dom !== null && dom !== "") {
+            this.domainTooltipText = Array.isArray(dom) ? dom.join(", ") : String(dom);
+        }
+
+        var helpStr = this.properties.help;
+        this.hasHelpDetail = typeof helpStr === "string" && helpStr.trim().length > 0;
+
         this.value = ko.observable(this.defaultValue);
     }
     Option.prototype.resetToDefault = function() {
@@ -512,11 +697,6 @@ $(function() {
         var self = this;
 
         this.options = ko.observableArray();
-        this.options.subscribe(function() {
-            setTimeout(function() {
-                $('#options [data-toggle="tooltip"]').tooltip();
-            }, 100);
-        });
         this.showOptions = ko.observable(false);
         this.error = ko.observable();
 
@@ -537,7 +717,6 @@ $(function() {
         var result = [];
         for (var i = 0; i < this.options().length; i++) {
             var opt = this.options()[i];
-            if (opt.properties.name == 'feature-type') console.log(opt, opt.value());
             if (opt.properties.type === 'enum'){
                 if (opt.value() !== opt.defaultValue){
                     result.push({
@@ -557,6 +736,26 @@ $(function() {
         return result;
     };
 
+    function buildTaskOptions() {
+        var raw = optionsModel.getUserOptions();
+        var filtered = raw.filter(function(o) {
+            return o.name !== "fast-orthophoto" && o.name !== "optimize-disk-space";
+        });
+        var proc = document.querySelector('input[name="ndmProcessing"]:checked');
+        var mode = proc ? proc.value : "3d";
+        if (mode === "ortho") {
+            filtered.push({ name: "fast-orthophoto", value: true });
+        }
+        var saveRawEl = document.getElementById("saveRawInputs");
+        if (saveRawEl && !saveRawEl.checked) {
+            filtered.push({ name: "optimize-disk-space", value: true });
+        }
+        return filtered;
+    }
+
     var optionsModel = new OptionsModel();
-    ko.applyBindings(optionsModel, document.getElementById("options"));
+    var optionsRoot = document.getElementById("options");
+    if (optionsRoot) {
+        ko.applyBindings(optionsModel, optionsRoot);
+    }
 });

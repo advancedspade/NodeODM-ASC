@@ -367,6 +367,12 @@ module.exports = class Task{
 
                     // Process files and directories first
                     files.forEach(file => {
+                        if (file === '.'){
+                            // Archive the entire project folder at zip root.
+                            archive.directory(sourcePath, false);
+                            return;
+                        }
+
                         let filePath = path.join(sourcePath, file);
 
                         // Skip non-existing items
@@ -442,9 +448,9 @@ module.exports = class Task{
             }
 
             // All paths are relative to the project directory (./data/<uuid>/)
-            // Only include orthophoto tiles and the main GeoTIFF in all.zip
-            let allPaths = ['odm_orthophoto/odm_orthophoto.tif',
-                              'orthophoto_tiles'];
+            // Default to packaging everything in all.zip (entire project folder).
+            // Users can still request a subset via `outputs`.
+            let allPaths = ['.'];
 
             // Did the user request different outputs than the default?
             if (this.outputs.length > 0) allPaths = this.outputs;

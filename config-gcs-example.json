@@ -24,7 +24,7 @@
 	"gcsProjectId": "your-gcp-project-id",
 	"gcsKeyPath": "/path/to/service-account-key.json",
 	"gcsParallelUploads": 16,
-	"gcsUploadPaths": "orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif",
+	"gcsUploadPaths": ".",
 	"gcsCleanupAfterUpload": true,
 
 	"_comment_s3": "S3 Configuration - Leave empty if using GCS",

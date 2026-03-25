@@ -1,212 +1,1086 @@
 <!doctype html>
-<html class="no-js" lang="">
-
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
-    <title>NodeODM - Web UI</title>
-    <meta name="description" content="">
+    <title>NodeODM — Web UI</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-
-    <link rel="stylesheet" href="css/bootstrap.min.css">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/main.css?t=2">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
     <style>
-        body{
+        :root {
+            --bg: #0f1419;
+            --surface: #1a222d;
+            --surface-2: #232d3b;
+            --border: #2d3a4d;
+            --text: #e8eef4;
+            --muted: #8b9cb3;
+            --accent: #3d9cf0;
+            --accent-dim: #2b7fc4;
+            --success: #3ecf8e;
+            --warn: #e8b84a;
+            --danger: #e07a7a;
+            --radius: 14px;
+            --shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+            --space-section: 1.25rem;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "DM Sans", system-ui, sans-serif;
+            font-size: 15px;
+            line-height: 1.5;
+            color: var(--text);
+            background:
+                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(61, 156, 240, 0.18), transparent),
+                var(--bg);
+        }
+
+        .shell {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1.75rem 1.25rem 2.5rem;
+        }
+
+        .page-header {
+            margin-bottom: 1.75rem;
+        }
+
+        .page-header h1 {
+            margin: 0 0 0.35rem;
+            font-size: 1.65rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+
+        .page-header p {
+            margin: 0;
+            max-width: 56ch;
+            color: var(--muted);
+            font-size: 0.95rem;
+        }
+
+        .page-header__featureline {
+            margin: 0.75rem 0 0;
+            max-width: 62ch;
+            font-size: 0.8125rem;
+            color: var(--muted);
+            line-height: 1.45;
+        }
+
+        .page-header__featureline strong {
+            color: var(--text);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.375rem;
+            align-items: start;
+        }
+
+        @media (min-width: 960px) {
+            .grid {
+                grid-template-columns: minmax(300px, 400px) 1fr;
+            }
+        }
+
+        .side-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 1.375rem;
+            min-width: 0;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            overflow: visible;
+        }
+
+        .card-body {
+            padding: 1.375rem 1.5rem;
+        }
+
+        .card-title {
+            margin: 0 0 1rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+        }
+
+        .section {
+            margin-top: var(--space-section);
+        }
+
+        .section:first-of-type {
             margin-top: 0;
         }
-        #body-row{
-            margin-top: 16px;
+
+        #images.dropzone {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            min-height: 7.25rem;
+            padding: 1.75rem 1.25rem;
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            text-align: center;
+            background: var(--surface-2);
+            transition: border-color 0.2s, background 0.2s;
+            cursor: pointer;
         }
-        .navbar{
-            background-color: #3498db;
+
+        #images.dropzone:hover {
+            border-color: var(--accent);
+            background: rgba(61, 156, 240, 0.06);
         }
-        a:hover, a:focus, a:active, a{
-            color: #3498db;
+
+        #images.dropzone.dz-drag-hover {
+            border-color: var(--success);
+            background: rgba(62, 207, 142, 0.08);
         }
-        #images{
-            font-weight: bold;
+
+        #images.dropzone .dz-message {
+            margin: 0;
+            color: var(--text);
+            font-weight: 600;
+            font-size: 1rem;
+            line-height: 1.45;
         }
-        #btnSelectFiles, #images{
+
+        #images.dropzone .dz-message .dz-hint {
+            display: block;
+            margin-top: 0.375rem;
+            font-weight: 400;
+            font-size: 0.875rem;
+            color: var(--muted);
+            max-width: 28ch;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        #images.dropzone .dz-default.dz-message span .dz-hint {
+            display: block;
+            margin-top: 0.375rem;
+            font-weight: 400;
+            font-size: 0.875rem;
+            color: var(--muted);
+        }
+
+        .file-meta {
+            margin-top: 0.75rem;
+            font-size: 0.875rem;
+            color: var(--muted);
+        }
+
+        .file-meta strong {
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .file-panel {
+            margin-top: 0.75rem;
+            padding: 0.75rem 0.9rem;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--surface-2);
+        }
+
+        .file-panel[hidden] {
+            display: none !important;
+        }
+
+        .file-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            max-height: 11rem;
+            overflow-y: auto;
+            font-size: 0.8125rem;
+        }
+
+        .file-list li {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 0.35rem 0.75rem;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .file-list li:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .file-list .name {
+            flex: 1 1 140px;
+            min-width: 0;
+            font-weight: 500;
+            color: var(--text);
+            word-break: break-word;
+        }
+
+        .file-list .meta {
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .file-list .gps {
+            flex: 1 0 100%;
+            font-size: 0.75rem;
+            color: var(--muted);
+        }
+
+        .file-list .gps.has {
+            color: var(--success);
+        }
+
+        .file-list .gps.missing {
+            color: #e8b84a;
+        }
+
+        .ndm-progress {
+            margin-top: 0.75rem;
+            height: 1.75rem;
+            border-radius: 8px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            overflow: hidden;
+        }
+
+        .ndm-progress__bar {
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: #0a0e12;
+            background: linear-gradient(165deg, var(--accent), var(--accent-dim));
+            transition: width 0.2s ease;
+            min-width: 2.5rem;
+        }
+
+        .ndm-progress__bar--file {
+            background: rgba(61, 156, 240, 0.35);
+            color: var(--text);
+            justify-content: flex-start;
+            padding-left: 0.5rem;
+        }
+
+        .upload-detail {
+            margin-top: 0.75rem;
+            max-height: 14rem;
+            overflow-y: auto;
+        }
+
+        .error-block {
+            margin-top: 1rem;
+            padding: 0.75rem 1rem;
+            border-radius: 10px;
+            border: 1px solid rgba(224, 122, 122, 0.45);
+            background: rgba(224, 122, 122, 0.12);
+            color: #f0c4c4;
+            font-size: 0.9rem;
+            cursor: pointer;
+        }
+
+        .mode-switch {
+            margin-top: 0.75rem;
+            font-size: 0.875rem;
+        }
+
+        .mode-switch button {
+            background: none;
+            border: none;
+            padding: 0;
+            font: inherit;
+            color: var(--accent);
+            cursor: pointer;
+            text-decoration: underline;
+            text-underline-offset: 2px;
+        }
+
+        .mode-switch button:hover {
+            color: #6bb6f5;
+        }
+
+        .zip-field {
+            margin-top: 0.5rem;
+        }
+
+        .ndm-label {
+            display: block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            margin-bottom: 0.35rem;
+        }
+
+        .ndm-input,
+        .ndm-select {
+            width: 100%;
+            max-width: 100%;
+            padding: 0.6rem 0.75rem;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--surface-2);
+            color: var(--text);
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+
+        .ndm-input:focus,
+        .ndm-select:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 1px var(--accent);
+        }
+
+        .checkbox-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding: 0.875rem 1rem;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--surface-2);
+            cursor: pointer;
+            margin-top: 0.5rem;
+        }
+
+        .checkbox-row input {
+            margin-top: 0.25rem;
+            accent-color: var(--accent);
+        }
+
+        .checkbox-row .label {
+            font-weight: 500;
+        }
+
+        .opt-row {
+            margin-bottom: 1rem;
+        }
+
+        .opt-row .opt-head {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 0.35rem 0.75rem;
+            margin-bottom: 0.35rem;
+        }
+
+        .opt-row label.field-label {
+            font-size: 0.8125rem;
+            font-weight: 500;
+            color: var(--text);
+        }
+
+        .opt-actions {
+            display: inline-flex;
+            gap: 0.35rem;
+            margin-left: 0.25rem;
+        }
+
+        .btn-icon {
+            appearance: none;
+            width: 1.75rem;
+            height: 1.75rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--surface-2);
+            color: var(--muted);
+            font-size: 0.75rem;
+            font-weight: 700;
+            cursor: pointer;
+            line-height: 1;
+            padding: 0;
+        }
+
+        .btn-icon:hover {
+            color: var(--text);
+            border-color: var(--muted);
+        }
+
+        /* Instant hover tips (native title="" is delayed by the browser) */
+        .ndm-tip-anchor {
+            position: relative;
             display: inline-block;
+            max-width: 100%;
         }
-        .btn-success{
-            background-color: #4582ec;
-            border-color: #4582ec;
+
+        .ndm-instant-tip {
+            position: absolute;
+            left: 0;
+            bottom: calc(100% + 6px);
+            max-width: min(92vw, 420px);
+            padding: 0.5rem 0.65rem;
+            font-size: 0.75rem;
+            font-weight: 400;
+            line-height: 1.45;
+            color: #e8eef5;
+            background: #1a222c;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+            z-index: 80;
+            visibility: hidden;
+            opacity: 0;
+            pointer-events: none;
+            white-space: normal;
+            word-break: break-word;
+            transition: none;
         }
-        .btn-success:hover, .btn-success:active, .btn-success:focus, .btn-success:active:hover,
-        .btn-success.disabled:hover, .btn-success[disabled]:hover, fieldset[disabled] .btn-success:hover, .btn-success.disabled:focus, .btn-success[disabled]:focus, fieldset[disabled] .btn-success:focus, .btn-success.disabled.focus, .btn-success[disabled].focus, fieldset[disabled] .btn-success.focus{
-            background-color: #3d74d4;
-            border-color: #4582ec;
+
+        .ndm-tip-anchor:hover .ndm-instant-tip,
+        .ndm-tip-anchor:focus-within .ndm-instant-tip {
+            visibility: visible;
+            opacity: 1;
         }
-        .task{
-            background: white;
+
+        .ndm-tip-anchor--btn .ndm-instant-tip {
+            left: auto;
+            right: 0;
+            max-width: min(92vw, 400px);
+            max-height: min(70vh, 24rem);
+            overflow-y: auto;
+            text-align: left;
+        }
+
+        .options-panel .opt-row {
+            position: relative;
+            overflow: visible;
+        }
+
+        .actions {
+            margin-top: 1.5rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            align-items: center;
+        }
+
+        .btn-primary {
+            appearance: none;
+            border: none;
+            border-radius: 10px;
+            padding: 0.75rem 1.375rem;
+            font-family: inherit;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #0a0e12;
+            background: linear-gradient(165deg, var(--accent), var(--accent-dim));
+            cursor: pointer;
+            box-shadow: 0 4px 20px rgba(61, 156, 240, 0.35);
+            transition: transform 0.15s, filter 0.15s, opacity 0.15s;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            filter: brightness(1.06);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary:active:not(:disabled) {
+            transform: translateY(0);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-ghost {
+            appearance: none;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0.6875rem 1.125rem;
+            font-family: inherit;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--muted);
+            background: transparent;
+            cursor: pointer;
+        }
+
+        .btn-ghost:hover:not(:disabled) {
+            color: var(--text);
+            border-color: var(--muted);
+        }
+
+        .btn-ghost:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .options-toggle {
+            margin-top: 1.25rem;
+        }
+
+        .options-panel {
+            margin-top: 1rem;
+        }
+
+        .options-alert {
+            padding: 0.75rem 1rem;
+            border-radius: 10px;
+            border: 1px solid rgba(232, 184, 74, 0.45);
+            background: rgba(232, 184, 74, 0.1);
+            color: #f5e6c8;
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+        }
+
+        .tasks-card {
+            overflow: visible;
+        }
+
+        .tasks-card .card-body {
+            padding: 0;
+        }
+
+        .tasks-header {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .tasks-header h2 {
+            margin: 0 0 0.25rem;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .tasks-header .sub {
+            margin: 0;
+            font-size: 0.8125rem;
+            color: var(--muted);
+            line-height: 1.45;
+        }
+
+        .tasks-body {
+            padding: 1rem 1.25rem 1.5rem;
+            max-height: min(70vh, 640px);
+            overflow-y: auto;
+        }
+
+        .tasks-body > .alert-list {
+            margin-bottom: 1rem;
+        }
+
+        .tasks-body .alert {
+            padding: 0.75rem 1rem;
+            border-radius: 10px;
+            border: 1px solid rgba(232, 184, 74, 0.45);
+            background: rgba(232, 184, 74, 0.1);
+            color: #f5e6c8;
+            font-size: 0.9rem;
+        }
+
+        .tasks-body .empty-hint {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        .tasks-body .task {
+            position: relative;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1rem 1.125rem;
+            margin-bottom: 1rem;
+        }
+
+        .tasks-body .task:last-child {
+            margin-bottom: 0;
+        }
+
+        .tasks-body .task .taskItem {
+            font-size: 0.875rem;
+            margin-bottom: 0.35rem;
+            color: var(--text);
+        }
+
+        .tasks-body .task .taskItem a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        .tasks-body .task .taskItem a:hover {
+            text-decoration: underline;
+        }
+
+        .tasks-body .task .statusIcon {
+            position: absolute;
+            right: 1rem;
+            top: 1rem;
+            font-size: 1.25rem;
+            line-height: 1;
+        }
+
+        .tasks-body .task .consoleOutput {
+            background: #0a0e12;
+            color: #c8d4e0;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-top: 0.5rem;
+        }
+
+        .tasks-body .task .actionButtons .btn-task {
+            appearance: none;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.4rem 0.75rem;
+            font-family: inherit;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            color: var(--text);
+            background: var(--surface);
+            cursor: pointer;
+            margin-left: 0.35rem;
+            margin-top: 10px;
+        }
+
+        .tasks-body .task .actionButtons .btn-task:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .tasks-body .task .alert {
+            margin-top: 0.5rem;
+        }
+
+        .tasks-body .pulsePositive {
+            animation: pulsatePositiveDark 2s ease-out;
+            animation-iteration-count: 1;
+        }
+
+        @keyframes pulsatePositiveDark {
+            0% { background-color: var(--surface-2); }
+            50% { background-color: rgba(62, 207, 142, 0.2); }
+            100% { background-color: var(--surface-2); }
+        }
+
+        .tasks-body .pulseNegative {
+            animation: pulsateNegativeDark 2s ease-out;
+            animation-iteration-count: 1;
+        }
+
+        @keyframes pulsateNegativeDark {
+            0% { background-color: var(--surface-2); }
+            50% { background-color: rgba(224, 122, 122, 0.2); }
+            100% { background-color: var(--surface-2); }
+        }
+
+        .spinning {
+            display: inline-block;
+            animation: spin 3s infinite linear;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-line {
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        #options .selectBox select {
+            width: 100%;
+        }
+
+        #options .checkbox {
+            margin-right: 0;
+        }
+
+        .project-name-section .project-name-hint {
+            margin: 0 0 0.5rem;
+            font-size: 0.8125rem;
+            color: var(--muted);
+            line-height: 1.45;
+            max-width: 42ch;
+        }
+
+        .project-name-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .project-name-row .ndm-input {
+            flex: 1 1 200px;
+            min-width: 0;
+        }
+
+        fieldset.preset-fieldset {
+            border: none;
+            border-left: 4px solid var(--accent);
+            margin: 0;
+            padding: 0 0 0 1rem;
+        }
+
+        fieldset.preset-fieldset legend {
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            margin-bottom: 0.75rem;
+        }
+
+        .option-row {
+            display: flex;
+            flex-direction: column;
+            gap: 0.625rem;
+        }
+
+        .radio-pill {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.75rem;
+            padding: 0.875rem 1rem;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--surface-2);
+            cursor: pointer;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .radio-pill:has(input:checked) {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 1px var(--accent);
+        }
+
+        .radio-pill input {
+            margin-top: 0.2rem;
+            accent-color: var(--accent);
+        }
+
+        .radio-pill .label {
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .radio-pill .desc {
+            display: block;
+            font-size: 0.8125rem;
+            font-weight: 400;
+            color: var(--muted);
+            margin-top: 0.125rem;
+        }
+
+        .checkbox-row .desc {
+            display: block;
+            font-size: 0.8125rem;
+            color: var(--muted);
+            margin-top: 0.125rem;
+        }
+
+        .ndm-map-panel {
+            margin-top: 0;
+            overflow: hidden;
+        }
+
+        .ndm-map-panel .map-header {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .ndm-map-panel .map-header h2 {
+            margin: 0 0 0.25rem;
+            font-size: 1rem;
+            font-weight: 600;
+        }
+
+        .ndm-map-panel .map-header .sub {
+            margin: 0;
+            font-size: 0.8125rem;
+            color: var(--muted);
+            line-height: 1.45;
+        }
+
+        .ndm-map-panel .map-header .sub.loading {
+            color: var(--accent);
+        }
+
+        #mapGps {
+            height: min(42vh, 440px);
+            min-height: 260px;
+            width: 100%;
+            background: var(--surface-2);
+        }
+
+        .leaflet-container {
+            font-family: "DM Sans", system-ui, sans-serif;
+        }
+
+        .map-popup {
+            font-size: 13px;
+            line-height: 1.45;
+        }
+
+        .map-popup strong {
+            color: #1a222d;
+        }
+
+        .map-marker-wrap {
+            background: transparent;
+            border: none;
+        }
+
+        .map-pin {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid #0f141a;
+            background: #3d9cf0;
+            box-shadow: 0 0 0 2px rgba(61, 156, 240, 0.25);
         }
     </style>
-    <link rel="stylesheet" href="css/main.css?t=1">
-
-    <script src="js/vendor/modernizr-2.8.3.min.js"></script>
 </head>
-
 <body>
-    <!--[if lt IE 8]>
-            <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="http://browsehappy.com/">upgrade your browser</a> to improve your experience.</p>
-        <![endif]-->
-    <div class="container-fluid">
-        <div class="row" id="body-row">
-            <div class="col-xs-12 col-sm-4">
-                <form enctype="multipart/form-data" onsubmit="return false;">
-                    <div id="app">
-                        <div id="imagesInput" class="form-group" data-bind="visible: mode() === 'file'">
-                            <div id="images">Images and GCP File (optional):</div> <button id="btnSelectFiles" class="btn btn-default btn-sm" data-bind="attr: {disabled: uploading()}">Add Files...</button>
-                            <div data-bind="visible: filesCount() && !uploading()">Selected files: <span data-bind="text: filesCount()"></span></div>
-                            <div data-bind="visible: uploading()" class="progress" style="margin-top: 12px;">
-                                <div class="progress-bar progress-bar-success" role="progressbar" data-bind="text: uploadedFiles() + ' / ' + filesCount() + ' files', style: {width: uploadedPercentage()}">
+    <div class="shell">
+        <header class="page-header">
+            <h1>New processing job</h1>
+            <p>Upload images and optional GCP files, tune options, then start a task. Running jobs appear in the panel on the right.</p>
+            <p class="page-header__featureline"><strong>Processing</strong> (3D vs Ortho) and <strong>Save raw inputs</strong> sit under the file or ZIP row, above <strong>Start task</strong>. The <strong>Image locations</strong> map is below the task list.</p>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <div class="card-body">
+                    <form enctype="multipart/form-data" onsubmit="return false;">
+
+                        <div id="app">
+                            <section class="section" data-bind="visible: mode() === 'file'">
+                                <span class="ndm-label">Images &amp; GCP (optional)</span>
+                                <div id="images" class="drop-zone dropzone"></div>
+                                <p class="file-meta" data-bind="visible: filesCount() && !uploading()">Selected: <strong data-bind="text: filesCount()"></strong> file(s)</p>
+                                <div class="file-panel" id="ndmFilePanel" hidden>
+                                    <ul class="file-list" id="ndmFileList"></ul>
                                 </div>
-                            </div>
-                            <div data-bind="visible: uploading()" style="min-height: 230px;">
-                                <div data-bind="foreach: fileUploadStatus.items">
-                                    <div class="progress">
-                                        <div class="progress-bar progress-bar-info" role="progressbar" data-bind="text: key() + ': ' + parseInt(value()) + '%', style: {width: value() + '%'}"></div>
+                                <div data-bind="visible: uploading()">
+                                    <div class="ndm-progress">
+                                        <div class="ndm-progress__bar" role="progressbar" data-bind="text: uploadedFiles() + ' / ' + filesCount() + ' files', style: {width: uploadedPercentage()}"></div>
+                                    </div>
+                                    <div class="upload-detail" data-bind="foreach: fileUploadStatus.items">
+                                        <div class="ndm-progress" style="margin-top: 0.5rem;">
+                                            <div class="ndm-progress__bar ndm-progress__bar--file" role="progressbar" data-bind="text: key() + ': ' + parseInt(value()) + '%', style: {width: value() + '%'}"></div>
+                                        </div>
                                     </div>
                                 </div>
-                            </div>
-                        </div>
-                        <div id="zipFileInput" class="form-group" data-bind="visible: mode() === 'url'">
-                            <label for="zipurl">URL to zip file with Images and GCP File (optional):</label> <input id="zipurl" name="zipurl" class="form-control" type="text" data-bind="attr: {disabled: uploading()}" >
-                            <div data-bind="visible: uploading()">
-                                Uploading...
-                            </div>
-                        </div>
-                        <div id="errorBlock" data-bind="visible: error().length > 0, click: dismissError">⚠️ <span data-bind="text: error"></span></div>
-                        <hr/>
-                        <div class="text-right">
-                            <!--<input type="button" class="btn btn-info" data-bind="visible: mode() === 'file', click: toggleMode" value="Switch to URL" />
-                            <input type="button" class="btn btn-info" data-bind="visible: mode() === 'url', click: toggleMode" value="Switch to File Upload" />
-                            -->
-                            <input type="submit" class="btn btn-success" data-bind="attr: {disabled: uploading()}, value: uploading() ? 'Uploading...' : 'Start Task', click: startTask" />
-                        </div>
-                    </div>
-                    <div id="options">
-                        <div class="form-inline form-group form-horizontal">
-                            <div data-bind="visible: error(), text: error()" class="alert alert-warning" role="alert"></div>
-                            <button style="position: relative; top: -45px;" type="submit" class="btn btn-default" data-bind="visible: !error(), click: function(){ showOptions(!showOptions()); }, text: (showOptions() ? 'Hide' : 'Show') + ' Options'"></button>
+                                <p class="mode-switch" data-bind="visible: mode() === 'file'">
+                                    <button type="button" data-bind="click: toggleMode, attr: {disabled: uploading()}">Use ZIP URL instead</button>
+                                </p>
+                            </section>
 
-                            <div data-bind="visible: showOptions()">
-                                <div>
-                                    <label for="taskName">Project Name:</lable> 
-                                    <br/>
-                                    <input type="text" class="form-control" value="" id="taskName" />
-                                    <button type="submit" class="btn glyphicon glyphicon-info-sign btn-info" data-toggle="tooltip" data-placement="top" title="Assign a name to the project." ></button>
-                                    <button id="resetTaskName" type="submit" class="btn glyphicon glyphicon glyphicon-repeat btn-default" data-toggle="tooltip" data-placement="top" title="Reset to default"  ></button>
-                                    <br/><br/>
+                            <section class="section" data-bind="visible: mode() === 'url'">
+                                <label class="ndm-label" for="zipurl">ZIP URL (images + optional GCP)</label>
+                                <input id="zipurl" name="zipurl" class="ndm-input zip-field" type="text" data-bind="attr: {disabled: uploading()}" placeholder="https://…">
+                                <div data-bind="visible: uploading()" class="file-meta" style="margin-top:0.75rem">Uploading…</div>
+                                <p class="mode-switch">
+                                    <button type="button" data-bind="click: toggleMode, attr: {disabled: uploading()}">Switch to file upload</button>
+                                </p>
+                            </section>
 
-                                    <label for="doPostProcessing">generate 2D and potree point cloud tiles:</label>
-                                    <br/>
-
-                                    
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" id="doPostProcessing"> Enable
+                            <section class="section">
+                                <fieldset class="preset-fieldset">
+                                    <legend>Processing</legend>
+                                    <div class="option-row">
+                                        <label class="radio-pill">
+                                            <input type="radio" name="ndmProcessing" value="3d" checked>
+                                            <span>
+                                                <span class="label">3D reconstruction</span>
+                                                <span class="desc">Dense point cloud, mesh, and related outputs.</span>
+                                            </span>
+                                        </label>
+                                        <label class="radio-pill">
+                                            <input type="radio" name="ndmProcessing" value="ortho">
+                                            <span>
+                                                <span class="label">Ortho only</span>
+                                                <span class="desc">Orthophoto / 2D-style products without full dense 3D (ODM fast orthophoto).</span>
+                                            </span>
                                         </label>
                                     </div>
-                                    <button type="submit" class="btn glyphicon glyphicon-info-sign btn-info" data-toggle="tooltip" data-placement="top" title="Generate 2D and Potree Point Cloud Tiles" ></button>
-                                    <button id="resetDoPostProcessing" type="submit" class="btn glyphicon glyphicon glyphicon-repeat btn-default" data-toggle="tooltip" data-placement="top" title="Reset to default"  ></button>
-                                    
-                                    <br/><br/>
-                                    
+                                </fieldset>
+                            </section>
+
+                            <section class="section">
+                                <label class="checkbox-row" for="saveRawInputs">
+                                    <input type="checkbox" id="saveRawInputs" checked>
+                                    <span>
+                                        <span class="label">Save raw inputs</span>
+                                        <span class="desc">Keep heavier intermediate data on the server. Turn off to pass ODM’s disk-space optimization (drops some intermediates; uploads stay in the task folder).</span>
+                                    </span>
+                                </label>
+                            </section>
+
+                            <div id="errorBlock" class="error-block" data-bind="visible: error().length > 0, click: dismissError">⚠️ <span data-bind="text: error"></span></div>
+
+                            <section class="section project-name-section">
+                                <label class="ndm-label" for="taskName">Project name</label>
+                                <p class="project-name-hint">Add a title so this job is easy to find in the task list (optional but recommended).</p>
+                                <div class="project-name-row">
+                                    <input type="text" class="ndm-input" id="taskName" name="taskName" autocomplete="off" placeholder="e.g. North field survey, Client site ortho">
+                                    <span class="opt-actions">
+                                        <button type="button" class="btn-icon" id="resetTaskName" title="Clear project name">↺</button>
+                                    </span>
+                                </div>
+                            </section>
+
+                            <div class="actions">
+                                <button type="button" class="btn-primary" data-bind="attr: {disabled: uploading()}, text: uploading() ? 'Uploading…' : 'Start task', click: startTask"></button>
+                                <button type="button" class="btn-ghost" id="btnClearFiles" data-bind="attr: {disabled: uploading()}">Clear files</button>
+                            </div>
+                        </div>
+
+                        <div id="options">
+                            <div class="options-toggle">
+                                <button type="button" class="btn-ghost" data-bind="visible: !error(), click: function(){ showOptions(!showOptions()); }, text: (showOptions() ? 'Hide' : 'Show') + ' options'"></button>
+                            </div>
+                            <div class="options-panel" data-bind="visible: showOptions()">
+                                <div class="options-alert" role="alert" data-bind="visible: error(), text: error()"></div>
+
+                                <div class="section">
+                                    <label class="checkbox-row" for="doPostProcessing">
+                                        <input type="checkbox" id="doPostProcessing">
+                                        <span>
+                                            <span class="label">Generate 2D and Potree point cloud tiles</span>
+                                            <span class="desc" style="display:block;font-size:0.8125rem;color:var(--muted);margin-top:0.125rem">Post-process outputs for web viewers when enabled.</span>
+                                        </span>
+                                    </label>
+                                    <div class="opt-actions" style="margin-top:0.5rem;margin-bottom:1rem">
+                                        <button type="button" class="btn-icon" title="Generate 2D and Potree Point Cloud Tiles">i</button>
+                                        <button type="button" class="btn-icon" id="resetDoPostProcessing" title="Reset to default">↺</button>
+                                    </div>
+
+                                    <div class="opt-row">
+                                        <div class="opt-head">
+                                            <label class="field-label" for="webhook">Webhook URL (optional)</label>
+                                            <span class="opt-actions">
+                                                <button type="button" class="btn-icon" title="Optional webhook callback URL">i</button>
+                                                <button type="button" class="btn-icon" id="resetWebhook" title="Reset to default">↺</button>
+                                            </span>
+                                        </div>
+                                        <input id="webhook" name="webhook" class="ndm-input" type="text" placeholder="https://…">
+                                    </div>
                                 </div>
 
-                                <div>
-                                    <label for="webhook">webhook callback url (optional):</label>
-                                    <br/>
-                                     <input id="webhook" name="webhook" class="form-control" type="text">
-                                    <button type="submit" class="btn glyphicon glyphicon-info-sign btn-info" data-toggle="tooltip" data-placement="top" title="Optional webhook" ></button>
-                                    <button id="resetWebhook" type="submit" class="btn glyphicon glyphicon glyphicon-repeat btn-default" data-toggle="tooltip" data-placement="top" title="Reset to default"  ></button>
-                                    <br/><br/>
-                                </div>
-
-                                <div data-bind="foreach: options">
-                                    <label data-bind="text: properties.name + (properties.domain ? ' (' + properties.domain + ')' : '')"></label><br/>
-                                    <!-- ko if: properties.type !== 'bool' && properties.type !== 'enum' -->
-                                    <input type="text" class="form-control" data-bind="attr: {placeholder: properties.value}, value: value">
-                                    <!-- /ko -->
-                                    <!-- ko if: properties.type === 'bool' -->
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" data-bind="checked: value"> Enable
+                                <div class="section" data-bind="foreach: options">
+                                    <!-- ko if: properties.name !== 'fast-orthophoto' && properties.name !== 'optimize-disk-space' -->
+                                    <div class="opt-row">
+                                        <div class="opt-head">
+                                            <label class="field-label" data-bind="attr: {for: 'opt_' + properties.name, title: domainTooltipText}, text: properties.name"></label>
+                                            <span class="opt-actions">
+                                                <button type="button" class="btn-icon" data-bind="attr: {title: properties.help}">i</button>
+                                                <button type="button" class="btn-icon" title="Reset to default" data-bind="click: resetToDefault">↺</button>
+                                            </span>
+                                        </div>
+                                        <!-- ko if: properties.type !== 'bool' && properties.type !== 'enum' -->
+                                        <input class="ndm-input" data-bind="attr: {id: 'opt_' + properties.name, placeholder: properties.value}, value: value">
+                                        <!-- /ko -->
+                                        <!-- ko if: properties.type === 'bool' -->
+                                        <label class="checkbox-row" data-bind="attr: {for: 'opt_cb_' + properties.name}">
+                                            <input type="checkbox" data-bind="attr: {id: 'opt_cb_' + properties.name}, checked: value">
+                                            <span><span class="label">Enable</span></span>
                                         </label>
+                                        <!-- /ko -->
+                                        <!-- ko if: properties.type === 'enum' -->
+                                        <div class="selectBox">
+                                            <select class="ndm-select" data-bind="attr: {id: 'opt_' + properties.name}, options: properties.domain, value: value"></select>
+                                        </div>
+                                        <!-- /ko -->
                                     </div>
                                     <!-- /ko -->
-                                    <!-- ko if: properties.type === 'enum' -->
-                                    <div class="selectBox">
-                                        <label>
-                                            <select class="form-control" data-bind="options: properties.domain, value: value"></select>
-                                        </label>
-                                    </div>
-                                    <!-- /ko -->
-                                    <button type="submit" class="btn glyphicon glyphicon-info-sign btn-info" data-toggle="tooltip" data-placement="top" data-bind="attr: {title: properties.help}"></button>
-                                    <button type="submit" class="btn glyphicon glyphicon glyphicon-repeat btn-default" data-toggle="tooltip" data-placement="top" title="Reset to default" data-bind="click: resetToDefault"></button>
-
-                                    <br/><br/>
                                 </div>
                             </div>
                         </div>
-                    </div>
-                </form>
+                    </form>
+                </div>
             </div>
-            <div class="col-xs-12 col-sm-8" id="taskList">
-                <div data-bind="visible: error() != ''">
-                    <div class="alert alert-warning" role="alert" data-bind="text: error()"></div>
-                </div>
-                <div data-bind="visible: loading()">
-                    Loading task list... <span class="glyphicon glyphicon-refresh spinning"></span>
-                </div>
-                <p data-bind="visible: !loading() && tasks().length === 0">No running tasks.</p>
-                <div data-bind="foreach: tasks">
-                    <div class="task" data-bind="css: {pulsePositive: info().status && info().status.code === 40, pulseNegative: info().status && info().status.code === 30}">
-                        <p data-bind="visible: loading()">Retrieving <span data-bind="text: uuid"></span> ... <span class="glyphicon glyphicon-refresh spinning"></span></p>
-                        <div data-bind="visible: !loading() && !info().error">
-                            <div class="taskItem"><strong>UUID:</strong>
-                                <a data-bind="text: info().uuid, click: openInfo" href="#"></a>
-                            </div>
-                            <div class="taskItem"><strong>Name:</strong> <span data-bind="text: info().name"></span></div>
-                            <div class="taskItem"><strong>Images:</strong> <span data-bind="text: info().imagesCount"></span></div>
-                            <div class="taskItem"><strong>Status:</strong> <span data-bind="text: statusDescr()"></span></div>
-                            <div class="taskItem"><strong>Time Elapsed:</strong> <span data-bind="text: timeElapsed()"></span></div>
-                            <div class="taskItem"><strong>Console Output:</strong> <a href="javascript:void(0);" data-bind="click: viewOutput, visible: !viewingOutput()">View</a><a href="javascript:void(0);" data-bind="click: hideOutput, visible: viewingOutput()">Hide</a> | <a href="#" data-bind="click: downloadOutput">Export</a></a></div>
-                            <textarea class="consoleOutput" data-bind="value: output().join('\n'), visible: viewingOutput(), event: {mouseover: consoleMouseOver, mouseout: consoleMouseOut}, attr: {id: 'console_' + uuid}"></textarea>
-                            
-                            <div data-bind="visible: showDownload()" style="float: left; margin-top: 6px; padding-top: 6px; border-top: 1px solid #eee;">
-                                <div class="taskItem"><strong>Download: </strong> <a data-bind="attr: {'href': downloadLink()}">All Assets</a></div>
-                            </div>
 
-                            <span data-bind="css: 'statusIcon glyphicon ' + icon()"></span>
+            <div class="side-stack">
+                <section class="card ndm-map-panel" id="ndmGpsPanel" aria-label="GPS preview from queued upload files">
+                    <div class="map-header">
+                        <h2>Image locations</h2>
+                        <p class="sub" id="mapGpsStatus">Add images in the drop zone to read GPS from EXIF.</p>
+                    </div>
+                    <div id="mapGps" role="application" aria-label="Map of image GPS positions from EXIF"></div>
+                </section>
 
-                            <div data-bind="visible: info().status && info().status.code === 20" class="progress" style="margin-top: 12px;">
-                                <div class="progress-bar progress-bar-info" role="progressbar" data-bind="text: parseInt(info().progress) + '%', style: {width: info().progress + '%'}"></div>
-                            </div>
-
-                            <div class="actionButtons">
-                                <button data-bind="click: cancel, visible: showCancel()" type="button" class="btn btn-primary btn-sm">
-                                    <span class="glyphicon glyphicon-remove-circle"></span> Cancel
-                                </button>
-
-                                <button data-bind="click: restart, visible: showRestart()" type="button" class="btn btn-primary btn-sm">
-                                    <span class="glyphicon glyphicon-play"></span> Restart
-                                </button>
-
-                                <button data-bind="click: remove, visible: showRemove()" type="button" class="btn btn-primary btn-sm">
-                                    <span class="glyphicon glyphicon-remove-circle"></span> Remove
-                                </button>
-                            </div>
+                <div class="card tasks-card" id="taskList">
+                    <div class="card-body">
+                        <div class="tasks-header">
+                            <h2>Tasks</h2>
+                            <p class="sub">Status updates every few seconds. Open the UUID link for raw JSON task info.</p>
                         </div>
+                        <div class="tasks-body">
+                            <div class="alert-list" data-bind="visible: error() != ''">
+                                <div class="alert" role="alert" data-bind="text: error()"></div>
+                            </div>
+                            <p class="loading-line" data-bind="visible: listLoadingSlow()">Loading task list… <span class="spinning" aria-hidden="true">⟳</span></p>
+                            <p class="empty-hint" data-bind="visible: !listLoading() && tasks().length === 0">No tasks yet.</p>
+                            <div data-bind="foreach: tasks">
+                                <div class="task" data-bind="css: {pulsePositive: info().status && info().status.code === 40, pulseNegative: info().status && info().status.code === 30}">
+                                    <div data-bind="visible: info().status && !info().error">
+                                        <div class="taskItem"><strong>UUID:</strong>
+                                            <a data-bind="text: info().uuid, click: openInfo" href="#"></a>
+                                        </div>
+                                        <div class="taskItem"><strong>Name:</strong> <span data-bind="text: info().name"></span></div>
+                                        <div class="taskItem"><strong>Images:</strong> <span data-bind="text: info().imagesCount"></span></div>
+                                        <div class="taskItem"><strong>Status:</strong> <span data-bind="text: statusDescr()"></span></div>
+                                        <div class="taskItem"><strong>Time elapsed:</strong> <span data-bind="text: timeElapsed()"></span></div>
+                                        <div class="taskItem"><strong>Console output:</strong> <a href="javascript:void(0);" data-bind="click: viewOutput, visible: !viewingOutput()">View</a><a href="javascript:void(0);" data-bind="click: hideOutput, visible: viewingOutput()">Hide</a> | <a href="#" data-bind="click: downloadOutput">Export</a></div>
+                                        <textarea class="consoleOutput" data-bind="value: output().join('\n'), visible: viewingOutput(), event: {mouseover: consoleMouseOver, mouseout: consoleMouseOut}, attr: {id: 'console_' + uuid}"></textarea>
 
-                        <!-- Error messages -->
-                        <div data-bind="visible: info().error !== undefined">
-                            <div class="alert alert-warning" role="alert" data-bind="text: info().error"></div>
-                            <div class="actionButtons">
-                                <button data-bind="click: remove" type="button" class="btn btn-primary btn-sm">
-                                    <span class="glyphicon glyphicon-remove-circle"></span> Remove
-                                </button>
+                                        <div data-bind="visible: showDownload()" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border);">
+                                            <div class="taskItem"><strong>Download:</strong> <a data-bind="attr: {'href': downloadLink()}">All assets (ZIP)</a></div>
+                                        </div>
+
+                                        <span class="statusIcon" data-bind="text: iconSymbol(), css: { spinning: info().status && info().status.code === 20 }"></span>
+
+                                        <div data-bind="visible: info().status && info().status.code === 20" style="margin-top: 0.75rem;">
+                                            <div class="ndm-progress">
+                                                <div class="ndm-progress__bar ndm-progress__bar--file" role="progressbar" data-bind="text: parseInt(info().progress) + '%', style: {width: info().progress + '%'}"></div>
+                                            </div>
+                                        </div>
+
+                                        <div class="actionButtons">
+                                            <button data-bind="click: cancel, visible: showCancel()" type="button" class="btn-task">Cancel</button>
+                                            <button data-bind="click: restart, visible: showRestart()" type="button" class="btn-task">Restart</button>
+                                            <button data-bind="click: remove, visible: showRemove()" type="button" class="btn-task">Remove</button>
+                                        </div>
+                                    </div>
+
+                                    <div data-bind="visible: info().error !== undefined">
+                                        <div class="alert" role="alert" data-bind="text: info().error"></div>
+                                        <div class="actionButtons">
+                                            <button data-bind="click: remove" type="button" class="btn-task">Remove</button>
+                                        </div>
+                                    </div>
+                                    <p class="taskItem loading-line" style="margin:0;color:var(--muted)" data-bind="visible: !info().status && info().error === undefined">Fetching status for <span data-bind="text: uuid"></span>…</p>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -214,16 +1088,16 @@
             </div>
         </div>
     </div>
-    <!-- /container -->
+
     <script src="//ajax.googleapis.com/ajax/libs/jquery/1.11.2/jquery.min.js"></script>
     <script>
         window.jQuery || document.write('<script src="js/vendor/jquery-1.11.2.min.js"><\/script>')
     </script>
-    <script src="js/vendor/bootstrap.min.js"></script>
     <script src="js/vendor/knockout-3.4.0.js"></script>
     <script src="js/vendor/ko.observableDictionary.js"></script>
     <script src="js/dropzone.js" type="text/javascript"></script>
-    <script src="js/main.js?t=2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="js/main.js?t=13"></script>
 </body>
-
 </html>

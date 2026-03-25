@@ -105,7 +105,7 @@ jobs:
                 ${{ env.IMAGE_NAME }}:latest \
                 --gcs_bucket nodeodm-outputs-v1 \
                 --gcs_upload_prefix outputs \
-                --gcs_upload_paths 'orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif' \
+                --gcs_upload_paths '.' \
                 --gcs_cleanup_after_upload \
                 --max_concurrency 6
               

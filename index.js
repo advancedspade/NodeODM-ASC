@@ -46,7 +46,25 @@ const taskNew = require('./libs/taskNew');
 app.use(cors())
 app.options('*', cors())
 
-app.use(express.static('public'));
+const publicDir = path.join(__dirname, 'public');
+function sendWebUiIndex(res) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+    res.sendFile(path.join(publicDir, 'index.html'));
+}
+app.get('/', (req, res) => sendWebUiIndex(res));
+app.get('/index.html', (req, res) => sendWebUiIndex(res));
+
+app.use(express.static(publicDir, {
+    etag: true,
+    setHeaders(res, filepath) {
+        if (path.basename(filepath) === 'index.html') {
+            res.setHeader('Cache-Control', 'no-store');
+        }
+    }
+}));
 app.use('/swagger.json', express.static('docs/swagger.json'));
 
 const formDataParser = multer().none();

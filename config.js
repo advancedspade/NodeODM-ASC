@@ -64,7 +64,7 @@ GCS (Google Cloud Storage) Options:
 	--gcs_project_id <id>	GCS project ID. (default: auto-detect from credentials)
 	--gcs_key_path <path>	Path to GCS service account JSON key file. (default: use default credentials)
 	--gcs_parallel_uploads <number>	Number of parallel file uploads to GCS. (default: 16)
-	--gcs_upload_paths <paths>	Comma-separated list of paths to upload to GCS. (default: orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif)
+	--gcs_upload_paths <paths>	Comma-separated list of paths to upload to GCS. Use "." for entire task folder. (default: .)
 	--gcs_upload_prefix <prefix>	Prefix path in GCS bucket (e.g., 'outputs' results in gs://bucket/outputs/task-uuid/). (default: none)
 	--gcs_cleanup_after_upload	Delete local files after successful GCS upload. (default: false)
 
@@ -160,9 +160,10 @@ config.dockerMemoryLimit = argv.docker_memory_limit || fromConfigFile("dockerMem
 // GCS (Google Cloud Storage) configuration
 config.gcsBucket = argv.gcs_bucket || fromConfigFile("gcsBucket", process.env.GCS_BUCKET || "");
 config.gcsProjectId = argv.gcs_project_id || fromConfigFile("gcsProjectId", process.env.GCS_PROJECT_ID || "");
-config.gcsKeyPath = argv.gcs_key_path || fromConfigFile("gcsKeyPath", process.env.GOOGLE_APPLICATION_CREDENTIALS || "");
+config.gcsKeyPath = argv.gcs_key_path || fromConfigFile("gcsKeyPath",
+	process.env.GCS_KEY_PATH || process.env.GOOGLE_APPLICATION_CREDENTIALS || "");
 config.gcsParallelUploads = parseInt(argv.gcs_parallel_uploads || fromConfigFile("gcsParallelUploads", 16));
-config.gcsUploadPaths = argv.gcs_upload_paths || fromConfigFile("gcsUploadPaths", "orthophoto_tiles,odm_orthophoto/odm_orthophoto.tif");
+config.gcsUploadPaths = argv.gcs_upload_paths || fromConfigFile("gcsUploadPaths", ".");
 config.gcsUploadPrefix = argv.gcs_upload_prefix || fromConfigFile("gcsUploadPrefix", "");
 // Boolean flag - check for explicit true/false or presence of flag
 config.gcsCleanupAfterUpload = argv.gcs_cleanup_after_upload === true || 

@@ -304,14 +304,72 @@ module.exports = class Task{
         };
 
         const postProcess = () => {
+            const archiveSourcePath = !config.test ?
+                this.getProjectFolderPath() :
+                path.join("tests", "processing_results");
+
+            // Always zip the whole project folder (every top-level entry except all.zip).
+            // The API `outputs` field is not used for all.zip — it caused partial archives.
+            // Paths are computed immediately before zipping (after postprocess.sh) so the
+            // list matches what is on disk at archive time.
+            const buildArchivePathList = () => {
+                let list;
+                try {
+                    list = fs.readdirSync(archiveSourcePath).filter(name =>
+                        name !== "all.zip" && name !== "." && name !== "..");
+                } catch (e) {
+                    logger.error(`Cannot read project folder for archive: ${e.message}`);
+                    return [];
+                }
+
+                if (config.test && config.testSkipOrthophotos){
+                    logger.info("Test mode will skip orthophoto generation");
+                    [
+                        "orthophoto_tiles",
+                        "odm_orthophoto",
+                        "odm_orthophoto/odm_orthophoto.tif",
+                        "odm_orthophoto/odm_orthophoto.mbtiles"
+                    ].forEach(p => {
+                        const i = list.indexOf(p);
+                        if (i !== -1) list.splice(i, 1);
+                    });
+                }
+
+                if (config.test && config.testSkipDems){
+                    logger.info("Test mode will skip DEMs generation");
+                    [
+                        "odm_dem",
+                        "dsm_tiles",
+                        "dtm_tiles",
+                        "odm_dem/dsm.tif",
+                        "odm_dem/dtm.tif"
+                    ].forEach(p => {
+                        const i = list.indexOf(p);
+                        if (i !== -1) list.splice(i, 1);
+                    });
+                }
+
+                try {
+                    const imgDir = path.join(archiveSourcePath, "images");
+                    if (fs.existsSync(imgDir)) {
+                        const n = fs.readdirSync(imgDir).length;
+                        logger.info(`all.zip: including images/ (${n} entries at archive time). Original uploads are normally under this folder.`);
+                    } else {
+                        logger.warn("all.zip: images/ is missing at archive time — ODM may have removed uploads (e.g. --optimize-disk-space) or the dataset path differs. The zip only contains what exists on disk.");
+                    }
+                } catch (e) {
+                    logger.warn(`all.zip: could not check images/: ${e.message}`);
+                }
+
+                return list;
+            };
+
             const createZipArchive = (outputFilename, files) => {
                 return (done) => {
                     this.output.push(`Compressing ${outputFilename}\n`);
 
                     const zipFile = path.resolve(this.getAssetsArchivePath(outputFilename));
-                    const sourcePath = !config.test ?
-                                        this.getProjectFolderPath() :
-                                        path.join("tests", "processing_results");
+                    const sourcePath = archiveSourcePath;
 
                     const pathsToArchive = [];
                     files.forEach(f => {
@@ -319,6 +377,15 @@ module.exports = class Task{
                             pathsToArchive.push(f);
                         }
                     });
+
+                    if (pathsToArchive.length === 0){
+                        const err = new Error("No files or folders to add to archive (project folder empty or paths missing).");
+                        logger.error(err.message);
+                        done(err);
+                        return;
+                    }
+
+                    this.output.push(`all.zip: adding to 7z (${pathsToArchive.length} path(s)): ${pathsToArchive.join(", ")}`);
 
                     processRunner.sevenZip({
                         destination: zipFile,
@@ -342,6 +409,12 @@ module.exports = class Task{
                 return (done) => {
                     this.output.push(`Compressing ${outputFilename}\n`);
 
+                    if (!files || files.length === 0){
+                        done(new Error("No files or folders to add to archive."));
+                        return;
+                    }
+                    this.output.push(`all.zip: legacy archiver (${files.length} path(s)): ${files.join(", ")}`);
+
                     let output = fs.createWriteStream(this.getAssetsArchivePath(outputFilename));
                     let archive = archiver.create('zip', {
                             zlib: { level: 1 } // Sets the compression level (1 = best speed since most assets are already compressed)
@@ -361,12 +434,16 @@ module.exports = class Task{
                     archive.pipe(output);
                     let globs = [];
 
-                    const sourcePath = !config.test ?
-                                        this.getProjectFolderPath() :
-                                        path.join("tests", "processing_results");
+                    const sourcePath = archiveSourcePath;
 
                     // Process files and directories first
                     files.forEach(file => {
+                        if (file === '.'){
+                            // Archive the entire project folder at zip root.
+                            archive.directory(sourcePath, false);
+                            return;
+                        }
+
                         let filePath = path.join(sourcePath, file);
 
                         // Skip non-existing items
@@ -441,33 +518,15 @@ module.exports = class Task{
                 };
             }
 
-            // All paths are relative to the project directory (./data/<uuid>/)
-            // Only include orthophoto tiles and the main GeoTIFF in all.zip
-            let allPaths = ['odm_orthophoto/odm_orthophoto.tif',
-                              'orthophoto_tiles'];
-
-            // Did the user request different outputs than the default?
-            if (this.outputs.length > 0) allPaths = this.outputs;
-
             let tasks = [];
 
             if (config.test){
                 if (config.testSkipOrthophotos){
                     logger.info("Test mode will skip orthophoto generation");
-
-                    // Exclude these folders from the all.zip archive
-                    ['odm_orthophoto/odm_orthophoto.tif', 'odm_orthophoto/odm_orthophoto.mbtiles', 'orthophoto_tiles'].forEach(dir => {
-                        allPaths.splice(allPaths.indexOf(dir), 1);
-                    });
                 }
 
                 if (config.testSkipDems){
                     logger.info("Test mode will skip DEMs generation");
-
-                    // Exclude these folders from the all.zip archive
-                    ['odm_dem/dsm.tif', 'odm_dem/dtm.tif', 'dsm_tiles', 'dtm_tiles'].forEach(p => {
-                        allPaths.splice(allPaths.indexOf(p), 1);
-                    });
                 }
 
                 if (config.testSeconds){
@@ -495,15 +554,27 @@ module.exports = class Task{
             const taskOutputFile = path.join(this.getProjectFolderPath(), 'task_output.txt');
             tasks.push(saveTaskOutput(taskOutputFile));
 
-            const archiveFunc = config.has7z ? createZipArchive : createZipArchiveLegacy;
-            tasks.push(archiveFunc('all.zip', allPaths));
+            let pathsForSidecarUpload = null;
+            tasks.push((done) => {
+                pathsForSidecarUpload = buildArchivePathList();
+                if (this.outputs.length > 0){
+                    this.output.push(`all.zip: ignoring API outputs field (${this.outputs.length} path(s)); zipping full project folder.`);
+                }
+                if (pathsForSidecarUpload.length === 0){
+                    done(new Error("Nothing to archive: project folder has no entries to zip."));
+                    return;
+                }
+                this.output.push(`all.zip: ${pathsForSidecarUpload.length} top-level path(s): ${pathsForSidecarUpload.slice(0, 40).join(", ")}${pathsForSidecarUpload.length > 40 ? "…" : ""}`);
+                const archiveFunc = config.has7z ? createZipArchive : createZipArchiveLegacy;
+                archiveFunc("all.zip", pathsForSidecarUpload)(done);
+            });
 
             // Upload to S3 all paths + all.zip file (if config says so)
             if (S3.enabled()){
                 tasks.push((done) => {
                     let s3Paths;
                     if (config.s3UploadEverything){
-                        s3Paths = ['all.zip'].concat(allPaths);
+                        s3Paths = ['all.zip'].concat(pathsForSidecarUpload || []);
                     }else{
                         s3Paths = ['all.zip'];
                     }

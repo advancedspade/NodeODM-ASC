@@ -1,0 +1,27 @@
+# Development: live-reload your working copy into the container (no rebuild for these paths).
+# Usage:
+#   docker compose -f docker-compose.dev.yml up --build
+#
+# With GCS uploads (bucket + SA key on host):
+#   export GCS_BUCKET=... GCS_SA_KEY_FILE=/path/to/key.json
+#   docker compose -f docker-compose.dev.yml -f docker-compose.gcs.yml up --build
+# UI (public/) and server files below update on save; refresh the browser. Restart the
+# container if you change package.json dependencies (then rebuild or npm install in container).
+
+services:
+  nodeodm:
+    build: .
+    image: nodeodm-asc-local:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./public:/var/www/public
+      - ./index.js:/var/www/index.js
+      - ./libs:/var/www/libs
+      - ./config.js:/var/www/config.js
+      - ./config-default.json:/var/www/config-default.json
+      - ./helpers:/var/www/helpers
+      - ./docs:/var/www/docs
+    # Appends to image ENTRYPOINT (node …/index.js); map host port 3000.
+    command: ["--port", "3000"]
+    restart: unless-stopped

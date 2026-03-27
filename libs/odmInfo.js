@@ -18,6 +18,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 "use strict";
 const odmRunner = require('./odmRunner');
 const config = require('../config');
+const { OPTION_UI_DEFAULTS, applyUiDefaultsToOptions } = require('./odmUiDefaults');
 const async = require('async');
 const assert = require('assert');
 const logger = require('./logger');
@@ -69,6 +70,7 @@ module.exports = {
 
     getOptions: function(done){
         if (odmOptions){
+            applyUiDefaultsToOptions(odmOptions);
             done(null, odmOptions);
             return;
         }
@@ -155,6 +157,9 @@ module.exports = {
                         name, type, value, domain, help
                     });
                 }
+
+                applyUiDefaultsToOptions(odmOptions);
+
                 done(null, odmOptions);
             }
         });
@@ -170,7 +175,31 @@ module.exports = {
         try{
             if (typeof options === "string") options = JSON.parse(options);
             if (!Array.isArray(options)) options = [];
-            
+
+            const normOptName = name => {
+                if (name == null || name === "") return "";
+                return String(name).replace(/^--+/, "").trim().toLowerCase();
+            };
+            const emptyish = v => {
+                if (v == null) return true;
+                if (typeof v === "string") return v.trim() === "";
+                if (Array.isArray(v)) return v.length === 0;
+                if (typeof v === "object") return Object.keys(v).length === 0;
+                return false;
+            };
+            const optionalPathOrJsonByName = n => {
+                const x = normOptName(n);
+                return x === "cameras" || x === "boundary";
+            };
+            const domainLooksJsonLike = domain => typeof domain === "string" && /json/i.test(domain.trim());
+
+            // Drop unset optional path/json fields (ClusterODM / WebODM sometimes send {}, odd casing, or "--name")
+            options = options.filter(o => {
+                if (!o || o.name == null) return true;
+                if (optionalPathOrJsonByName(o.name) && emptyish(o.value)) return false;
+                return true;
+            });
+
             let result = [];
             let errors = [];
             let addError = function(opt, descr){
@@ -248,14 +277,16 @@ module.exports = {
                     }
                 },
                 {
-                    regex: /^(json)$/,
+                    regex: /^(json|path or json|path_or_json)$/i,
                     validate: function(matches, value){
-                        try{
-                            if (typeof value !== 'string') return false;
-                            JSON.parse(value);
+                        const t = value == null ? "" : String(value).trim();
+                        if (t === "") return true;
+                        try {
+                            JSON.parse(t);
                             return true;
-                        }catch(e){
-                            return false;
+                        } catch (e) {
+                            // ODM --cameras / --boundary accept a file path or inline JSON
+                            return t.length > 0;
                         }
                     }
                 },
@@ -286,30 +317,56 @@ module.exports = {
             // Scan through all possible options
             let maxConcurrencyFound = false;
             let maxConcurrencyIsAnOption = false;
-            let tilesFound = false;
-            let tilesIsAnOption = false;
-            let cogFound = false;
-            let cogIsAnOption = false;
-            let matcherNeighborsFound = false;
-            let matcherNeighborsIsAnOption = false;
-            let orthophotoResolutionFound = false;
-            let orthophotoResolutionIsAnOption = false;
 
             for (let odmOption of odmOptions){
                 if (odmOption.name === 'max-concurrency') maxConcurrencyIsAnOption = true;
-                if (odmOption.name === 'tiles') tilesIsAnOption = true;
-                if (odmOption.name === 'cog') cogIsAnOption = true;
-                if (odmOption.name === 'matcher-neighbors') matcherNeighborsIsAnOption = true;
-                if (odmOption.name === 'orthophoto-resolution') orthophotoResolutionIsAnOption = true;
                 
                 // Was this option selected by the user?
                 /*jshint loopfunc: true */
-                let opt = options.find(o => o.name === odmOption.name);
+                let opt = options.find(o => o && normOptName(o.name) === normOptName(odmOption.name));
                 if (opt){
-                    try{
-                        // Convert to proper data type
+                    // --cameras / --boundary: ODM exposes inconsistent type/domain across releases.
+                    // Never run filterOptions checkDomain/typeConversion here — ODM validates the flag.
+                    if (optionalPathOrJsonByName(odmOption.name)) {
+                        if (emptyish(opt.value)) continue;
+                        let v = opt.value;
+                        if (v != null && typeof v === "object") {
+                            try {
+                                v = JSON.stringify(v);
+                            } catch (e) {
+                                v = String(v);
+                            }
+                        } else {
+                            v = String(v == null ? "" : v);
+                        }
+                        v = v.trim();
+                        if (v === "") continue;
+                        result.push({ name: odmOption.name, value: v });
+                        continue;
+                    }
 
-                        let value = typeConversion[odmOption.type](opt.value);
+                    const domainIsJsonLike = domainLooksJsonLike(odmOption.domain);
+                    try{
+                        if (domainIsJsonLike && emptyish(opt.value)) {
+                            continue;
+                        }
+
+                        const conv = typeConversion[odmOption.type] || typeConversion.string;
+                        let value = conv(opt.value);
+
+                        // Other optional JSON/path fields: coerce objects from JSON bodies
+                        if (domainIsJsonLike) {
+                            if (value != null && typeof value === "object") {
+                                try {
+                                    value = JSON.stringify(value);
+                                } catch (e) {
+                                    value = String(value);
+                                }
+                            }
+                            const s = value == null ? "" : String(value).trim();
+                            if (s === "") continue;
+                            value = s;
+                        }
 
                         // Domain check
                         if (odmOption.domain){
@@ -317,7 +374,7 @@ module.exports = {
                         }
                         
                         // Max concurrency check
-                        if (opt.name === 'max-concurrency'){
+                        if (normOptName(opt.name) === "max-concurrency"){
                             maxConcurrencyFound = true;
 
                             // Cap
@@ -326,109 +383,100 @@ module.exports = {
                             }
                         }
 
-                        // Track if tiles option was provided
-                        if (opt.name === 'tiles'){
-                            tilesFound = true;
-                        }
-
-                        // Track if cog option was provided
-                        if (opt.name === 'cog'){
-                            cogFound = true;
-                        }
-
-                        // Track if matcher-neighbors option was provided
-                        if (opt.name === 'matcher-neighbors'){
-                            matcherNeighborsFound = true;
-                        }
-
-                        // Track if orthophoto-resolution option was provided
-                        if (opt.name === 'orthophoto-resolution'){
-                            orthophotoResolutionFound = true;
-                        }
-
                         result.push({
                             name: odmOption.name,
                             value: value
                         });
                     }catch(e){
-                        addError(opt, e.message);						
+                        if (domainIsJsonLike && emptyish(opt.value)) {
+                            continue;
+                        }
+                        addError(opt, e.message);
                     }
                 }
             }
 
-            // Calculate safe max-concurrency based on memory and resolution
-            // High resolution (0.1 cm/pixel) requires ~2.5GB per thread
-            // Standard resolution (1-5 cm/pixel) requires ~1.2GB per thread
-            let calculatedMaxConcurrency = null;
-            
-            // Find orthophoto-resolution from result array (already processed)
+            let applyDefaultIfMissing = function(name){
+                if (result.find(r => r.name === name)) return;
+                const odmOption = odmOptions.find(o => o.name === name);
+                if (!odmOption || !Object.prototype.hasOwnProperty.call(OPTION_UI_DEFAULTS, name)) return;
+                try {
+                    let conv = typeConversion[odmOption.type](OPTION_UI_DEFAULTS[name]);
+                    if (odmOption.domain) checkDomain(odmOption.domain, conv);
+                    result.push({ name: odmOption.name, value: conv });
+                } catch (e) {
+                    logger.warn(`Cannot apply UI default for ${name}: ${e.message}`);
+                }
+            };
+
+            // So max-concurrency auto-calc sees the same resolution as later defaults
+            applyDefaultIfMissing("orthophoto-resolution");
+
+            // max-concurrency: OPTION_UI_DEFAULTS may show "8" in /options for UX, but applying that
+            // literally on small Docker limits causes OOM (137). When the client omits the key (see
+            // main.js getUserOptions), we derive threads from RAM. Values are always capped to safeConcurrencyCap.
             const orthophotoResolution = result.find(r => r.name === 'orthophoto-resolution');
             const resolution = orthophotoResolution ? parseFloat(orthophotoResolution.value) : 5.0;
-            
-            // If max-concurrency wasn't explicitly set, calculate it based on available memory
+            const os = require('os');
+            const totalMemoryGB = os.totalmem() / (1024 * 1024 * 1024);
+            const memoryPerThreadGB = resolution <= 0.2 ? 3.0 : 1.5;
+            const systemReserveGB = resolution <= 0.2 ? 4.5 : 2.5;
+            const availableMemoryGB = Math.max(0.5, totalMemoryGB - systemReserveGB);
+            const safeConcurrencyCap = Math.max(1, Math.floor(availableMemoryGB / memoryPerThreadGB));
+
             if (!maxConcurrencyFound && maxConcurrencyIsAnOption) {
+                let calculatedMaxConcurrency = safeConcurrencyCap;
                 if (config.maxConcurrency && config.maxConcurrency > 0) {
-                    // Use configured limit
-                    calculatedMaxConcurrency = config.maxConcurrency;
-                } else {
-                    // Auto-calculate based on resolution
-                    // For 0.1 cm/pixel: ~2.5GB per thread, reserve 4GB for system
-                    // For 1.0+ cm/pixel: ~1.2GB per thread, reserve 2GB for system
-                    const os = require('os');
-                    const totalMemoryGB = os.totalmem() / (1024 * 1024 * 1024);
-                    const memoryPerThreadGB = resolution <= 0.2 ? 2.5 : 1.2;
-                    const systemReserveGB = resolution <= 0.2 ? 4 : 2;
-                    const availableMemoryGB = totalMemoryGB - systemReserveGB;
-                    calculatedMaxConcurrency = Math.max(1, Math.floor(availableMemoryGB / memoryPerThreadGB));
-                    
-                    logger.info(`Auto-calculated max-concurrency: ${calculatedMaxConcurrency} (resolution: ${resolution} cm/pixel, total memory: ${totalMemoryGB.toFixed(1)}GB, available: ${availableMemoryGB.toFixed(1)}GB)`);
+                    calculatedMaxConcurrency = Math.min(config.maxConcurrency, safeConcurrencyCap);
                 }
-                
-                if (calculatedMaxConcurrency) {
-                    result.push({
-                        name: "max-concurrency",
-                        value: calculatedMaxConcurrency
-                    });
-                }
+                result.push({
+                    name: "max-concurrency",
+                    value: calculatedMaxConcurrency
+                });
+                logger.info(`max-concurrency: ${calculatedMaxConcurrency} (cap ${safeConcurrencyCap}, ortho ${resolution} cm/px, ~${totalMemoryGB.toFixed(1)}GB visible to Node — UI default "8" is not applied unless you send it)`);
             } else if (maxConcurrencyFound && config.maxConcurrency && config.maxConcurrency > 0) {
-                // User set max-concurrency, but we still need to cap it
                 const maxConcurrencyOption = result.find(r => r.name === 'max-concurrency');
                 if (maxConcurrencyOption) {
-                    maxConcurrencyOption.value = Math.min(maxConcurrencyOption.value, config.maxConcurrency);
+                    maxConcurrencyOption.value = Math.min(
+                        maxConcurrencyOption.value,
+                        config.maxConcurrency,
+                        safeConcurrencyCap
+                    );
                 }
             }
 
-            // Auto-enable tiles generation if not explicitly set
-            // This ensures orthophoto_tiles folder is always created
-            if (!tilesFound && tilesIsAnOption){
-                result.push({
-                    name: "tiles",
-                    value: true
-                });
+            const maxConcurrencyOption = result.find(r => r.name === 'max-concurrency');
+            if (maxConcurrencyOption && maxConcurrencyIsAnOption) {
+                const before = Number(maxConcurrencyOption.value);
+                if (!Number.isFinite(before)) {
+                    maxConcurrencyOption.value = safeConcurrencyCap;
+                } else {
+                    const capped = Math.max(1, Math.min(Math.floor(before), safeConcurrencyCap));
+                    if (capped < before) {
+                        logger.info(`max-concurrency capped ${before} → ${capped} (safe for ~${totalMemoryGB.toFixed(1)}GB, ${resolution} cm/px orthophoto)`);
+                    }
+                    maxConcurrencyOption.value = capped;
+                }
             }
 
-            // Auto-enable COG (Cloud Optimized GeoTIFF) if not explicitly set
-            if (!cogFound && cogIsAnOption){
-                result.push({
-                    name: "cog",
-                    value: true
-                });
-            }
-
-            // Set matcher-neighbors to 8 if not explicitly set
-            if (!matcherNeighborsFound && matcherNeighborsIsAnOption){
-                result.push({
-                    name: "matcher-neighbors",
-                    value: 8
-                });
-            }
-
-            // Set orthophoto-resolution to 0.1 cm/pixel if not explicitly set
-            if (!orthophotoResolutionFound && orthophotoResolutionIsAnOption){
-                result.push({
-                    name: "orthophoto-resolution",
-                    value: 0.1
-                });
+            for (const name of Object.keys(OPTION_UI_DEFAULTS)) {
+                if (name === "orthophoto-resolution") continue;
+                if (name === "max-concurrency") continue;
+                if (result.find(r => r.name === name)) continue;
+                const odmOption = odmOptions.find(o => o.name === name);
+                if (!odmOption) continue;
+                try {
+                    let conv = typeConversion[odmOption.type](OPTION_UI_DEFAULTS[name]);
+                    if (odmOption.domain) {
+                        checkDomain(odmOption.domain, conv);
+                    }
+                    result.push({
+                        name: odmOption.name,
+                        value: conv
+                    });
+                } catch (e) {
+                    logger.warn(`Cannot apply UI default for ${name}: ${e.message}`);
+                }
             }
 
             if (errors.length > 0) done(new Error(JSON.stringify(errors)));

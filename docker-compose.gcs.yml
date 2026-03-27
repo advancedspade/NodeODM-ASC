@@ -1,0 +1,18 @@
+# Optional overlay: enable GCS uploads for local dev.
+# Requires a service-account JSON key on the host.
+#
+# Example:
+#   export GCS_BUCKET=your-bucket-name
+#   export GCS_SA_KEY_FILE=/absolute/path/to/service-account.json
+#   export GCS_PROJECT_ID=your-gcp-project   # optional but recommended
+#   docker compose -f docker-compose.dev.yml -f docker-compose.gcs.yml up --build
+#
+services:
+  nodeodm:
+    environment:
+      GCS_BUCKET: ${GCS_BUCKET}
+      GCS_PROJECT_ID: ${GCS_PROJECT_ID:-}
+      GCS_UPLOAD_PATHS: ${GCS_UPLOAD_PATHS:-.}
+      GCS_KEY_PATH: /run/secrets/gcs-sa.json
+    volumes:
+      - ${GCS_SA_KEY_FILE}:/run/secrets/gcs-sa.json:ro

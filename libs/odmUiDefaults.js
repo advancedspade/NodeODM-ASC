@@ -3,13 +3,13 @@
  * Keep mesh-size (and the full map) in sync with public/js/ndm-ui-defaults.json — the UI loads that file for reliable display.
  *
  * Omitted on purpose:
- * - fast-orthophoto — UI "3D / Ortho only"
+ * - fast-orthophoto — ortho-only shortcut; web UI runs full 3D + ortho pipeline
  * - rerun-from — leave unset (ODM default)
  * - boundary, cameras, sm-cluster — blank / ODM default
  * - gps-z-offset, matcher-order, sfm-no-partial — not in ODM 3.0.x option list
  *
  * feature-type: requested "dpsift" is not an ODM 3.0.4 choice; using "sift".
- * optimize-disk-space: default "false" keeps originals under images/ for all.zip; when "Save raw inputs" is unchecked the UI sends "true".
+ * optimize-disk-space: "false" keeps originals under images/ for all.zip (raw photos preserved).
  * max-concurrency "8" is for /options display; filterOptions derives a RAM-safe value unless the client explicitly sends this option.
  */
 "use strict";
@@ -66,7 +66,7 @@ const OPTION_UI_DEFAULTS = {
     "rolling-shutter": "false",
     "rolling-shutter-readout": "0",
     "sfm-algorithm": "incremental",
-    "skip-3dmodel": "true",
+    "skip-3dmodel": "false",
     "skip-band-alignment": "false",
     "skip-orthophoto": "false",
     "skip-report": "false",

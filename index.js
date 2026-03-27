@@ -45,6 +45,9 @@ const auth = require('./libs/auth/factory').fromConfig(config);
 const authCheck = auth.getMiddleware();
 const taskNew = require('./libs/taskNew');
 
+let taskManager;
+let server;
+
 app.use(cors())
 app.options('*', cors())
 
@@ -59,6 +62,45 @@ function sendWebUiIndex(res) {
 app.get('/', (req, res) => sendWebUiIndex(res));
 app.get('/index.html', (req, res) => sendWebUiIndex(res));
 
+/** @swagger
+ *  /task/list:
+ *     get:
+ *       description: Gets the list of tasks available on this node.
+ *       tags: [task]
+ *       parameters:
+ *        -
+ *          name: token
+ *          in: query
+ *          description: 'Token required for authentication (when authentication is required).'
+ *          required: false
+ *          type: string
+ *       responses:
+ *        200:
+ *          description: Task List
+ *          schema:
+ *            title: TaskList
+ *            type: array
+ *            items:
+ *              type: object
+ *              required: [uuid]
+ *              properties:
+ *                uuid:
+ *                  type: string
+ *                  description: UUID
+ *        default:
+ *          description: Error
+ *          schema:
+ *            $ref: '#/definitions/Error'
+ */
+// Before static files: avoids any chance /task/list is handled as a static path.
+app.get('/task/list', authCheck, (req, res) => {
+    const tasks = [];
+    for (let uuid in taskManager.tasks){
+        tasks.push({uuid});
+    }
+    res.json(tasks);
+});
+
 app.use(express.static(publicDir, {
     etag: true,
     setHeaders(res, filepath) {
@@ -72,9 +114,6 @@ app.use('/swagger.json', express.static('docs/swagger.json'));
 const formDataParser = multer().none();
 const urlEncodedBodyParser = bodyParser.urlencoded({extended: false});
 const jsonBodyParser = bodyParser.json();
-
-let taskManager;
-let server;
 
 /** @swagger
  *  /task/new/init:
@@ -321,44 +360,6 @@ let getTaskFromUuid = (req, res, next) => {
         next();
     } else res.json({ error: `${req.params.uuid} not found` });
 };
-
-/** @swagger
- *  /task/list:
- *     get:
- *       description: Gets the list of tasks available on this node.
- *       tags: [task]
- *       parameters:
- *        -
- *          name: token
- *          in: query
- *          description: 'Token required for authentication (when authentication is required).'
- *          required: false
- *          type: string
- *       responses:
- *        200:
- *          description: Task List
- *          schema:
- *            title: TaskList
- *            type: array
- *            items:
- *              type: object
- *              required: [uuid]
- *              properties:
- *                uuid:
- *                  type: string
- *                  description: UUID
- *        default:
- *          description: Error
- *          schema:
- *            $ref: '#/definitions/Error'
- */
-app.get('/task/list', authCheck, (req, res) => {
-    const tasks = [];
-    for (let uuid in taskManager.tasks){
-        tasks.push({uuid});
-    }
-    res.json(tasks);
-});
 
 /** @swagger
  *  /task/{uuid}/info:

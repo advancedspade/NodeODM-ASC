@@ -39,6 +39,8 @@ const si = require('systeminformation');
 const S3 = require('./libs/S3');
 const GCS = require('./libs/GCS');
 
+const { applyUiDefaultsToOptions, OPTION_UI_DEFAULTS } = require('./libs/odmUiDefaults');
+
 const auth = require('./libs/auth/factory').fromConfig(config);
 const authCheck = auth.getMiddleware();
 const taskNew = require('./libs/taskNew');
@@ -107,7 +109,7 @@ let server;
  *        -
  *          name: outputs
  *          in: formData
- *          description: 'An optional serialized JSON string of paths relative to the project directory that should be included in the all.zip result file, overriding the default behavior.'
+ *          description: 'Legacy field; ignored for all.zip. The archive includes every top-level file and folder in the task project directory (except all.zip itself).'
  *          required: false
  *          type: string
  *        -
@@ -265,7 +267,7 @@ app.post('/task/new/commit/:uuid', authCheck, taskNew.getUUID, taskNew.handleCom
  *        -
  *          name: outputs
  *          in: formData
- *          description: 'An optional serialized JSON string of paths relative to the project directory that should be included in the all.zip result file, overriding the default behavior.'
+ *          description: 'Legacy field; ignored for all.zip. The archive includes every top-level file and folder in the task project directory (except all.zip itself).'
  *          required: false
  *          type: string
  *        -
@@ -721,25 +723,17 @@ app.get('/options', authCheck, (req, res) => {
     odmInfo.getOptions((err, options) => {
         if (err) res.json({ error: err.message });
         else {
-            // Set default values for certain options in the UI
-            const modifiedOptions = options.map(opt => {
-                if (opt.name === 'tiles') {
-                    return { ...opt, value: 'true' };
-                }
-                if (opt.name === 'cog') {
-                    return { ...opt, value: 'true' };
-                }
-                if (opt.name === 'matcher-neighbors') {
-                    return { ...opt, value: '8' };
-                }
-                if (opt.name === 'orthophoto-resolution') {
-                    return { ...opt, value: '0.1' };
-                }
-                return opt;
-            });
-            res.json(modifiedOptions);
+            applyUiDefaultsToOptions(options);
+            res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+            res.json(options);
         }
     });
+});
+
+/** Plain map of option name → default string value (same as libs/odmUiDefaults.js). UI merges this so fields match even if /options payloads are wrong or cached. */
+app.get('/option-ui-defaults', authCheck, (req, res) => {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate");
+    res.json(OPTION_UI_DEFAULTS);
 });
 
 /** @swagger

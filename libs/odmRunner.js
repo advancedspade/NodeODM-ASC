@@ -25,6 +25,17 @@ let config = require('../config.js');
 let logger = require('./logger');
 let utils = require('./utils');
 
+function omittedCliValue(value){
+    if (value == null) return true;
+    if (typeof value === 'string'){
+        const t = value.trim();
+        if (t === '') return true;
+        // Python argparse default=None / omitted values from odmOptionsToJson appear as the literal "None"
+        if (t === 'None' || t === 'null') return true;
+    }
+    return false;
+}
+
 module.exports = {
     run: function(options, projectName, done, outputReceived){
         assert(projectName !== undefined, "projectName must be specified");
@@ -38,6 +49,9 @@ module.exports = {
 
             // Skip false booleans
             if (value === false) continue;
+
+            // Do not pass --flag with Python "None" / empty (e.g. --sm-cluster for non split-merge jobs)
+            if (typeof value !== 'boolean' && omittedCliValue(value)) continue;
 
             params.push("--" + name);
 

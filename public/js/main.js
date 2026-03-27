@@ -133,6 +133,26 @@ $(function() {
     var ndmGpsMap = null;
     var ndmGpsMarkers = null;
     var gpsMapTimer = null;
+    /** Blob URLs for map popup previews; revoked when markers refresh */
+    var ndmGpsPreviewUrls = [];
+
+    function revokeNdmGpsPreviewUrls() {
+        ndmGpsPreviewUrls.forEach(function(u) {
+            try {
+                URL.revokeObjectURL(u);
+            } catch (e) { /* ignore */ }
+        });
+        ndmGpsPreviewUrls = [];
+    }
+
+    /** Formats usually displayable in &lt;img&gt; (avoid broken icons for TIFF/HEIC in most browsers) */
+    function ndmFileLikelyDisplayableInImgTag(file) {
+        if (!file) return false;
+        var t = (file.type || "").toLowerCase();
+        if (t.indexOf("image/jpeg") === 0 || t.indexOf("image/jpg") === 0) return true;
+        if (t === "image/png" || t === "image/webp" || t === "image/gif" || t === "image/avif") return true;
+        return /\.(jpe?g|png|gif|webp|avif)$/i.test(file.name);
+    }
 
     function setMapGpsStatus(text, loading) {
         var el = document.getElementById("mapGpsStatus");
@@ -229,6 +249,7 @@ $(function() {
     function updateNdmGpsMap(points) {
         initNdmGpsMap();
         if (!ndmGpsMap || !ndmGpsMarkers) return;
+        revokeNdmGpsPreviewUrls();
         ndmGpsMarkers.clearLayers();
         if (!points.length) {
             ndmGpsMap.setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
@@ -245,9 +266,25 @@ $(function() {
                     popupAnchor: [0, -8]
                 })
             });
+            var previewBlock = "";
+            if (p.file && ndmIsImageFile(p.file) && ndmFileLikelyDisplayableInImgTag(p.file) && typeof URL !== "undefined" && URL.createObjectURL) {
+                try {
+                    var blobUrl = URL.createObjectURL(p.file);
+                    ndmGpsPreviewUrls.push(blobUrl);
+                    previewBlock =
+                        "<div class=\"map-popup-preview-wrap\"><img class=\"map-popup-preview\" src=\"" +
+                        blobUrl + "\" alt=\"Preview: " + ndmEscapeHtml(p.file.name) + "\"></div>";
+                } catch (e) {
+                    previewBlock = "";
+                }
+            } else if (p.file && ndmIsImageFile(p.file)) {
+                previewBlock = "<p class=\"map-popup-preview-note\">Preview not shown for this format (open the file locally to view).</p>";
+            }
             m.bindPopup(
-                "<div class=\"map-popup\"><strong>" + ndmEscapeHtml(p.file.name) + "</strong><br>" +
-                "Lat " + ndmFormatCoord(p.lat) + ", Lng " + ndmFormatCoord(p.lng) + "</div>"
+                "<div class=\"map-popup\">" + previewBlock +
+                "<strong>" + ndmEscapeHtml(p.file.name) + "</strong><br>" +
+                "Lat " + ndmFormatCoord(p.lat) + ", Lng " + ndmFormatCoord(p.lng) + "</div>",
+                { maxWidth: 320, className: "ndm-gps-popup" }
             );
             ndmGpsMarkers.addLayer(m);
         });
@@ -656,18 +693,54 @@ $(function() {
         $("#taskName").val('');
     });
 
-    $('#btnClearFiles').on('click', function(){
-        app.resetUpload();
-    });
 
-    // Load options
+    function mergeUiDefaultsIntoOptionRows(rows, defaultsMap) {
+        if (!Array.isArray(rows) || !defaultsMap || typeof defaultsMap !== "object" || defaultsMap.error) return;
+        for (var i = 0; i < rows.length; i++) {
+            var row = rows[i];
+            if (!row || typeof row.name !== "string") continue;
+            if (!Object.prototype.hasOwnProperty.call(defaultsMap, row.name)) continue;
+            var v = String(defaultsMap[row.name]);
+            row.value = v;
+            if (row.type === "enum" && Array.isArray(row.domain) && row.domain.indexOf(v) === -1) {
+                row.domain = [v].concat(row.domain.slice());
+            }
+        }
+    }
+
+    function deepCloneOptionRow(row) {
+        return $.extend(true, {}, row);
+    }
+
+    // Load options: /options + /option-ui-defaults (same token as this page) merged on the client so the form always matches odmUiDefaults.js.
     function Option(properties) {
         this.properties = properties;
 
+        var raw = properties.value;
+        if (properties.type === 'bool' && typeof raw !== 'string') {
+            properties.value = raw === true || raw === 1 || raw === '1' ? 'true' : 'false';
+        } else if ((properties.type === 'int' || properties.type === 'integer' || properties.type === 'float' || properties.type === 'double') && typeof raw === 'number') {
+            properties.value = String(raw);
+        }
+
         this.defaultValue = undefined;
-        if (properties.type === 'bool' && properties.value === 'true'){
-            this.defaultValue = true;
-        }else if (properties.type === 'enum'){
+        if (properties.type === 'bool') {
+            this.defaultValue = properties.value === true || properties.value === 'true' ||
+                properties.value === 1 || properties.value === '1';
+        } else if (properties.type === 'enum') {
+            this.defaultValue = properties.value != null ? String(properties.value) : undefined;
+        } else if (properties.type === 'int' || properties.type === 'integer') {
+            var vi = typeof properties.value === 'number' ? properties.value : parseInt(properties.value, 10);
+            this.defaultValue = typeof vi === 'number' && !isNaN(vi) ? String(vi) : undefined;
+        } else if (properties.type === 'float' || properties.type === 'double') {
+            var vf = typeof properties.value === 'number' ? properties.value : parseFloat(properties.value);
+            this.defaultValue = typeof vf === 'number' && !isNaN(vf) ? String(vf) : undefined;
+        } else if (properties.type === 'string' || properties.type === 'path') {
+            this.defaultValue = properties.value;
+        }
+
+        if (this.defaultValue === undefined && properties.type !== 'bool' &&
+                properties.value !== undefined && properties.value !== null && String(properties.value) !== '') {
             this.defaultValue = properties.value;
         }
 
@@ -675,7 +748,7 @@ $(function() {
             var choicesStr = typeof this.properties.domain === "object" ? this.properties.domain.join(", ") : this.properties.domain;
 
             this.properties.help = this.properties.help.replace(/\%\(choices\)s/g, choicesStr);
-            this.properties.help = this.properties.help.replace(/\%\(default\)s/g, this.properties.value);
+            this.properties.help = this.properties.help.replace(/\%\(default\)s/g, String(this.properties.value));
         }
 
         var dom = this.properties.domain;
@@ -700,14 +773,42 @@ $(function() {
         this.showOptions = ko.observable(false);
         this.error = ko.observable();
 
-        $.get("/options?token=" + token)
+        var ts = Date.now();
+        var optUrl = "/options?token=" + encodeURIComponent(token) + "&_=" + ts;
+        var staticDefUrl = "/js/ndm-ui-defaults.json?_=" + ts;
+        var apiDefUrl = "/option-ui-defaults?token=" + encodeURIComponent(token) + "&_=" + ts;
+
+        function finishBuild(rows) {
+            self.options.removeAll();
+            for (var i = 0; i < rows.length; i++) {
+                self.options.push(new Option(deepCloneOptionRow(rows[i])));
+            }
+        }
+
+        function fetchDefaultsMap(cb) {
+            $.ajax({ url: staticDefUrl, dataType: "json", cache: false })
+                .done(function(d) { cb(d); })
+                .fail(function() {
+                    $.ajax({ url: apiDefUrl, dataType: "json", cache: false })
+                        .done(function(d) { cb(d); })
+                        .fail(function() { cb(null); });
+                });
+        }
+
+        $.ajax({ url: optUrl, dataType: "json" })
             .done(function(json) {
-                if (json.error) self.error(json.error);
-                else {
-                    for (var i in json) {
-                        self.options.push(new Option(json[i]));
-                    }
+                if (json.error) {
+                    self.error(json.error);
+                    return;
                 }
+                if (!Array.isArray(json)) {
+                    self.error("options are not available.");
+                    return;
+                }
+                fetchDefaultsMap(function(defMap) {
+                    if (defMap) mergeUiDefaultsIntoOptionRows(json, defMap);
+                    finishBuild(json);
+                });
             })
             .fail(function() {
                 self.error("options are not available.");
@@ -726,6 +827,11 @@ $(function() {
                 }
             }else{
                 if (opt.value() !== undefined) {
+                    /* Leave max-concurrency out when unchanged so the server uses RAM-based parallelism (see odmInfo.filterOptions). */
+                    if (opt.properties.name === "max-concurrency" &&
+                            String(opt.value()) === String(opt.defaultValue)) {
+                        continue;
+                    }
                     result.push({
                         name: opt.properties.name,
                         value: opt.value()
@@ -736,10 +842,23 @@ $(function() {
         return result;
     };
 
+    function ndmNormOptionName(n) {
+        if (n == null || n === "") return "";
+        return String(n).replace(/^--+/, "").trim().toLowerCase();
+    }
+
     function buildTaskOptions() {
         var raw = optionsModel.getUserOptions();
         var filtered = raw.filter(function(o) {
-            return o.name !== "fast-orthophoto" && o.name !== "optimize-disk-space";
+            if (!o || !o.name) return false;
+            var nn = ndmNormOptionName(o.name);
+            if (nn === "fast-orthophoto" || nn === "optimize-disk-space") return false;
+            // Advanced CLI JSON/path flags; the web UI does not edit these reliably (hidden bindings).
+            // REST/API clients can still pass them. Omitting avoids spurious filterOptions errors.
+            if (nn === "cameras" || nn === "boundary") return false;
+            // Optional ClusterODM URL; /options default is often the literal string "None" from Python.
+            if (nn === "sm-cluster") return false;
+            return true;
         });
         var proc = document.querySelector('input[name="ndmProcessing"]:checked');
         var mode = proc ? proc.value : "3d";
@@ -758,4 +877,31 @@ $(function() {
     if (optionsRoot) {
         ko.applyBindings(optionsModel, optionsRoot);
     }
+
+    (function setupNdmMapCollapse() {
+        var key = "ndmGpsMapCollapsed";
+        var panel = document.getElementById("ndmGpsPanel");
+        var btn = document.getElementById("ndmMapToggle");
+        if (!panel || !btn) return;
+
+        var stored = null;
+        try { stored = localStorage.getItem(key); } catch (e) {}
+        var startCollapsed = stored === "1";
+        panel.classList.toggle("ndm-map-panel--collapsed", startCollapsed);
+        btn.setAttribute("aria-expanded", startCollapsed ? "false" : "true");
+        btn.textContent = startCollapsed ? "Show map" : "Hide map";
+
+        btn.addEventListener("click", function() {
+            var collapsed = !panel.classList.contains("ndm-map-panel--collapsed");
+            panel.classList.toggle("ndm-map-panel--collapsed", collapsed);
+            btn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+            btn.textContent = collapsed ? "Show map" : "Hide map";
+            try { localStorage.setItem(key, collapsed ? "1" : "0"); } catch (e2) {}
+            if (!collapsed) {
+                setTimeout(function() {
+                    if (ndmGpsMap) ndmGpsMap.invalidateSize();
+                }, 200);
+            }
+        });
+    })();
 });

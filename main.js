@@ -23,87 +23,6 @@ $(function() {
         }, 200); 
     }
 
-    function query(key) {
-        key = key.replace(/[*+?^$.\[\]{}()|\\\/]/g, "\\$&");
-        var match = location.search.match(new RegExp("[?&]"+key+"=([^&]+)(&|$)"));
-        return match && decodeURIComponent(match[1].replace(/\+/g, " "));
-    }
-
-    var token = query("token") || "";
-
-    /**
-     * API origin for /task/*, /options, etc.
-     * Override: window.NDM_API_BASE, <meta name="ndm-api-base" content="...">,
-     * URL ?ndm_api=http://127.0.0.1:3000 or ?ndm_port=3000 (uses current hostname).
-     * If the page is file:// or a common static-dev port, defaults to http://127.0.0.1:3000 (NodeODM’s usual port).
-     */
-    function ndmApiRoot() {
-        if (typeof window !== "undefined" && window.NDM_API_BASE) {
-            return String(window.NDM_API_BASE).replace(/\/$/, "");
-        }
-        var meta = typeof document !== "undefined" && document.querySelector && document.querySelector("meta[name=\"ndm-api-base\"]");
-        if (meta) {
-            var c = (meta.getAttribute("content") || "").trim();
-            if (c) return c.replace(/\/$/, "");
-        }
-        var apiFromQs = query("ndm_api");
-        if (apiFromQs) return String(apiFromQs).replace(/\/$/, "");
-        var portQs = query("ndm_port");
-        if (portQs && /^\d+$/.test(portQs) && typeof location !== "undefined" && location.hostname) {
-            var pproto = location.protocol === "https:" ? "https:" : "http:";
-            return pproto + "//" + location.hostname + ":" + portQs;
-        }
-        if (typeof location !== "undefined") {
-            if (location.protocol === "file:") {
-                return "http://127.0.0.1:3000";
-            }
-            var p = String(location.port || "");
-            if (p === "80" || p === "443") p = "";
-            var staticDevPorts = { "5500": 1, "8080": 1, "5173": 1, "4173": 1, "1234": 1, "3001": 1, "5501": 1 };
-            if (p && staticDevPorts[p]) {
-                return "http://127.0.0.1:3000";
-            }
-        }
-        return "";
-    }
-
-    function ndmApi(path) {
-        var root = ndmApiRoot();
-        var prefix = "";
-        if (typeof window !== "undefined" && window.NDM_API_PATH_PREFIX) {
-            prefix = String(window.NDM_API_PATH_PREFIX).replace(/\/$/, "");
-        } else {
-            var metaP = typeof document !== "undefined" && document.querySelector && document.querySelector("meta[name=\"ndm-api-path-prefix\"]");
-            if (metaP) {
-                var mp = (metaP.getAttribute("content") || "").trim().replace(/\/$/, "");
-                if (mp) prefix = mp;
-            }
-        }
-        if (!path || path.charAt(0) !== "/") path = "/" + (path || "");
-        return root + prefix + path;
-    }
-
-    function ndmTokenQs() {
-        return token ? "?token=" + encodeURIComponent(token) : "";
-    }
-
-    function ndmAjaxFailMessage(xhr, textStatus, attemptedUrl) {
-        if (xhr && xhr.responseJSON && xhr.responseJSON.error) return xhr.responseJSON.error;
-        if (textStatus === "parsererror") {
-            return "The server did not return JSON. Open this UI from your NodeODM URL, or set window.NDM_API_BASE to the API root.";
-        }
-        if (xhr && xhr.status === 0) {
-            return "Cannot reach the API at " + (attemptedUrl || "this URL") + ". Use the same host/port as NodeODM, or set window.NDM_API_BASE (e.g. http://127.0.0.1:3000).";
-        }
-        if (xhr && xhr.status === 404) {
-            return "404 for " + (attemptedUrl || "this URL") + " — wrong API host/path. Try: open this page from NodeODM (same port), add ?ndm_port=PORT (NodeODM’s port) to the URL, set window.NDM_API_BASE, or NDM_API_PATH_PREFIX if the API is under a subpath.";
-        }
-        if (xhr && xhr.status >= 400) {
-            return "Request failed (" + xhr.status + "): " + (attemptedUrl || "");
-        }
-        return (attemptedUrl || "Request") + " is unreachable.";
-    }
-
     function App(){
         this.mode = ko.observable("file");
         this.filesCount = ko.observable(0);
@@ -153,7 +72,7 @@ $(function() {
 
         if (this.mode() === 'file'){
             if (this.filesCount() > 0){
-                $.ajax(ndmApi("/task/new/init") + ndmTokenQs(), {
+                $.ajax("/task/new/init?token=" + token, {
                     type: "POST",
                     data: formData,
                     processData: false,
@@ -175,7 +94,7 @@ $(function() {
             this.uploading(true);
             formData.append("zipurl", $("#zipurl").val());
 
-            $.ajax(ndmApi("/task/new") + ndmTokenQs(), {
+            $.ajax("/task/new?token=" + token, {
                 type: "POST",
                 data: formData,
                 processData: false,
@@ -197,7 +116,7 @@ $(function() {
 
     var dz = new Dropzone("div#images", {
         paramName: function(){ return "images"; },
-        url : ndmApi("/task/new/upload/"),
+        url : "/task/new/upload/",
         parallelUploads: 8, // http://blog.olamisan.com/max-parallel-http-connections-in-a-browser max parallel connections
         uploadMultiple: false,
         acceptedFiles: "image/*,text/*,application/*,.las,.laz,video/*,.srt",
@@ -210,50 +129,12 @@ $(function() {
         timeout: 2147483647
     });
 
-    (function() {
-        var origSubmit = Dropzone.prototype.submitRequest;
-        dz.submitRequest = function(xhr, formData, files) {
-            var f = files && files[0];
-            if (f && ndmIsImageFile(f) && ndmDeselectedIds.has(ndmPhotoKey(f))) {
-                var self = this;
-                window.setTimeout(function() {
-                    if (!f.upload) f.upload = { progress: 0, total: f.size, bytesSent: 0 };
-                    f.upload.progress = 100;
-                    f.upload.bytesSent = f.size;
-                    f.upload.total = f.size;
-                    self.emit("uploadprogress", f, 100, f.size);
-                    f.status = Dropzone.SUCCESS;
-                    self.emit("success", f, "", null);
-                    self.emit("complete", f);
-                }, 0);
-                return;
-            }
-            return origSubmit.call(this, xhr, formData, files);
-        };
-    })();
-
     var DEFAULT_GPS_VIEW = { center: [20, 0], zoom: 2 };
     var ndmGpsMap = null;
     var ndmGpsMarkers = null;
     var gpsMapTimer = null;
     /** Blob URLs for map popup previews; revoked when markers refresh */
     var ndmGpsPreviewUrls = [];
-    var ndmLastGpsResults = [];
-    var ndmGpsPoints = [];
-    var ndmMarkersById = Object.create(null);
-    var ndmDeselectedIds = new Set();
-    var ndmDeselectMode = false;
-    var ndmPolygonDrawing = false;
-    var ndmPolyVertices = [];
-    var ndmDrawPolyline = null;
-    var ndmBtnDeselectEl = null;
-    var ndmBtnPolyEl = null;
-    var ndmDeselectToolsAdded = false;
-
-    function ndmPhotoKey(file) {
-        if (!file) return "";
-        return file.name + "\0" + String(file.size);
-    }
 
     function revokeNdmGpsPreviewUrls() {
         ndmGpsPreviewUrls.forEach(function(u) {
@@ -286,148 +167,6 @@ $(function() {
         return /\.(jpe?g|png|tiff?|heic|heif|webp|avif)$/i.test(file.name);
     }
 
-    function ndmPointInGpsPolygon(latlng, ring) {
-        var x = latlng.lng;
-        var y = latlng.lat;
-        var inside = false;
-        var i;
-        var j;
-        for (i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-            var xi = ring[i].lng;
-            var yi = ring[i].lat;
-            var xj = ring[j].lng;
-            var yj = ring[j].lat;
-            var denom = yj - yi;
-            if (denom === 0) denom = 1e-12;
-            var intersect = (yi > y) !== (yj > y) &&
-                x < ((xj - xi) * (y - yi)) / denom + xi;
-            if (intersect) inside = !inside;
-        }
-        return inside;
-    }
-
-    function ndmGpsMarkerIcon(selected) {
-        var html = selected
-            ? "<div class=\"map-pin map-pin--selected\"></div>"
-            : "<div class=\"map-pin map-pin--deselected\"><span aria-hidden=\"true\">×</span></div>";
-        return L.divIcon({
-            className: "map-marker-wrap",
-            html: html,
-            iconSize: [26, 26],
-            iconAnchor: [13, 13],
-            popupAnchor: [0, -12]
-        });
-    }
-
-    function ndmGpsPopupFullHtml(p) {
-        var ex = ndmDeselectedIds.has(p.key);
-        var incl = ex ? "<em>Excluded from processing</em>" : "<em>Included in processing</em>";
-        return "<div class=\"map-popup\">" + (p._previewBlock || "") +
-            "<strong>" + ndmEscapeHtml(p.file.name) + "</strong><br>" +
-            "Lat " + ndmFormatCoord(p.lat) + ", Lng " + ndmFormatCoord(p.lng) + "<br>" +
-            incl + "</div>";
-    }
-
-    function ndmSyncGpsMarkerPopups() {
-        var k;
-        for (k in ndmMarkersById) {
-            if (!Object.prototype.hasOwnProperty.call(ndmMarkersById, k)) continue;
-            var m = ndmMarkersById[k];
-            var pt = m._photoPoint;
-            if (!pt) continue;
-            if (ndmDeselectMode) {
-                m.unbindPopup();
-            } else {
-                m.bindPopup(ndmGpsPopupFullHtml(pt), { maxWidth: 320, className: "ndm-gps-popup" });
-            }
-        }
-    }
-
-    function ndmUpdateDeselectToolbarButtons() {
-        if (ndmBtnDeselectEl) {
-            ndmBtnDeselectEl.disabled = !ndmGpsPoints.length;
-        }
-        if (ndmBtnPolyEl) {
-            ndmBtnPolyEl.disabled = !ndmDeselectMode || !ndmGpsPoints.length;
-            if (ndmBtnPolyEl.disabled) ndmBtnPolyEl.classList.remove("active");
-        }
-    }
-
-    function ndmEndPolygonDraw(apply) {
-        var polygonBanner = document.getElementById("ndmPolygonBanner");
-        ndmPolygonDrawing = false;
-        if (polygonBanner) polygonBanner.hidden = true;
-        if (ndmGpsMap) ndmGpsMap.doubleClickZoom.enable();
-        if (ndmBtnPolyEl) ndmBtnPolyEl.classList.remove("active");
-        if (ndmDrawPolyline && ndmGpsMap) {
-            ndmGpsMap.removeLayer(ndmDrawPolyline);
-            ndmDrawPolyline = null;
-        }
-        if (apply && ndmPolyVertices.length >= 3) {
-            ndmGpsPoints.forEach(function(p) {
-                if (ndmPointInGpsPolygon(L.latLng(p.lat, p.lng), ndmPolyVertices)) {
-                    ndmDeselectedIds.add(p.key);
-                }
-            });
-            ndmRefreshAllGpsMarkerIcons();
-            renderNdmFileRows(ndmLastGpsResults);
-        }
-        ndmPolyVertices = [];
-        ndmUpdateDeselectToolbarButtons();
-    }
-
-    function ndmStartPolygonDraw() {
-        var polygonBanner = document.getElementById("ndmPolygonBanner");
-        if (!ndmDeselectMode || !ndmGpsPoints.length || !ndmGpsMap) return;
-        ndmPolygonDrawing = true;
-        ndmPolyVertices = [];
-        if (ndmDrawPolyline) {
-            ndmGpsMap.removeLayer(ndmDrawPolyline);
-            ndmDrawPolyline = null;
-        }
-        ndmDrawPolyline = L.polyline([], { color: "#ff6b6b", weight: 2, dashArray: "6 8" }).addTo(ndmGpsMap);
-        if (polygonBanner) polygonBanner.hidden = false;
-        ndmGpsMap.doubleClickZoom.disable();
-        if (ndmBtnPolyEl) ndmBtnPolyEl.classList.add("active");
-    }
-
-    function ndmOnMapGpsClickPolygon(e) {
-        if (!ndmPolygonDrawing) return;
-        ndmPolyVertices.push(e.latlng);
-        ndmDrawPolyline.setLatLngs(ndmPolyVertices);
-    }
-
-    function ndmSetDeselectMode(on) {
-        ndmDeselectMode = !!on;
-        if (!ndmDeselectMode) {
-            ndmEndPolygonDraw(false);
-        }
-        if (ndmBtnDeselectEl) {
-            ndmBtnDeselectEl.classList.toggle("active", ndmDeselectMode);
-            ndmBtnDeselectEl.setAttribute("aria-pressed", ndmDeselectMode ? "true" : "false");
-        }
-        var mapEl = document.getElementById("mapGps");
-        if (mapEl) mapEl.classList.toggle("deselect-mode", ndmDeselectMode);
-        ndmSyncGpsMarkerPopups();
-        ndmUpdateDeselectToolbarButtons();
-    }
-
-    function ndmToggleGpsDeselectKey(key) {
-        if (ndmDeselectedIds.has(key)) ndmDeselectedIds.delete(key);
-        else ndmDeselectedIds.add(key);
-        var m = ndmMarkersById[key];
-        if (m) m.setIcon(ndmGpsMarkerIcon(!ndmDeselectedIds.has(key)));
-        renderNdmFileRows(ndmLastGpsResults);
-    }
-
-    function ndmRefreshAllGpsMarkerIcons() {
-        var k;
-        for (k in ndmMarkersById) {
-            if (!Object.prototype.hasOwnProperty.call(ndmMarkersById, k)) continue;
-            ndmMarkersById[k].setIcon(ndmGpsMarkerIcon(!ndmDeselectedIds.has(k)));
-        }
-    }
-
     function initNdmGpsMap() {
         if (ndmGpsMap || typeof L === "undefined" || !document.getElementById("mapGps")) return;
         ndmGpsMap = L.map("mapGps", { scrollWheelZoom: true }).setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
@@ -440,65 +179,6 @@ $(function() {
         $(window).on("resize.ndmGps", function() {
             if (ndmGpsMap) ndmGpsMap.invalidateSize();
         });
-        ndmGpsMap.on("click", ndmOnMapGpsClickPolygon);
-
-        var polyDone = document.getElementById("ndmPolyDone");
-        var polyCancel = document.getElementById("ndmPolyCancel");
-        if (polyDone) {
-            polyDone.addEventListener("click", function() {
-                if (!ndmPolygonDrawing) return;
-                if (ndmPolyVertices.length < 3) {
-                    window.alert("Add at least three corners before finishing the area.");
-                    return;
-                }
-                ndmEndPolygonDraw(true);
-            });
-        }
-        if (polyCancel) {
-            polyCancel.addEventListener("click", function() {
-                ndmEndPolygonDraw(false);
-            });
-        }
-
-        if (!ndmDeselectToolsAdded) {
-            ndmDeselectToolsAdded = true;
-            var ICON_DESELECT = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M4.93 4.93l14.14 14.14\"/></svg>";
-            var ICON_POLYGON = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 3l7 4v10l-7 4-7-4V7l7-4z\"/></svg>";
-            var DeselectTools = L.Control.extend({
-                options: { position: "topright" },
-                onAdd: function() {
-                    var el = L.DomUtil.create("div", "map-deselect-control leaflet-control");
-                    L.DomEvent.disableClickPropagation(el);
-                    L.DomEvent.disableScrollPropagation(el);
-                    ndmBtnDeselectEl = L.DomUtil.create("button", "", el);
-                    ndmBtnDeselectEl.type = "button";
-                    ndmBtnDeselectEl.title = "Deselect mode — click photos or draw an area to exclude from processing";
-                    ndmBtnDeselectEl.setAttribute("aria-label", "Toggle deselect mode");
-                    ndmBtnDeselectEl.setAttribute("aria-pressed", "false");
-                    ndmBtnDeselectEl.innerHTML = ICON_DESELECT;
-                    ndmBtnPolyEl = L.DomUtil.create("button", "", el);
-                    ndmBtnPolyEl.type = "button";
-                    ndmBtnPolyEl.title = "Draw polygon — exclude every photo inside the shape";
-                    ndmBtnPolyEl.setAttribute("aria-label", "Draw exclusion polygon");
-                    ndmBtnPolyEl.disabled = true;
-                    ndmBtnPolyEl.innerHTML = ICON_POLYGON;
-                    L.DomEvent.on(ndmBtnDeselectEl, "click", function(ev) {
-                        L.DomEvent.stopPropagation(ev);
-                        if (!ndmGpsPoints.length) return;
-                        ndmSetDeselectMode(!ndmDeselectMode);
-                    });
-                    L.DomEvent.on(ndmBtnPolyEl, "click", function(ev) {
-                        L.DomEvent.stopPropagation(ev);
-                        if (!ndmDeselectMode || !ndmGpsPoints.length) return;
-                        if (ndmPolygonDrawing) ndmEndPolygonDraw(false);
-                        else ndmStartPolygonDraw();
-                    });
-                    return el;
-                }
-            });
-            ndmGpsMap.addControl(new DeselectTools());
-            ndmUpdateDeselectToolbarButtons();
-        }
     }
 
     function ndmEscapeHtml(s) {
@@ -526,8 +206,6 @@ $(function() {
         results.forEach(function(r) {
             var li = document.createElement("li");
             var hasGps = r.lat != null && r.lng != null;
-            var key = ndmPhotoKey(r.file);
-            if (hasGps && ndmDeselectedIds.has(key)) li.classList.add("excluded");
 
             var name = document.createElement("span");
             name.className = "name";
@@ -550,14 +228,6 @@ $(function() {
             li.appendChild(name);
             li.appendChild(meta);
             li.appendChild(gps);
-
-            if (hasGps) {
-                var proc = document.createElement("span");
-                proc.className = "proc " + (ndmDeselectedIds.has(key) ? "out" : "in");
-                proc.textContent = ndmDeselectedIds.has(key) ? "Excluded from job" : "Included in job";
-                li.appendChild(proc);
-            }
-
             list.appendChild(li);
         });
     }
@@ -579,70 +249,50 @@ $(function() {
     function updateNdmGpsMap(points) {
         initNdmGpsMap();
         if (!ndmGpsMap || !ndmGpsMarkers) return;
-        ndmEndPolygonDraw(false);
         revokeNdmGpsPreviewUrls();
         ndmGpsMarkers.clearLayers();
-        ndmMarkersById = Object.create(null);
-        ndmDeselectedIds.clear();
-        ndmGpsPoints = !points.length ? [] : points.map(function(r) {
-            return {
-                key: ndmPhotoKey(r.file),
-                file: r.file,
-                lat: r.lat,
-                lng: r.lng,
-                _previewBlock: ""
-            };
-        });
-        ndmSetDeselectMode(false);
-
-        if (!ndmGpsPoints.length) {
+        if (!points.length) {
             ndmGpsMap.setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
-            ndmUpdateDeselectToolbarButtons();
-            renderNdmFileRows(ndmLastGpsResults);
-            setTimeout(function() { if (ndmGpsMap) ndmGpsMap.invalidateSize(); }, 100);
             return;
         }
-
-        ndmGpsPoints.forEach(function(p) {
-            p._previewBlock = "";
+        var latlngs = points.map(function(p) { return [p.lat, p.lng]; });
+        points.forEach(function(p) {
+            var m = L.marker([p.lat, p.lng], {
+                icon: L.divIcon({
+                    className: "map-marker-wrap",
+                    html: "<div class=\"map-pin\"></div>",
+                    iconSize: [16, 16],
+                    iconAnchor: [8, 8],
+                    popupAnchor: [0, -8]
+                })
+            });
+            var previewBlock = "";
             if (p.file && ndmIsImageFile(p.file) && ndmFileLikelyDisplayableInImgTag(p.file) && typeof URL !== "undefined" && URL.createObjectURL) {
                 try {
                     var blobUrl = URL.createObjectURL(p.file);
                     ndmGpsPreviewUrls.push(blobUrl);
-                    p._previewBlock =
+                    previewBlock =
                         "<div class=\"map-popup-preview-wrap\"><img class=\"map-popup-preview\" src=\"" +
                         blobUrl + "\" alt=\"Preview: " + ndmEscapeHtml(p.file.name) + "\"></div>";
                 } catch (e) {
-                    p._previewBlock = "";
+                    previewBlock = "";
                 }
             } else if (p.file && ndmIsImageFile(p.file)) {
-                p._previewBlock = "<p class=\"map-popup-preview-note\">Preview not shown for this format (open the file locally to view).</p>";
+                previewBlock = "<p class=\"map-popup-preview-note\">Preview not shown for this format (open the file locally to view).</p>";
             }
-        });
-
-        var latlngs = ndmGpsPoints.map(function(p) { return [p.lat, p.lng]; });
-        ndmGpsPoints.forEach(function(p) {
-            var selected = !ndmDeselectedIds.has(p.key);
-            var m = L.marker([p.lat, p.lng], { icon: ndmGpsMarkerIcon(selected) });
-            m._photoKey = p.key;
-            m._photoPoint = p;
-            m.bindPopup(ndmGpsPopupFullHtml(p), { maxWidth: 320, className: "ndm-gps-popup" });
-            m.on("click", function() {
-                if (!ndmDeselectMode) return;
-                m.closePopup();
-                ndmToggleGpsDeselectKey(p.key);
-            });
+            m.bindPopup(
+                "<div class=\"map-popup\">" + previewBlock +
+                "<strong>" + ndmEscapeHtml(p.file.name) + "</strong><br>" +
+                "Lat " + ndmFormatCoord(p.lat) + ", Lng " + ndmFormatCoord(p.lng) + "</div>",
+                { maxWidth: 320, className: "ndm-gps-popup" }
+            );
             ndmGpsMarkers.addLayer(m);
-            ndmMarkersById[p.key] = m;
         });
-
         if (latlngs.length === 1) {
             ndmGpsMap.setView(latlngs[0], 17);
         } else {
             ndmGpsMap.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40], maxZoom: 18 });
         }
-        ndmUpdateDeselectToolbarButtons();
-        renderNdmFileRows(ndmLastGpsResults);
         setTimeout(function() { if (ndmGpsMap) ndmGpsMap.invalidateSize(); }, 100);
     }
 
@@ -650,7 +300,6 @@ $(function() {
         initNdmGpsMap();
         var files = (dz.files || []).filter(ndmIsImageFile);
         if (!files.length) {
-            ndmLastGpsResults = [];
             updateNdmGpsMap([]);
             renderNdmFileRows([]);
             setMapGpsStatus("Add images in the drop zone to read GPS from EXIF.", false);
@@ -658,17 +307,17 @@ $(function() {
         }
         setMapGpsStatus("Reading GPS from EXIF…", true);
         Promise.all(files.map(readGpsForNdmFile)).then(function(results) {
-            ndmLastGpsResults = results;
             var withGps = results.filter(function(r) { return r.lat != null && r.lng != null; });
+            renderNdmFileRows(results);
             updateNdmGpsMap(withGps);
             if (typeof exifr === "undefined") {
                 setMapGpsStatus("GPS preview unavailable (exifr failed to load).", false);
             } else if (!withGps.length) {
                 setMapGpsStatus("No GPS tags found in " + files.length + " image(s).", false);
             } else if (withGps.length < files.length) {
-                setMapGpsStatus(withGps.length + " of " + files.length + " images have GPS — use the map tools to exclude any from the job.", false);
+                setMapGpsStatus(withGps.length + " of " + files.length + " images have GPS — shown on the map.", false);
             } else {
-                setMapGpsStatus(withGps.length + " images on the map. Toggle deselect mode to exclude photos by click or polygon.", false);
+                setMapGpsStatus(withGps.length + " images plotted from EXIF GPS.", false);
             }
         });
     }
@@ -679,7 +328,7 @@ $(function() {
     }
 
     dz.on("processing", function(file){
-        this.options.url = ndmApi("/task/new/upload/") + app.uuid() + ndmTokenQs();
+        this.options.url = '/task/new/upload/' + app.uuid() + "?token=" + token;
         app.fileUploadStatus.set(file.name, 0);
     })
     .on("error", function(file){
@@ -706,7 +355,7 @@ $(function() {
     })
     .on("queuecomplete", function(files){
         // Commit
-        $.ajax(ndmApi("/task/new/commit/" + app.uuid()) + ndmTokenQs(), {
+        $.ajax("/task/new/commit/" + app.uuid() + "?token=" + token, {
             type: "POST",
         }).done(function(json){
             if (json.uuid){
@@ -737,6 +386,14 @@ $(function() {
         ko.applyBindings(app, appRoot);
     }
 
+    function query(key) {
+        key = key.replace(/[*+?^$.\[\]{}()|\\\/]/g, "\\$&"); // escape RegEx meta chars
+        var match = location.search.match(new RegExp("[?&]"+key+"=([^&]+)(&|$)"));
+        return match && decodeURIComponent(match[1].replace(/\+/g, " "));
+    }
+
+    var token = query('token') || "";
+
     function hoursMinutesSecs(t) {
         var ch = 60 * 60 * 1000,
             cm = 60 * 1000,
@@ -757,7 +414,7 @@ $(function() {
 
     function TaskList() {
         var self = this;
-        var url = ndmApi("/task/list") + ndmTokenQs();
+        var url = "/task/list?token=" + token;
         this.error = ko.observable("");
         this.listLoading = ko.observable(true);
         this.listLoadingSlow = ko.observable(false);
@@ -767,7 +424,7 @@ $(function() {
             if (self.listLoading()) self.listLoadingSlow(true);
         }, 280);
 
-        $.ajax({ url: url, method: "GET", dataType: "json" })
+        $.get(url)
             .done(function(tasksJson) {
                 if (tasksJson.error){
                     self.error(tasksJson.error);
@@ -777,8 +434,8 @@ $(function() {
                     }
                 }
             })
-            .fail(function(xhr, textStatus) {
-                self.error(ndmAjaxFailMessage(xhr, textStatus, url));
+            .fail(function() {
+                self.error(url + " is unreachable.");
             })
             .always(function() {
                 clearTimeout(listSlowTimer);
@@ -863,7 +520,7 @@ $(function() {
     }
     Task.prototype.refreshInfo = function() {
         var self = this;
-        var url = ndmApi("/task/" + this.uuid + "/info") + ndmTokenQs();
+        var url = "/task/" + this.uuid + "/info?token=" + token;
         $.get(url)
             .done(function(json) {
                 // Track time
@@ -878,8 +535,8 @@ $(function() {
 
                 self.info(json);
             })
-            .fail(function(xhr, textStatus) {
-                self.info({ error: ndmAjaxFailMessage(xhr, textStatus, url) });
+            .fail(function() {
+                self.info({ error: url + " is unreachable." });
             })
             .always(function() { self.loading(false); });
     };
@@ -891,11 +548,11 @@ $(function() {
         this.output.removeAll();
     };
     Task.prototype.openInfo = function(){
-        location.href = ndmApi("/task/" + this.uuid + "/info") + ndmTokenQs();
+        location.href='/task/' + this.uuid + '/info?token=' + token;
     };
     Task.prototype.copyOutput = function(){
         var self = this;
-        var url = ndmApi("/task/" + self.uuid + "/output");
+        var url = "/task/" + self.uuid + "/output";
             $.get(url, { token: token })
                 .done(function(output) {
                     localStorage.setItem(self.uuid + '_output', JSON.stringify(output));
@@ -906,7 +563,7 @@ $(function() {
     };
     Task.prototype.downloadOutput = function(){
         var self = this;
-        var url = ndmApi("/task/" + self.uuid + "/output");
+        var url = "/task/" + self.uuid + "/output";
             $.get(url, { token: token })
                 .done(function(output) {
                     var wnd = window.open("about:blank", "", "_blank");
@@ -915,15 +572,15 @@ $(function() {
                     }
                     wnd.document.write(output.join("<br/>"));
                 })
-                .fail(function(xhr, textStatus) {
-                    self.info({ error: ndmAjaxFailMessage(xhr, textStatus, url) });
+                .fail(function() {
+                    self.info({ error: url + " is unreachable." });
                 });
     };
     Task.prototype.viewOutput = function() {
         var self = this;
 
         function fetchOutput() {
-            var url = ndmApi("/task/" + self.uuid + "/output");
+            var url = "/task/" + self.uuid + "/output";
             $.get(url, { line: -9, token: token })
                 .done(function(output) {
                     if (output.length === 0){
@@ -931,8 +588,8 @@ $(function() {
                     }
                     self.output(output);
                 })
-                .fail(function(xhr, textStatus) {
-                    self.info({ error: ndmAjaxFailMessage(xhr, textStatus, url) });
+                .fail(function() {
+                    self.info({ error: url + " is unreachable." });
                 });
         }
         this.fetchOutputInterval = setInterval(fetchOutput, 5000);
@@ -960,7 +617,7 @@ $(function() {
     };
     Task.prototype.remove = function() {
         var self = this;
-        var url = ndmApi("/task/remove") + ndmTokenQs();
+        var url = "/task/remove?token=" + token;
 
         function doRemove() {
             localStorage.removeItem(self.uuid + '_output');
@@ -977,8 +634,8 @@ $(function() {
 
                     self.stopRefreshingInfo();
                 })
-                .fail(function(xhr, textStatus) {
-                    self.info({ error: ndmAjaxFailMessage(xhr, textStatus, url) });
+                .fail(function() {
+                    self.info({ error: url + " is unreachable." });
                     self.stopRefreshingInfo();
                 });
         }
@@ -1006,18 +663,18 @@ $(function() {
                         self.info({ error: json.error });
                     }
                 })
-                .fail(function(xhr, textStatus) {
-                    self.info({ error: ndmAjaxFailMessage(xhr, textStatus, url) });
+                .fail(function() {
+                    self.info({ error: url + " is unreachable." });
                     self.stopRefreshingInfo();
                 });
         };
     }
-    Task.prototype.cancel = genApiCall(ndmApi("/task/cancel") + ndmTokenQs());
-    Task.prototype.restart = genApiCall(ndmApi("/task/restart") + ndmTokenQs(), function(task) {
+    Task.prototype.cancel = genApiCall("/task/cancel?token=" + token);
+    Task.prototype.restart = genApiCall("/task/restart?token=" + token, function(task) {
         task.resetOutput();
     });
     Task.prototype.downloadLink = function(){
-        return ndmApi("/task/" + this.uuid + "/download/all.zip") + ndmTokenQs();
+        return "/task/" + this.uuid + "/download/all.zip?token=" + token;
     };
     Task.prototype.download = function() {
         location.href = this.downloadLink();
@@ -1121,9 +778,9 @@ $(function() {
         this.error = ko.observable();
 
         var ts = Date.now();
-        var optUrl = ndmApi("/options") + (token ? "?token=" + encodeURIComponent(token) + "&_=" : "?_=") + ts;
+        var optUrl = "/options?token=" + encodeURIComponent(token) + "&_=" + ts;
         var staticDefUrl = "/js/ndm-ui-defaults.json?_=" + ts;
-        var apiDefUrl = ndmApi("/option-ui-defaults") + (token ? "?token=" + encodeURIComponent(token) + "&_=" : "?_=") + ts;
+        var apiDefUrl = "/option-ui-defaults?token=" + encodeURIComponent(token) + "&_=" + ts;
 
         function finishBuild(rows) {
             self.options.removeAll();
@@ -1217,7 +874,6 @@ $(function() {
             }
             arr.push({ name: name, value: value });
         }
-        /* No ortho-only preset; always keep raw uploads under images/ (optimize-disk-space off). */
         ndmEnsureTaskOption(filtered, "fast-orthophoto", false);
         ndmEnsureTaskOption(filtered, "optimize-disk-space", false);
         return filtered;

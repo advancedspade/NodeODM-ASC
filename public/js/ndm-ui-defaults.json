@@ -50,7 +50,7 @@
   "rolling-shutter": "false",
   "rolling-shutter-readout": "0",
   "sfm-algorithm": "incremental",
-  "skip-3dmodel": "true",
+  "skip-3dmodel": "false",
   "skip-band-alignment": "false",
   "skip-orthophoto": "false",
   "skip-report": "false",

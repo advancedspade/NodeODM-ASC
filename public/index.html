@@ -1,212 +1,342 @@
 <!doctype html>
-<html class="no-js" lang="">
-
+<html lang="en">
 <head>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
-    <title>NodeODM - Web UI</title>
-    <meta name="description" content="">
+    <title>NodeODM — Web UI</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-
-    <link rel="stylesheet" href="css/bootstrap.min.css">
-    <style>
-        body{
-            margin-top: 0;
-        }
-        #body-row{
-            margin-top: 16px;
-        }
-        .navbar{
-            background-color: #3498db;
-        }
-        a:hover, a:focus, a:active, a{
-            color: #3498db;
-        }
-        #images{
-            font-weight: bold;
-        }
-        #btnSelectFiles, #images{
-            display: inline-block;
-        }
-        .btn-success{
-            background-color: #4582ec;
-            border-color: #4582ec;
-        }
-        .btn-success:hover, .btn-success:active, .btn-success:focus, .btn-success:active:hover,
-        .btn-success.disabled:hover, .btn-success[disabled]:hover, fieldset[disabled] .btn-success:hover, .btn-success.disabled:focus, .btn-success[disabled]:focus, fieldset[disabled] .btn-success:focus, .btn-success.disabled.focus, .btn-success[disabled].focus, fieldset[disabled] .btn-success.focus{
-            background-color: #3d74d4;
-            border-color: #4582ec;
-        }
-        .task{
-            background: white;
-        }
-    </style>
-    <link rel="stylesheet" href="css/main.css?t=1">
-
-    <script src="js/vendor/modernizr-2.8.3.min.js"></script>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/main.css?t=2">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+    <link rel="stylesheet" href="css/app.css?t=12">
 </head>
-
 <body>
-    <!--[if lt IE 8]>
-            <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="http://browsehappy.com/">upgrade your browser</a> to improve your experience.</p>
-        <![endif]-->
-    <div class="container-fluid">
-        <div class="row" id="body-row">
-            <div class="col-xs-12 col-sm-4">
-                <form enctype="multipart/form-data" onsubmit="return false;">
-                    <div id="app">
-                        <div id="imagesInput" class="form-group" data-bind="visible: mode() === 'file'">
-                            <div id="images">Images and GCP File (optional):</div> <button id="btnSelectFiles" class="btn btn-default btn-sm" data-bind="attr: {disabled: uploading()}">Add Files...</button>
-                            <div data-bind="visible: filesCount() && !uploading()">Selected files: <span data-bind="text: filesCount()"></span></div>
-                            <div data-bind="visible: uploading()" class="progress" style="margin-top: 12px;">
-                                <div class="progress-bar progress-bar-success" role="progressbar" data-bind="text: uploadedFiles() + ' / ' + filesCount() + ' files', style: {width: uploadedPercentage()}">
+    <div class="page-atmosphere" aria-hidden="true">
+        <div class="page-atmosphere__layer page-atmosphere__layer--grid"></div>
+        <div class="page-atmosphere__layer page-atmosphere__layer--contours">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+                <defs>
+                    <filter id="ndm-atmo-glow" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="sRGB">
+                        <feGaussianBlur stdDeviation="2.4" result="b"/>
+                        <feGaussianBlur in="SourceGraphic" stdDeviation="0.55" result="c"/>
+                        <feMerge>
+                            <feMergeNode in="b"/>
+                            <feMergeNode in="b"/>
+                            <feMergeNode in="c"/>
+                        </feMerge>
+                    </filter>
+                    <filter id="ndm-atmo-glow-soft" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+                        <feGaussianBlur stdDeviation="2" result="s"/>
+                        <feMerge>
+                            <feMergeNode in="s"/>
+                            <feMergeNode in="SourceGraphic"/>
+                        </feMerge>
+                    </filter>
+                    <filter id="ndm-atmo-gps-dot" x="-120%" y="-120%" width="340%" height="340%" color-interpolation-filters="sRGB">
+                        <feGaussianBlur stdDeviation="4" result="g"/>
+                        <feMerge>
+                            <feMergeNode in="g"/>
+                            <feMergeNode in="g"/>
+                            <feMergeNode in="SourceGraphic"/>
+                        </feMerge>
+                    </filter>
+                </defs>
+                <!-- Two map-style street blocks (rounded rects) -->
+                <g class="page-atmosphere__mapping-fill">
+                    <!-- Block 1: upper-left vertical bar (tall / narrow) -->
+                    <path class="page-atmosphere__street-block" d="M 436,358 L 516,358 A 24,24 0 0 1 540,382 L 540,640 A 24,24 0 0 1 516,664 L 436,664 A 24,24 0 0 1 412,640 L 412,382 A 24,24 0 0 1 436,358 Z"/>
+                    <!-- Block 2: narrower bar, diagonal −45° (pivot = bbox center after moving up toward dashed traces) -->
+                    <g class="page-atmosphere__lower-block" transform="rotate(-45 1078 571)">
+                        <path class="page-atmosphere__street-block" d="M 918,487 L 1238,487 A 24,24 0 0 1 1262,511 L 1262,631 A 24,24 0 0 1 1238,655 L 918,655 A 24,24 0 0 1 894,631 L 894,511 A 24,24 0 0 1 918,487 Z"/>
+                    </g>
+                </g>
+                <!-- Padded outer ring ~2/3 perimeter; arcs = curved street corners; GPS at highlighted corner -->
+                <g stroke-width="4" fill="none">
+                    <path class="page-atmosphere__mapping-glow page-atmosphere__mapping-glow--sky" d="M 376,613 L 376,346 A 32,32 0 0 1 408,314 L 544,314 A 32,32 0 0 1 576,346 L 576,518"/>
+                    <g transform="rotate(-45 1078 571)">
+                        <path class="page-atmosphere__mapping-glow page-atmosphere__mapping-glow--deep" d="M 1298,515 L 1298,655 A 36,36 0 0 1 1262,691 L 894,691 A 36,36 0 0 1 858,655 L 858,510"/>
+                    </g>
+                </g>
+                <g stroke-width="1.15" fill="none">
+                    <path class="page-atmosphere__mapping-core page-atmosphere__mapping-core--sky" d="M 376,613 L 376,346 A 32,32 0 0 1 408,314 L 544,314 A 32,32 0 0 1 576,346 L 576,518"/>
+                    <g transform="rotate(-45 1078 571)">
+                        <path class="page-atmosphere__mapping-core page-atmosphere__mapping-core--deep" d="M 1298,515 L 1298,655 A 36,36 0 0 1 1262,691 L 894,691 A 36,36 0 0 1 858,655 L 858,510"/>
+                    </g>
+                </g>
+                <!-- Soft contour-style dashed curves (first background pass: flowing, not stepped) -->
+                <g class="page-atmosphere__mapping-traces" fill="none" stroke-width="1.15">
+                    <path class="page-atmosphere__mapping-trace page-atmosphere__mapping-trace--slate page-atmosphere__mapping-trace--dash-a" d="M 580 228 C 760 168 920 288 1100 228 C 1260 178 1360 248 1480 208"/>
+                    <path class="page-atmosphere__mapping-trace page-atmosphere__mapping-trace--ice page-atmosphere__mapping-trace--dash-b" d="M 560 340 C 740 400 900 260 1080 320 C 1240 370 1340 290 1500 330"/>
+                    <path class="page-atmosphere__mapping-trace page-atmosphere__mapping-trace--deep page-atmosphere__mapping-trace--dash-c" d="M 650 380 C 850 410 1020 330 1180 370 C 1320 395 1400 345 1520 375"/>
+                    <!-- Upper-left corner: two matching dashed contours (stay above / left of block 1) -->
+                    <path class="page-atmosphere__mapping-trace page-atmosphere__mapping-trace--slate page-atmosphere__mapping-trace--dash-b" d="M 72 108 C 195 62 328 188 448 118"/>
+                    <path class="page-atmosphere__mapping-trace page-atmosphere__mapping-trace--ice page-atmosphere__mapping-trace--dash-c" d="M 95 228 C 218 182 352 308 465 238"/>
+                </g>
+                <g class="page-atmosphere__gps-dots" aria-hidden="true">
+                    <!-- Block 1 sky glow: path ends -->
+                    <circle class="page-atmosphere__gps-dot" cx="376" cy="613" r="6"/>
+                    <circle class="page-atmosphere__gps-dot-inner" cx="376" cy="613" r="2.2"/>
+                    <circle class="page-atmosphere__gps-dot" cx="576" cy="518" r="6"/>
+                    <circle class="page-atmosphere__gps-dot-inner" cx="576" cy="518" r="2.2"/>
+                    <!-- Block 1 sky glow: corners -->
+                    <circle class="page-atmosphere__gps-dot" cx="376" cy="346" r="6"/>
+                    <circle class="page-atmosphere__gps-dot-inner" cx="376" cy="346" r="2.2"/>
+                    <circle class="page-atmosphere__gps-dot" cx="408" cy="314" r="6"/>
+                    <circle class="page-atmosphere__gps-dot-inner" cx="408" cy="314" r="2.2"/>
+                    <circle class="page-atmosphere__gps-dot" cx="544" cy="314" r="6"/>
+                    <circle class="page-atmosphere__gps-dot-inner" cx="544" cy="314" r="2.2"/>
+                    <circle class="page-atmosphere__gps-dot" cx="576" cy="346" r="6"/>
+                    <circle class="page-atmosphere__gps-dot-inner" cx="576" cy="346" r="2.2"/>
+                    <g transform="rotate(-45 1078 571)">
+                        <!-- Block 2 deep glow: path ends -->
+                        <circle class="page-atmosphere__gps-dot" cx="1298" cy="515" r="6"/>
+                        <circle class="page-atmosphere__gps-dot-inner" cx="1298" cy="515" r="2.2"/>
+                        <circle class="page-atmosphere__gps-dot" cx="858" cy="510" r="6"/>
+                        <circle class="page-atmosphere__gps-dot-inner" cx="858" cy="510" r="2.2"/>
+                        <!-- Block 2 deep glow: corners -->
+                        <circle class="page-atmosphere__gps-dot" cx="1298" cy="655" r="6"/>
+                        <circle class="page-atmosphere__gps-dot-inner" cx="1298" cy="655" r="2.2"/>
+                        <circle class="page-atmosphere__gps-dot" cx="1262" cy="691" r="6"/>
+                        <circle class="page-atmosphere__gps-dot-inner" cx="1262" cy="691" r="2.2"/>
+                        <circle class="page-atmosphere__gps-dot" cx="894" cy="691" r="6"/>
+                        <circle class="page-atmosphere__gps-dot-inner" cx="894" cy="691" r="2.2"/>
+                        <circle class="page-atmosphere__gps-dot" cx="858" cy="655" r="6"/>
+                        <circle class="page-atmosphere__gps-dot-inner" cx="858" cy="655" r="2.2"/>
+                    </g>
+                </g>
+            </svg>
+        </div>
+        <div class="page-atmosphere__vignette"></div>
+    </div>
+    <div class="shell">
+        <header class="page-header">
+            <h1>Drone processing job</h1>
+            <p>Upload images and optional GCP files, tune options, then start a task. Running jobs appear in the panel on the right.</p>
+            <p class="page-header__featureline">Jobs use the <strong>full pipeline</strong> (3D model, orthophoto, raw photos kept on the server). The <strong>Image locations</strong> map is above the task list.</p>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <div class="card-body">
+                    <form enctype="multipart/form-data" onsubmit="return false;">
+
+                        <div id="app">
+                            <section class="section" data-bind="visible: mode() === 'file'">
+                                <span class="ndm-label">Images &amp; GCP (optional)</span>
+                                <div id="images" class="drop-zone dropzone"></div>
+                                <div class="dropzone-actions" data-bind="visible: filesCount() > 0 && !uploading()">
+                                    <button type="button" class="btn-ghost" data-bind="click: resetUpload">Remove all files</button>
+                                    <span class="dropzone-actions__hint">Empties the drop zone (all selected files) and clears the preview list.</span>
                                 </div>
-                            </div>
-                            <div data-bind="visible: uploading()" style="min-height: 230px;">
-                                <div data-bind="foreach: fileUploadStatus.items">
-                                    <div class="progress">
-                                        <div class="progress-bar progress-bar-info" role="progressbar" data-bind="text: key() + ': ' + parseInt(value()) + '%', style: {width: value() + '%'}"></div>
+                                <p class="file-meta" data-bind="visible: filesCount() && !uploading()">Selected: <strong data-bind="text: filesCount()"></strong> file(s)</p>
+                                <div class="file-panel" id="ndmFilePanel" hidden>
+                                    <div class="file-panel__head">
+                                        <span class="file-panel__title">Images in queue</span>
+                                        <button type="button" class="btn-ghost file-panel__clear" data-bind="click: resetUpload, attr: {disabled: uploading()}">Remove all files</button>
+                                    </div>
+                                    <ul class="file-list" id="ndmFileList"></ul>
+                                </div>
+                                <div data-bind="visible: uploading()">
+                                    <div class="ndm-progress">
+                                        <div class="ndm-progress__bar" role="progressbar" data-bind="text: uploadedFiles() + ' / ' + filesCount() + ' files', style: {width: uploadedPercentage()}"></div>
+                                    </div>
+                                    <div class="upload-detail" data-bind="foreach: fileUploadStatus.items">
+                                        <div class="ndm-progress" style="margin-top: 0.5rem;">
+                                            <div class="ndm-progress__bar ndm-progress__bar--file" role="progressbar" data-bind="text: key() + ': ' + parseInt(value()) + '%', style: {width: value() + '%'}"></div>
+                                        </div>
                                     </div>
                                 </div>
+                                <p class="mode-switch" data-bind="visible: mode() === 'file'">
+                                    <button type="button" data-bind="click: toggleMode, attr: {disabled: uploading()}">Use ZIP URL instead</button>
+                                </p>
+                            </section>
+
+                            <section class="section" data-bind="visible: mode() === 'url'">
+                                <label class="ndm-label" for="zipurl">ZIP URL (images + optional GCP)</label>
+                                <input id="zipurl" name="zipurl" class="ndm-input zip-field" type="text" data-bind="attr: {disabled: uploading()}" placeholder="https://…">
+                                <div data-bind="visible: uploading()" class="file-meta" style="margin-top:0.75rem">Uploading…</div>
+                                <p class="mode-switch">
+                                    <button type="button" data-bind="click: toggleMode, attr: {disabled: uploading()}">Switch to file upload</button>
+                                </p>
+                            </section>
+
+                            <div id="errorBlock" class="error-block" data-bind="visible: error().length > 0, click: dismissError">⚠️ <span data-bind="text: error"></span></div>
+
+                            <section class="section project-name-section">
+                                <label class="ndm-label" for="taskName">Project name</label>
+                                <p class="project-name-hint">Add a title so this job is easy to find in the task list (optional but recommended).</p>
+                                <div class="project-name-row">
+                                    <input type="text" class="ndm-input" id="taskName" name="taskName" autocomplete="off" placeholder="e.g. North field survey, Client site ortho">
+                                    <span class="opt-actions">
+                                        <button type="button" class="btn-icon" id="resetTaskName" title="Clear project name">↺</button>
+                                    </span>
+                                </div>
+                            </section>
+
+                            <div class="actions">
+                                <button type="button" class="btn-primary" data-bind="attr: {disabled: uploading()}, text: uploading() ? 'Uploading…' : 'Start task', click: startTask"></button>
+                                <button type="button" class="btn-ghost" id="btnClearFiles" data-bind="click: resetUpload, attr: {disabled: uploading()}">Clear files</button>
                             </div>
                         </div>
-                        <div id="zipFileInput" class="form-group" data-bind="visible: mode() === 'url'">
-                            <label for="zipurl">URL to zip file with Images and GCP File (optional):</label> <input id="zipurl" name="zipurl" class="form-control" type="text" data-bind="attr: {disabled: uploading()}" >
-                            <div data-bind="visible: uploading()">
-                                Uploading...
+
+                        <div id="options">
+                            <div class="options-toggle">
+                                <button type="button" class="btn-ghost" data-bind="visible: !error(), click: function(){ showOptions(!showOptions()); }, text: (showOptions() ? 'Hide' : 'Show') + ' hidden options'"></button>
                             </div>
-                        </div>
-                        <div id="errorBlock" data-bind="visible: error().length > 0, click: dismissError">⚠️ <span data-bind="text: error"></span></div>
-                        <hr/>
-                        <div class="text-right">
-                            <!--<input type="button" class="btn btn-info" data-bind="visible: mode() === 'file', click: toggleMode" value="Switch to URL" />
-                            <input type="button" class="btn btn-info" data-bind="visible: mode() === 'url', click: toggleMode" value="Switch to File Upload" />
-                            -->
-                            <input type="submit" class="btn btn-success" data-bind="attr: {disabled: uploading()}, value: uploading() ? 'Uploading...' : 'Start Task', click: startTask" />
-                        </div>
-                    </div>
-                    <div id="options">
-                        <div class="form-inline form-group form-horizontal">
-                            <div data-bind="visible: error(), text: error()" class="alert alert-warning" role="alert"></div>
-                            <button style="position: relative; top: -45px;" type="submit" class="btn btn-default" data-bind="visible: !error(), click: function(){ showOptions(!showOptions()); }, text: (showOptions() ? 'Hide' : 'Show') + ' Options'"></button>
+                            <div class="options-panel" data-bind="visible: showOptions()">
+                                <div class="options-alert" role="alert" data-bind="visible: error(), text: error()"></div>
 
-                            <div data-bind="visible: showOptions()">
-                                <div>
-                                    <label for="taskName">Project Name:</lable> 
-                                    <br/>
-                                    <input type="text" class="form-control" value="" id="taskName" />
-                                    <button type="submit" class="btn glyphicon glyphicon-info-sign btn-info" data-toggle="tooltip" data-placement="top" title="Assign a name to the project." ></button>
-                                    <button id="resetTaskName" type="submit" class="btn glyphicon glyphicon glyphicon-repeat btn-default" data-toggle="tooltip" data-placement="top" title="Reset to default"  ></button>
-                                    <br/><br/>
+                                <div class="section">
+                                    <label class="checkbox-row" for="doPostProcessing">
+                                        <input type="checkbox" id="doPostProcessing">
+                                        <span>
+                                            <span class="label">Generate 2D and Potree point cloud tiles</span>
+                                            <span class="desc" style="display:block;font-size:0.8125rem;color:var(--muted);margin-top:0.125rem">Post-process outputs for web viewers when enabled.</span>
+                                        </span>
+                                    </label>
+                                    <div class="opt-actions" style="margin-top:0.5rem;margin-bottom:1rem">
+                                        <button type="button" class="btn-icon" title="Generate 2D and Potree Point Cloud Tiles">i</button>
+                                        <button type="button" class="btn-icon" id="resetDoPostProcessing" title="Reset to default">↺</button>
+                                    </div>
 
-                                    <label for="doPostProcessing">generate 2D and potree point cloud tiles:</label>
-                                    <br/>
+                                    <div class="opt-row">
+                                        <div class="opt-head">
+                                            <label class="field-label" for="webhook">Webhook URL (optional)</label>
+                                            <span class="opt-actions">
+                                                <button type="button" class="btn-icon" title="Optional webhook callback URL">i</button>
+                                                <button type="button" class="btn-icon" id="resetWebhook" title="Reset to default">↺</button>
+                                            </span>
+                                        </div>
+                                        <input id="webhook" name="webhook" class="ndm-input" type="text" placeholder="https://…">
+                                    </div>
+                                </div>
 
-                                    
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" id="doPostProcessing"> Enable
+                                <div class="section" data-bind="foreach: options">
+                                    <!-- ko if: properties.name !== 'fast-orthophoto' && properties.name !== 'optimize-disk-space' -->
+                                    <div class="opt-row">
+                                        <div class="opt-head">
+                                            <label class="field-label" data-bind="attr: {for: 'opt_' + properties.name, title: domainTooltipText}, text: properties.name"></label>
+                                            <span class="opt-actions">
+                                                <button type="button" class="btn-icon" data-bind="attr: {title: properties.help}">i</button>
+                                                <button type="button" class="btn-icon" title="Reset to default" data-bind="click: resetToDefault">↺</button>
+                                            </span>
+                                        </div>
+                                        <!-- ko if: properties.type !== 'bool' && properties.type !== 'enum' -->
+                                        <input class="ndm-input" type="text" autocomplete="off" data-bind="attr: {id: 'opt_' + properties.name}, value: value, valueUpdate: 'input'">
+                                        <!-- /ko -->
+                                        <!-- ko if: properties.type === 'bool' -->
+                                        <label class="checkbox-row" data-bind="attr: {for: 'opt_cb_' + properties.name}">
+                                            <input type="checkbox" data-bind="attr: {id: 'opt_cb_' + properties.name}, checked: value">
+                                            <span><span class="label">Enable</span></span>
                                         </label>
-                                    </div>
-                                    <button type="submit" class="btn glyphicon glyphicon-info-sign btn-info" data-toggle="tooltip" data-placement="top" title="Generate 2D and Potree Point Cloud Tiles" ></button>
-                                    <button id="resetDoPostProcessing" type="submit" class="btn glyphicon glyphicon glyphicon-repeat btn-default" data-toggle="tooltip" data-placement="top" title="Reset to default"  ></button>
-                                    
-                                    <br/><br/>
-                                    
-                                </div>
-
-                                <div>
-                                    <label for="webhook">webhook callback url (optional):</label>
-                                    <br/>
-                                     <input id="webhook" name="webhook" class="form-control" type="text">
-                                    <button type="submit" class="btn glyphicon glyphicon-info-sign btn-info" data-toggle="tooltip" data-placement="top" title="Optional webhook" ></button>
-                                    <button id="resetWebhook" type="submit" class="btn glyphicon glyphicon glyphicon-repeat btn-default" data-toggle="tooltip" data-placement="top" title="Reset to default"  ></button>
-                                    <br/><br/>
-                                </div>
-
-                                <div data-bind="foreach: options">
-                                    <label data-bind="text: properties.name + (properties.domain ? ' (' + properties.domain + ')' : '')"></label><br/>
-                                    <!-- ko if: properties.type !== 'bool' && properties.type !== 'enum' -->
-                                    <input type="text" class="form-control" data-bind="attr: {placeholder: properties.value}, value: value">
-                                    <!-- /ko -->
-                                    <!-- ko if: properties.type === 'bool' -->
-                                    <div class="checkbox">
-                                        <label>
-                                            <input type="checkbox" data-bind="checked: value"> Enable
-                                        </label>
+                                        <!-- /ko -->
+                                        <!-- ko if: properties.type === 'enum' -->
+                                        <div class="selectBox">
+                                            <select class="ndm-select" data-bind="attr: {id: 'opt_' + properties.name}, options: properties.domain, value: value"></select>
+                                        </div>
+                                        <!-- /ko -->
                                     </div>
                                     <!-- /ko -->
-                                    <!-- ko if: properties.type === 'enum' -->
-                                    <div class="selectBox">
-                                        <label>
-                                            <select class="form-control" data-bind="options: properties.domain, value: value"></select>
-                                        </label>
-                                    </div>
-                                    <!-- /ko -->
-                                    <button type="submit" class="btn glyphicon glyphicon-info-sign btn-info" data-toggle="tooltip" data-placement="top" data-bind="attr: {title: properties.help}"></button>
-                                    <button type="submit" class="btn glyphicon glyphicon glyphicon-repeat btn-default" data-toggle="tooltip" data-placement="top" title="Reset to default" data-bind="click: resetToDefault"></button>
-
-                                    <br/><br/>
                                 </div>
                             </div>
                         </div>
-                    </div>
-                </form>
+                    </form>
+                </div>
             </div>
-            <div class="col-xs-12 col-sm-8" id="taskList">
-                <div data-bind="visible: error() != ''">
-                    <div class="alert alert-warning" role="alert" data-bind="text: error()"></div>
-                </div>
-                <div data-bind="visible: loading()">
-                    Loading task list... <span class="glyphicon glyphicon-refresh spinning"></span>
-                </div>
-                <p data-bind="visible: !loading() && tasks().length === 0">No running tasks.</p>
-                <div data-bind="foreach: tasks">
-                    <div class="task" data-bind="css: {pulsePositive: info().status && info().status.code === 40, pulseNegative: info().status && info().status.code === 30}">
-                        <p data-bind="visible: loading()">Retrieving <span data-bind="text: uuid"></span> ... <span class="glyphicon glyphicon-refresh spinning"></span></p>
-                        <div data-bind="visible: !loading() && !info().error">
-                            <div class="taskItem"><strong>UUID:</strong>
-                                <a data-bind="text: info().uuid, click: openInfo" href="#"></a>
-                            </div>
-                            <div class="taskItem"><strong>Name:</strong> <span data-bind="text: info().name"></span></div>
-                            <div class="taskItem"><strong>Images:</strong> <span data-bind="text: info().imagesCount"></span></div>
-                            <div class="taskItem"><strong>Status:</strong> <span data-bind="text: statusDescr()"></span></div>
-                            <div class="taskItem"><strong>Time Elapsed:</strong> <span data-bind="text: timeElapsed()"></span></div>
-                            <div class="taskItem"><strong>Console Output:</strong> <a href="javascript:void(0);" data-bind="click: viewOutput, visible: !viewingOutput()">View</a><a href="javascript:void(0);" data-bind="click: hideOutput, visible: viewingOutput()">Hide</a> | <a href="#" data-bind="click: downloadOutput">Export</a></a></div>
-                            <textarea class="consoleOutput" data-bind="value: output().join('\n'), visible: viewingOutput(), event: {mouseover: consoleMouseOver, mouseout: consoleMouseOut}, attr: {id: 'console_' + uuid}"></textarea>
-                            
-                            <div data-bind="visible: showDownload()" style="float: left; margin-top: 6px; padding-top: 6px; border-top: 1px solid #eee;">
-                                <div class="taskItem"><strong>Download: </strong> <a data-bind="attr: {'href': downloadLink()}">All Assets</a></div>
-                            </div>
 
-                            <span data-bind="css: 'statusIcon glyphicon ' + icon()"></span>
-
-                            <div data-bind="visible: info().status && info().status.code === 20" class="progress" style="margin-top: 12px;">
-                                <div class="progress-bar progress-bar-info" role="progressbar" data-bind="text: parseInt(info().progress) + '%', style: {width: info().progress + '%'}"></div>
-                            </div>
-
-                            <div class="actionButtons">
-                                <button data-bind="click: cancel, visible: showCancel()" type="button" class="btn btn-primary btn-sm">
-                                    <span class="glyphicon glyphicon-remove-circle"></span> Cancel
-                                </button>
-
-                                <button data-bind="click: restart, visible: showRestart()" type="button" class="btn btn-primary btn-sm">
-                                    <span class="glyphicon glyphicon-play"></span> Restart
-                                </button>
-
-                                <button data-bind="click: remove, visible: showRemove()" type="button" class="btn btn-primary btn-sm">
-                                    <span class="glyphicon glyphicon-remove-circle"></span> Remove
-                                </button>
-                            </div>
+            <div class="side-stack">
+                <section class="card ndm-map-panel" id="ndmGpsPanel" aria-label="GPS preview from queued upload files">
+                    <div class="map-header">
+                        <div class="map-header__title-row">
+                            <h2 id="ndmGpsPanelTitle">Image locations</h2>
+                            <button type="button" class="btn-ghost ndm-map-toggle" id="ndmMapToggle" aria-expanded="true" aria-controls="mapGps">Hide map</button>
                         </div>
+                        <p class="sub" id="mapGpsStatus">Add images in the drop zone to read GPS from EXIF.</p>
+                    </div>
+                    <div class="ndm-map-wrap">
+                        <div id="mapGps" role="application" aria-label="Map of image GPS positions from EXIF"></div>
+                        <div class="map-polygon-banner" id="ndmPolygonBanner" hidden>
+                            <span>Click the map to add corners. Photos inside the shape will be excluded.</span>
+                            <span class="banner-actions">
+                                <button type="button" class="map-poly-done" id="ndmPolyDone">Finish area</button>
+                                <button type="button" id="ndmPolyCancel">Cancel</button>
+                            </span>
+                        </div>
+                    </div>
+                </section>
 
-                        <!-- Error messages -->
-                        <div data-bind="visible: info().error !== undefined">
-                            <div class="alert alert-warning" role="alert" data-bind="text: info().error"></div>
-                            <div class="actionButtons">
-                                <button data-bind="click: remove" type="button" class="btn btn-primary btn-sm">
-                                    <span class="glyphicon glyphicon-remove-circle"></span> Remove
-                                </button>
+                <div class="card tasks-card" id="taskList">
+                    <div class="card-body">
+                        <div class="tasks-header">
+                            <h2>Tasks</h2>
+                            <p class="sub">Status updates every few seconds. Open the UUID link for raw JSON task info.</p>
+                        </div>
+                        <div class="tasks-body">
+                            <div class="alert-list" data-bind="visible: error() != ''">
+                                <div class="alert" role="alert" data-bind="text: error()"></div>
+                            </div>
+                            <p class="loading-line" data-bind="visible: listLoadingSlow()">Loading task list… <span class="spinning" aria-hidden="true">⟳</span></p>
+                            <p class="empty-hint" data-bind="visible: !listLoading() && tasks().length === 0">No tasks yet.</p>
+                            <div data-bind="foreach: tasks">
+                                <div class="task" data-bind="css: {pulsePositive: info().status && info().status.code === 40, pulseNegative: info().status && info().status.code === 30, 'task--collapsed': ((info().status && !info().error) || info().error !== undefined) && !expanded(), 'task--failed': (info().status && info().status.code === 30) || info().error !== undefined}">
+                                    <div data-bind="visible: info().status && !info().error">
+                                        <button type="button" class="task__head" data-bind="click: toggleExpanded, attr: {'aria-expanded': expanded() ? 'true' : 'false', 'aria-label': 'Toggle task details'}">
+                                            <span class="task__chevron" aria-hidden="true">▶</span>
+                                            <span class="task__head-text">
+                                                <strong data-bind="text: info().name || 'Untitled'"></strong><span class="task__head-meta"> · </span><span class="task__head-meta" data-bind="text: statusDescr"></span>
+                                            </span>
+                                            <span class="statusIcon" data-bind="text: iconSymbol(), css: { spinning: info().status && info().status.code === 20, 'statusIcon--ok': info().status && info().status.code === 40, 'statusIcon--failed': info().status && info().status.code === 30 }"></span>
+                                        </button>
+                                        <div class="task__details" data-bind="visible: expanded()">
+                                            <div class="taskItem"><strong>UUID:</strong>
+                                                <a data-bind="text: info().uuid, click: openInfo" href="#"></a>
+                                            </div>
+                                            <div class="taskItem"><strong>Name:</strong> <span data-bind="text: info().name"></span></div>
+                                            <div class="taskItem"><strong>Images:</strong> <span data-bind="text: info().imagesCount"></span></div>
+                                            <div class="taskItem"><strong>Status:</strong> <span data-bind="text: statusDescr()"></span></div>
+                                            <div class="taskItem"><strong>Time elapsed:</strong> <span data-bind="text: timeElapsed()"></span></div>
+                                            <div class="taskItem"><strong>Console output:</strong> <a href="javascript:void(0);" data-bind="click: viewOutput, visible: !viewingOutput()">View</a><a href="javascript:void(0);" data-bind="click: hideOutput, visible: viewingOutput()">Hide</a> | <a href="#" data-bind="click: downloadOutput">Export</a></div>
+                                            <textarea class="consoleOutput" data-bind="value: output().join('\n'), visible: viewingOutput(), event: {mouseover: consoleMouseOver, mouseout: consoleMouseOut}, attr: {id: 'console_' + uuid}"></textarea>
+
+                                            <div data-bind="visible: showDownload()" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border);">
+                                                <div class="taskItem"><strong>Download:</strong> <a data-bind="attr: {'href': downloadLink()}">All assets (ZIP)</a></div>
+                                            </div>
+
+                                            <div data-bind="visible: info().status && info().status.code === 20" style="margin-top: 0.75rem;">
+                                                <div class="ndm-progress">
+                                                    <div class="ndm-progress__bar ndm-progress__bar--file" role="progressbar" data-bind="text: parseInt(info().progress) + '%', style: {width: info().progress + '%'}"></div>
+                                                </div>
+                                            </div>
+
+                                            <div class="actionButtons">
+                                                <button data-bind="click: cancel, visible: showCancel()" type="button" class="btn-task">Cancel</button>
+                                                <button data-bind="click: restart, visible: showRestart()" type="button" class="btn-task">Restart</button>
+                                                <button data-bind="click: remove, visible: showRemove()" type="button" class="btn-task">Remove</button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div data-bind="visible: info().error !== undefined">
+                                        <button type="button" class="task__head" data-bind="click: toggleExpanded, attr: {'aria-expanded': expanded() ? 'true' : 'false', 'aria-label': 'Toggle error details'}">
+                                            <span class="task__chevron" aria-hidden="true">▶</span>
+                                            <span class="task__head-text">
+                                                <strong>Task error</strong><span class="task__head-meta" data-bind="text: ' — ' + (info().error || '')"></span>
+                                            </span>
+                                            <span class="statusIcon statusIcon--failed" aria-hidden="true">!</span>
+                                        </button>
+                                        <div class="task__details task__details--flush" data-bind="visible: expanded()">
+                                            <div class="alert" role="alert" data-bind="text: info().error"></div>
+                                            <div class="actionButtons">
+                                                <button data-bind="click: remove" type="button" class="btn-task">Remove</button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <p class="taskItem loading-line" style="margin:1rem 1.125rem;color:var(--muted)" data-bind="visible: !info().status && info().error === undefined">Fetching status for <span data-bind="text: uuid"></span>…</p>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -214,16 +344,16 @@
             </div>
         </div>
     </div>
-    <!-- /container -->
+
     <script src="//ajax.googleapis.com/ajax/libs/jquery/1.11.2/jquery.min.js"></script>
     <script>
         window.jQuery || document.write('<script src="js/vendor/jquery-1.11.2.min.js"><\/script>')
     </script>
-    <script src="js/vendor/bootstrap.min.js"></script>
     <script src="js/vendor/knockout-3.4.0.js"></script>
     <script src="js/vendor/ko.observableDictionary.js"></script>
     <script src="js/dropzone.js" type="text/javascript"></script>
-    <script src="js/main.js?t=3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="js/main.js?t=39"></script>
 </body>
-
 </html>

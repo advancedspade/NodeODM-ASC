@@ -98,8 +98,8 @@ jobs:
               sudo docker run -d \
                 --name nodeodm \
                 --restart unless-stopped \
-                --memory=64g \
-                --memory-swap=64g \
+                --memory=112g \
+                --memory-swap=112g \
                 -p 3000:3000 \
                 -v /var/www/data:/var/www/data \
                 ${{ env.IMAGE_NAME }}:latest \

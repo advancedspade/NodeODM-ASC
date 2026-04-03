@@ -15,7 +15,7 @@
 "use strict";
 
 const OPTION_UI_DEFAULTS = {
-    "3d-tiles": "true",
+    "3d-tiles": "false",
     "auto-boundary": "true",
     "auto-boundary-distance": "10",
     "bg-removal": "false",
@@ -41,7 +41,7 @@ const OPTION_UI_DEFAULTS = {
     "max-concurrency": "8",
     "merge": "all",
     "mesh-octree-depth": "12",
-    "mesh-size": "4000000",
+    "mesh-size": "400000",
     "min-num-features": "13000",
     "no-gpu": "false",
     "optimize-disk-space": "false",
@@ -66,7 +66,7 @@ const OPTION_UI_DEFAULTS = {
     "rolling-shutter": "false",
     "rolling-shutter-readout": "0",
     "sfm-algorithm": "incremental",
-    "skip-3dmodel": "false",
+    "skip-3dmodel": "true",
     "skip-band-alignment": "false",
     "skip-orthophoto": "false",
     "skip-report": "false",

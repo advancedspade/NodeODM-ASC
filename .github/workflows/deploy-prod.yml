@@ -10,6 +10,7 @@ env:
   GCE_PROJECT: tools-471222
   GCE_ZONE: us-central1-a
   INSTANCE_NAME: nodeodm-asc-vm
+  GCE_SSH_USER: asc_admin
   IMAGE_NAME: gcr.io/tools-471222/nodeodm-asc
   WIF_PROVIDER: projects/221915286772/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   SA_EMAIL: nodeodm-service@tools-471222.iam.gserviceaccount.com
@@ -79,7 +80,7 @@ jobs:
         run: |
           echo "🚀 Deploying to production: ${{ env.INSTANCE_NAME }}"
           
-          gcloud compute ssh ${{ env.INSTANCE_NAME }} \
+          gcloud compute ssh ${{ env.GCE_SSH_USER }}@${{ env.INSTANCE_NAME }} \
             --zone=${{ env.GCE_ZONE }} \
             --project=${{ env.GCE_PROJECT }} \
             --command="

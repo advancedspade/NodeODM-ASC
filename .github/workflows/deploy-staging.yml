@@ -10,8 +10,11 @@ env:
   GCE_PROJECT: tools-471222
   GCE_ZONE: us-central1-a
   INSTANCE_NAME: nodeodm-asc-vm-staging
+  SUPER_INSTANCE_NAME: nodeodm-asc-vm-super
   GCE_SSH_USER: asc_admin
   IMAGE_NAME: gcr.io/tools-471222/nodeodm-asc-staging
+  # Larger cap on the super VM (n2-highmem-32); staging VM still uses 112g below.
+  SUPER_DOCKER_MEMORY: 240g
   WIF_PROVIDER: projects/221915286772/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   SA_EMAIL: nodeodm-service@tools-471222.iam.gserviceaccount.com
 
@@ -141,4 +144,89 @@ jobs:
           done
           
           echo "❌ Health check failed"
+          exit 1
+
+  deploy-super:
+    name: Deploy to Super VM (staging image, testing)
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SA_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCE_PROJECT }}
+
+      - name: Deploy to Super VM
+        run: |
+          echo "🚀 Deploying staging image to super VM: ${{ env.SUPER_INSTANCE_NAME }}"
+
+          gcloud compute ssh ${{ env.GCE_SSH_USER }}@${{ env.SUPER_INSTANCE_NAME }} \
+            --zone=${{ env.GCE_ZONE }} \
+            --project=${{ env.GCE_PROJECT }} \
+            --command="
+              set -e
+              echo '=== Configuring Docker for GCR ==='
+              sudo gcloud auth configure-docker gcr.io --quiet
+
+              echo '=== Pulling new image ==='
+              sudo docker pull ${{ env.IMAGE_NAME }}:latest
+
+              echo '=== Stopping existing container ==='
+              sudo docker stop nodeodm || true
+              sudo docker rm nodeodm || true
+
+              echo '=== Starting new container ==='
+              sudo docker run -d \
+                --name nodeodm \
+                --restart unless-stopped \
+                --memory=${{ env.SUPER_DOCKER_MEMORY }} \
+                --memory-swap=${{ env.SUPER_DOCKER_MEMORY }} \
+                -p 3000:3000 \
+                -v /var/www/data:/var/www/data \
+                ${{ env.IMAGE_NAME }}:latest \
+                --gcs_bucket nodeodm-outputs-v1 \
+                --gcs_upload_prefix outputs \
+                --gcs_upload_paths '.' \
+                --gcs_cleanup_after_upload \
+                --max_concurrency 6
+
+              echo '=== Checking container status ==='
+              sleep 5
+              sudo docker ps | grep nodeodm
+
+              echo '=== Cleaning up old images ==='
+              sudo docker image prune -f
+
+              echo '=== Deployment complete ==='
+            "
+
+      - name: Health Check (Super VM)
+        run: |
+          echo "Waiting for service to be ready..."
+          sleep 10
+
+          VM_IP=$(gcloud compute instances describe ${{ env.SUPER_INSTANCE_NAME }} \
+            --zone=${{ env.GCE_ZONE }} \
+            --project=${{ env.GCE_PROJECT }} \
+            --format='get(networkInterfaces[0].accessConfigs[0].natIP)')
+
+          echo "Checking health at http://$VM_IP:3000/info"
+
+          for i in {1..5}; do
+            if curl -sf "http://$VM_IP:3000/info" > /dev/null 2>&1; then
+              echo "✅ Super VM deployment successful!"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+
+          echo "❌ Super VM health check failed"
           exit 1

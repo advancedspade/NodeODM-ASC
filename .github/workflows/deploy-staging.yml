@@ -207,26 +207,24 @@ jobs:
               echo '=== Deployment complete ==='
             "
 
+      # Curl the public IP from GitHub’s runner often fails when VPC firewall allows 3000 only for
+      # tagged instances (staging has tags; super may not). SSH + localhost verifies the app on the VM.
       - name: Health Check (Super VM)
         run: |
           echo "Waiting for service to be ready..."
           sleep 10
 
-          VM_IP=$(gcloud compute instances describe ${{ env.SUPER_INSTANCE_NAME }} \
-            --zone=${{ env.GCE_ZONE }} \
-            --project=${{ env.GCE_PROJECT }} \
-            --format='get(networkInterfaces[0].accessConfigs[0].natIP)')
-
-          echo "Checking health at http://$VM_IP:3000/info"
-
-          for i in {1..5}; do
-            if curl -sf "http://$VM_IP:3000/info" > /dev/null 2>&1; then
-              echo "✅ Super VM deployment successful!"
+          for i in {1..8}; do
+            if gcloud compute ssh ${{ env.GCE_SSH_USER }}@${{ env.SUPER_INSTANCE_NAME }} \
+              --zone=${{ env.GCE_ZONE }} \
+              --project=${{ env.GCE_PROJECT }} \
+              --command="curl -sf http://127.0.0.1:3000/info -o /dev/null"; then
+              echo "✅ Super VM deployment successful (HTTP /info on localhost)!"
               exit 0
             fi
             echo "Attempt $i failed, retrying in 10s..."
             sleep 10
           done
 
-          echo "❌ Super VM health check failed"
+          echo "❌ Super VM health check failed (app not responding on 127.0.0.1:3000 on the VM)"
           exit 1

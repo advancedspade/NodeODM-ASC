@@ -204,27 +204,22 @@ jobs:
               echo '=== Cleaning up old images ==='
               sudo docker image prune -f
 
+              echo '=== Health check (localhost /info) ==='
+              ok=0
+              i=1
+              while [ \$i -le 8 ]; do
+                if curl -sf http://127.0.0.1:3000/info -o /dev/null; then
+                  ok=1
+                  break
+                fi
+                echo \"health attempt \$i failed, sleeping 10s\"
+                i=\$((i + 1))
+                sleep 10
+              done
+              if [ \$ok -ne 1 ]; then
+                echo '❌ Super VM health check failed'
+                exit 1
+              fi
+
               echo '=== Deployment complete ==='
             "
-
-      # Public IP curl from GitHub fails if firewall only allows :3000 for tagged VMs (e.g. staging).
-      # SSH + localhost checks that the app is actually listening after deploy.
-      - name: Health Check (Super VM)
-        run: |
-          echo "Waiting for service to be ready..."
-          sleep 10
-
-          for i in {1..8}; do
-            if gcloud compute ssh ${{ env.GCE_SSH_USER }}@${{ env.SUPER_INSTANCE_NAME }} \
-              --zone=${{ env.GCE_ZONE }} \
-              --project=${{ env.GCE_PROJECT }} \
-              --command="curl -sf http://127.0.0.1:3000/info -o /dev/null"; then
-              echo "✅ Super VM deployment successful (HTTP /info on localhost)!"
-              exit 0
-            fi
-            echo "Attempt $i failed, retrying in 10s..."
-            sleep 10
-          done
-
-          echo "❌ Super VM health check failed (no HTTP 200 on 127.0.0.1:3000/info on the VM)"
-          exit 1

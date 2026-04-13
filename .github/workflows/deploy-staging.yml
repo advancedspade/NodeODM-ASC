@@ -15,8 +15,16 @@ env:
   IMAGE_NAME: gcr.io/tools-471222/nodeodm-asc-staging
   # Larger cap on the super VM (n2-highmem-32); staging VM still uses 112g below.
   SUPER_DOCKER_MEMORY: 240g
-  # Super VM SSH from GitHub often times out on port 22; IAP tunnels through Google instead of the runner IP.
-  # Requires: firewall rule tcp:22 from 35.235.240.0/20 to this VM (or VPC), and SA role roles/iap.tunnelResourceAccessor.
+  # Super VM: direct SSH from GitHub times out (runner IP not in firewall). IAP needs ALL of the following:
+  # 1) Firewall: allow tcp:22 from 35.235.240.0/20 to instances (IAP TCP forwarding range).
+  # 2) IAM: grant the WIF deploy SA "IAP-Secured Tunnel User" (roles/iap.tunnelResourceAccessor). Without this,
+  #    gcloud fails with: Error while connecting [4033: 'not authorized'].
+  #    Example (project tools-471222, SA below):
+  #    gcloud projects add-iam-policy-binding tools-471222 \
+  #      --member="serviceAccount:nodeodm-service@tools-471222.iam.gserviceaccount.com" \
+  #      --role="roles/iap.tunnelResourceAccessor"
+  # 3) Enable "Cloud IAP" API (iap.googleapis.com) if prompted.
+  # Set to "false" only if super VM allows SSH from the internet (not recommended); then fix firewall instead.
   GCE_SUPER_SSH_USE_IAP: "true"
   WIF_PROVIDER: projects/221915286772/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   SA_EMAIL: nodeodm-service@tools-471222.iam.gserviceaccount.com

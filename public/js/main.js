@@ -134,7 +134,6 @@ $(function() {
     };
     App.prototype.startTask = function(){
         var self = this;
-        this.uploading(true);
         this.error("");
         this.uuid("");
 
@@ -143,9 +142,18 @@ $(function() {
             self.uploading(false);
         };
 
+        var projectName = ($("#taskName").val() || "").trim();
+        if (!projectName) {
+            die("Please enter a project name before starting a task.");
+            $("#taskName").focus();
+            return;
+        }
+
+        this.uploading(true);
+
         // Start upload
         var formData = new FormData();
-        formData.append("name", $("#taskName").val());
+        formData.append("name", projectName);
         formData.append("webhook", $("#webhook").val());
         formData.append("skipPostProcessing", !$("#doPostProcessing").prop('checked'));
         formData.append("options", JSON.stringify(buildTaskOptions()));

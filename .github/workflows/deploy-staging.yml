@@ -15,6 +15,9 @@ env:
   IMAGE_NAME: gcr.io/tools-471222/nodeodm-asc-staging
   # Larger cap on the super VM (n2-highmem-32); staging VM still uses 112g below.
   SUPER_DOCKER_MEMORY: 240g
+  # Super VM SSH from GitHub often times out on port 22; IAP tunnels through Google instead of the runner IP.
+  # Requires: firewall rule tcp:22 from 35.235.240.0/20 to this VM (or VPC), and SA role roles/iap.tunnelResourceAccessor.
+  GCE_SUPER_SSH_USE_IAP: "true"
   WIF_PROVIDER: projects/221915286772/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   SA_EMAIL: nodeodm-service@tools-471222.iam.gserviceaccount.com
 
@@ -169,9 +172,12 @@ jobs:
         run: |
           echo "🚀 Deploying staging image to super VM: ${{ env.SUPER_INSTANCE_NAME }}"
 
+          IAP_FLAG=""
+          if [ "${{ env.GCE_SUPER_SSH_USE_IAP }}" = "true" ]; then IAP_FLAG="--tunnel-through-iap"; fi
           gcloud compute ssh ${{ env.GCE_SSH_USER }}@${{ env.SUPER_INSTANCE_NAME }} \
             --zone=${{ env.GCE_ZONE }} \
             --project=${{ env.GCE_PROJECT }} \
+            $IAP_FLAG \
             --command="
               set -e
               echo '=== Configuring Docker for GCR ==='

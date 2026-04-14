@@ -163,9 +163,6 @@ jobs:
     name: Deploy to Super VM (staging image, testing)
     runs-on: ubuntu-latest
     needs: build-and-push
-    # Until nodeodm-service@… has roles/iap.tunnelResourceAccessor (see env comments), IAP returns 4033.
-    # Staging deploy still completes; fix GCP IAM then remove continue-on-error so super failures fail the run.
-    continue-on-error: true
 
     steps:
       - name: Authenticate to Google Cloud

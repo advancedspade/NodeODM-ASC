@@ -16,9 +16,16 @@ env:
   # Larger cap on the super VM (n2-highmem-32); staging VM still uses 112g below.
   SUPER_DOCKER_MEMORY: 240g
   # Super VM: direct SSH from GitHub times out (runner IP not in firewall). IAP needs ALL of the following:
-  # 1) Firewall: allow tcp:22 from 35.235.240.0/20 to instances (IAP TCP forwarding range).
+  # 1) Firewall: allow tcp:22 from 35.235.240.0/20 (IAP). Without it: [4003: 'failed to connect to backend'] (port 22).
+  #    Do not paste placeholder tag names. Inspect super VM, then create the rule (network = last segment of network URL):
+  #      gcloud compute instances describe nodeodm-asc-vm-super --zone=us-central1-a --project=tools-471222 \
+  #        --format='yaml(networkInterfaces[0].network,tags)'
+  #      gcloud compute firewall-rules create allow-iap-ssh --project=tools-471222 --direction=INGRESS --action=ALLOW \
+  #        --rules=tcp:22 --source-ranges=35.235.240.0/20 --network=NETWORK_SHORT_NAME --target-tags=tag1
+  #    Use real tags from that YAML (comma-separated, lowercase a-z 0-9 hyphen). Omit --target-tags only if you accept
+  #    the rule applying to all instances on that VPC.
   # 2) IAM: grant the WIF deploy SA "IAP-Secured Tunnel User" (roles/iap.tunnelResourceAccessor). Without this,
-  #    gcloud fails with: Error while connecting [4033: 'not authorized'].
+  #    gcloud fails with: [4033: 'not authorized'].
   #    Example (project tools-471222, SA below):
   #    gcloud projects add-iam-policy-binding tools-471222 \
   #      --member="serviceAccount:nodeodm-service@tools-471222.iam.gserviceaccount.com" \

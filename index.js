@@ -112,19 +112,15 @@ app.get('/auth/bootstrap', (req, res) => {
     }
     res.json({ oauth: false, signedIn: true });
 });
-const portalHomePath = path.join(publicDir, 'portal.html');
 app.get('/', (req, res) => {
     if (config.oauthEnabled && googleOAuth && !googleOAuth.hasWebAuth(req)) {
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
-        return res.sendFile(portalHomePath);
+        return res.redirect(302, '/login.html');
     }
     sendWebUiIndex(res);
 });
 app.get('/index.html', (req, res) => {
     if (config.oauthEnabled && googleOAuth && !googleOAuth.hasWebAuth(req)) {
-        return res.redirect(302, '/');
+        return res.redirect(302, '/login.html');
     }
     sendWebUiIndex(res);
 });

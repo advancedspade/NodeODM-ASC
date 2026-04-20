@@ -24,6 +24,9 @@ RUN mkdir /var/www
 WORKDIR "/var/www"
 COPY . /var/www
 
+# Legacy path: some deployments still resolve views/login.html; keep in sync with public/login.html.
+RUN mkdir -p /var/www/views && cp /var/www/public/login.html /var/www/views/login.html
+
 RUN npm install --production && mkdir -p tmp
 
 ENTRYPOINT ["/usr/bin/node", "/var/www/index.js"]

@@ -9,7 +9,7 @@
 # Hot reload expectations:
 # - There is no in-browser HMR (no webpack live reload). Edits under public/ are served
 #   from the bind mount immediately, but you must refresh the tab (hard refresh if needed).
-# - views/, libs/, index.js, etc.: nodemon restarts the Node process (see nodemon.json).
+# - libs/, index.js, etc.: nodemon restarts the Node process (see nodemon.json). Login page is public/login.html (refresh browser).
 #   --legacy-watch makes file events reliable through Docker bind mounts (some hosts drop native fs.watch).
 # - package.json dependency changes: rebuild image or npm install in the container.
 # - If you use plain `docker compose up` (default compose file) without this file, the image
@@ -36,7 +36,6 @@ services:
       - ./config.js:/var/www/config.js
       - ./config-default.json:/var/www/config-default.json
       - ./nodemon.json:/var/www/nodemon.json
-      - ./views:/var/www/views
       - ./helpers:/var/www/helpers
       - ./docs:/var/www/docs
     command: ["/var/www/index.js", "--", "--port", "3000"]

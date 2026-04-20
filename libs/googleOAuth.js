@@ -6,8 +6,18 @@
 const https = require("https");
 const jwt = require("jsonwebtoken");
 const { OAuth2Client } = require("google-auth-library");
+const fs = require("fs");
 const logger = require("./logger");
 const path = require("path");
+
+/** Prefer public/ (Docker + static); fall back to views/ for older trees. */
+function resolveLoginHtmlPath() {
+    const inPublic = path.join(__dirname, "..", "public", "login.html");
+    const inViews = path.join(__dirname, "..", "views", "login.html");
+    if (fs.existsSync(inPublic)) return inPublic;
+    if (fs.existsSync(inViews)) return inViews;
+    return inPublic;
+}
 
 function httpsGetJson(urlStr, headers) {
     return new Promise((resolve, reject) => {
@@ -167,7 +177,12 @@ module.exports = function createGoogleOAuth(config) {
     }
 
     function attach(app) {
-        const loginPage = path.join(__dirname, "..", "views", "login.html");
+        const loginPage = resolveLoginHtmlPath();
+        if (!fs.existsSync(loginPage)) {
+            logger.error(
+                "OAuth: login page missing. Add public/login.html (or views/login.html). Tried: " + loginPage
+            );
+        }
 
         app.get("/login.html", (req, res) => {
             res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");

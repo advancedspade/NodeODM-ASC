@@ -144,16 +144,25 @@ jobs:
             --project=${{ env.GCE_PROJECT }} \
             --format='get(networkInterfaces[0].accessConfigs[0].natIP)')
           
-          echo "Checking health at http://$VM_IP:3000/info"
+          echo "Checking readiness at http://$VM_IP:3000/auth/info"
           
-          for i in {1..5}; do
-            if curl -sf "http://$VM_IP:3000/info" > /dev/null 2>&1; then
-              echo "✅ Production deployment successful!"
-              exit 0
+          ok=0
+          for i in 1 2 3 4 5; do
+            if curl -sf "http://$VM_IP:3000/auth/info" | jq -e '.message != null' >/dev/null 2>&1; then
+              ok=1
+              break
             fi
             echo "Attempt $i failed, retrying in 10s..."
             sleep 10
           done
+          if [ "$ok" != 1 ]; then
+            echo "❌ Server did not respond with auth/info"
+            exit 1
+          fi
           
-          echo "❌ Health check failed"
-          exit 1
+          login_url=$(curl -sf "http://$VM_IP:3000/auth/info" | jq -r '.loginUrl // empty')
+          if [ -z "$login_url" ] || [ "$login_url" = "null" ]; then
+            echo "❌ OAuth is OFF. Set production Environment secrets: NODEODM_SESSION_SECRET, OAUTH_GOOGLE_CLIENT_ID, OAUTH_GOOGLE_CLIENT_SECRET, OAUTH_GOOGLE_REDIRECT_URI, PORTAL_ENV_URL, PORTAL_SUPER_ENV_URL."
+            exit 1
+          fi
+          echo "✅ Production up; OAuth enabled (loginUrl=$login_url)"

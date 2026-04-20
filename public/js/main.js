@@ -745,6 +745,37 @@ $(function() {
         ko.applyBindings(app, appRoot);
     }
 
+    $.get(ndmApi("/auth/bootstrap")).done(function (d) {
+        if (d.oauth && d.signedIn) {
+            var bar = document.getElementById("ndmOAuthBar");
+            if (bar) bar.hidden = false;
+        }
+        if (d.oauth && d.portalStagingEnvOrigin && d.portalSuperEnvOrigin) {
+            var wrap = document.getElementById("ndmEnvSwitch");
+            var st = document.getElementById("ndmEnvStaging");
+            var su = document.getElementById("ndmEnvSuper");
+            if (wrap && st && su) {
+                st.href = new URL("/", d.portalStagingEnvOrigin + "/").href;
+                su.href = new URL("/", d.portalSuperEnvOrigin + "/").href;
+                st.textContent = d.portalStagingEnvLabel || "dronemaps";
+                su.textContent = d.portalSuperEnvLabel || "superdrone";
+                var metaSt = document.getElementById("ndmEnvStagingTagline");
+                var metaSu = document.getElementById("ndmEnvSuperTagline");
+                if (metaSt && d.portalStagingEnvTagline) metaSt.textContent = d.portalStagingEnvTagline;
+                if (metaSu && d.portalSuperEnvTagline) metaSu.textContent = d.portalSuperEnvTagline;
+                var here = window.location.origin;
+                try {
+                    if (new URL(d.portalStagingEnvOrigin).origin === here) {
+                        st.classList.add("ndm-env-switch__pill--active");
+                    } else if (new URL(d.portalSuperEnvOrigin).origin === here) {
+                        su.classList.add("ndm-env-switch__pill--active");
+                    }
+                } catch (e1) {}
+                wrap.hidden = false;
+            }
+        }
+    });
+
     function hoursMinutesSecs(t) {
         var ch = 60 * 60 * 1000,
             cm = 60 * 1000,
@@ -1114,6 +1145,25 @@ $(function() {
 
         var helpStr = this.properties.help;
         this.hasHelpDetail = typeof helpStr === "string" && helpStr.trim().length > 0;
+
+        if (!this.hasHelpDetail) {
+            var bits = [];
+            bits.push("OpenDroneMap option — " + (properties.name || ""));
+            bits.push("Type: " + (properties.type || "string"));
+            if (this.domainTooltipText) {
+                var dt = this.domainTooltipText;
+                if (dt.length > 320) dt = dt.slice(0, 317) + "…";
+                bits.push("Domain / allowed values: " + dt);
+            }
+            if (this.defaultValue !== undefined && this.defaultValue !== null && String(this.defaultValue) !== "") {
+                bits.push("Default in this form: " + String(this.defaultValue));
+            }
+            bits.push("Full CLI help comes from your ODM build when available.");
+            helpStr = bits.join("\n");
+        }
+        this.helpDisplayText = helpStr;
+        /* Native title tooltips: single line reads reliably (newlines look broken in many browsers). */
+        this.helpTitleText = String(helpStr).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
 
         this.value = ko.observable(this.defaultValue);
     }

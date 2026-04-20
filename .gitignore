@@ -48,6 +48,7 @@ nodeodm.exe
 dist/
 
 # Local GCS / secrets (never commit)
+.env
 .env.gcs
 secrets/
 *.json.key

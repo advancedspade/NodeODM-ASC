@@ -1,27 +1,43 @@
-# Development: live-reload your working copy into the container (no rebuild for these paths).
+# Development: bind-mounts + nodemon auto-restart when server-side files change.
 # Usage:
 #   docker compose -f docker-compose.dev.yml up --build
 #
 # With GCS uploads (bucket + SA key on host):
 #   export GCS_BUCKET=... GCS_SA_KEY_FILE=/path/to/key.json
 #   docker compose -f docker-compose.dev.yml -f docker-compose.gcs.yml up --build
-# UI (public/) and server files below update on save; refresh the browser. Restart the
-# container if you change package.json dependencies (then rebuild or npm install in container).
+#
+# Hot reload expectations:
+# - There is no in-browser HMR (no webpack live reload). Edits under public/ are served
+#   from the bind mount immediately, but you must refresh the tab (hard refresh if needed).
+# - views/, libs/, index.js, etc.: nodemon restarts the Node process (see nodemon.json).
+#   --legacy-watch makes file events reliable through Docker bind mounts (some hosts drop native fs.watch).
+# - package.json dependency changes: rebuild image or npm install in the container.
+# - If you use plain `docker compose up` (default compose file) without this file, the image
+#   COPYs the tree at build time — edits on the host will not appear until rebuild.
 
 services:
   nodeodm:
     build: .
     image: nodeodm-asc-local:latest
+    env_file:
+      - .env
+    environment:
+      # Allow session cookie on http://localhost when the base image sets NODE_ENV=production
+      OAUTH_COOKIE_SECURE: "0"
+      # Express static uses ETag by default — browsers often keep old CSS/JS without this.
+      NODEODM_DEV_STATIC_NO_CACHE: "1"
     ports:
       - "3000:3000"
+    entrypoint: ["/usr/bin/nodemon", "--legacy-watch"]
     volumes:
       - ./public:/var/www/public
       - ./index.js:/var/www/index.js
       - ./libs:/var/www/libs
       - ./config.js:/var/www/config.js
       - ./config-default.json:/var/www/config-default.json
+      - ./nodemon.json:/var/www/nodemon.json
+      - ./views:/var/www/views
       - ./helpers:/var/www/helpers
       - ./docs:/var/www/docs
-    # Appends to image ENTRYPOINT (node …/index.js); map host port 3000.
-    command: ["--port", "3000"]
+    command: ["/var/www/index.js", "--", "--port", "3000"]
     restart: unless-stopped

@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+    <title>Choose environment — NodeODM</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/main.css?t=2">
+    <link rel="stylesheet" href="/css/app.css?t=21">
+</head>
+<body class="portal-home-body">
+    <div class="page-atmosphere" aria-hidden="true">
+        <div class="page-atmosphere__layer page-atmosphere__layer--grid"></div>
+        <div class="page-atmosphere__layer page-atmosphere__layer--contours">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+                <defs>
+                    <filter id="portal-atmo-glow" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="sRGB">
+                        <feGaussianBlur stdDeviation="2.4" result="b"/>
+                        <feGaussianBlur in="SourceGraphic" stdDeviation="0.55" result="c"/>
+                        <feMerge>
+                            <feMergeNode in="b"/>
+                            <feMergeNode in="b"/>
+                            <feMergeNode in="c"/>
+                        </feMerge>
+                    </filter>
+                </defs>
+                <g class="page-atmosphere__mapping-fill">
+                    <path class="page-atmosphere__street-block" d="M 436,358 L 516,358 A 24,24 0 0 1 540,382 L 540,640 A 24,24 0 0 1 516,664 L 436,664 A 24,24 0 0 1 412,640 L 412,382 A 24,24 0 0 1 436,358 Z"/>
+                    <g class="page-atmosphere__lower-block" transform="rotate(-45 1078 571)">
+                        <path class="page-atmosphere__street-block" d="M 918,487 L 1238,487 A 24,24 0 0 1 1262,511 L 1262,631 A 24,24 0 0 1 1238,655 L 918,655 A 24,24 0 0 1 894,631 L 894,511 A 24,24 0 0 1 918,487 Z"/>
+                    </g>
+                </g>
+                <g stroke-width="4" fill="none">
+                    <path class="page-atmosphere__mapping-glow page-atmosphere__mapping-glow--sky" d="M 376,613 L 376,346 A 32,32 0 0 1 408,314 L 544,314 A 32,32 0 0 1 576,346 L 576,518"/>
+                </g>
+                <g stroke-width="1.15" fill="none">
+                    <path class="page-atmosphere__mapping-core page-atmosphere__mapping-core--sky" d="M 376,613 L 376,346 A 32,32 0 0 1 408,314 L 544,314 A 32,32 0 0 1 576,346 L 576,518"/>
+                </g>
+                <g class="page-atmosphere__mapping-traces" fill="none" stroke-width="1.15">
+                    <path class="page-atmosphere__mapping-trace page-atmosphere__mapping-trace--slate page-atmosphere__mapping-trace--dash-a" d="M 580 228 C 760 168 920 288 1100 228 C 1260 178 1360 248 1480 208"/>
+                    <path class="page-atmosphere__mapping-trace page-atmosphere__mapping-trace--ice page-atmosphere__mapping-trace--dash-b" d="M 560 340 C 740 400 900 260 1080 320 C 1240 370 1340 290 1500 330"/>
+                </g>
+            </svg>
+        </div>
+        <div class="page-atmosphere__vignette"></div>
+    </div>
+
+    <div class="shell shell--portal-home">
+        <header class="portal-home-header">
+            <h1 class="portal-home-title">Where do you want to work?</h1>
+            <p class="portal-home-sub">Each host is tuned for a different workload. Pick one, sign in with Google there, and you stay signed in until you sign out (both hosts can share one sign-in when configured).</p>
+        </header>
+
+        <p id="portalError" class="error-block portal-home-error" role="alert" hidden></p>
+
+        <div class="portal-home-grid" id="portalGrid">
+            <p class="portal-home-loading" id="portalLoading">Loading…</p>
+            <a class="portal-home-choice portal-home-choice--staging" id="portalChoiceStaging" href="#" hidden>
+                <span class="portal-home-choice__kicker" id="portalTaglineStaging"></span>
+                <span class="portal-home-choice__title" id="portalTitleStaging">dronemaps</span>
+                <span class="portal-home-choice__desc" id="portalHostStaging"></span>
+                <span class="portal-home-choice__cta">Continue →</span>
+            </a>
+            <a class="portal-home-choice portal-home-choice--super" id="portalChoiceSuper" href="#" hidden>
+                <span class="portal-home-choice__kicker" id="portalTaglineSuper"></span>
+                <span class="portal-home-choice__title" id="portalTitleSuper">superdrone</span>
+                <span class="portal-home-choice__desc" id="portalHostSuper"></span>
+                <span class="portal-home-choice__cta">Continue →</span>
+            </a>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            function loginUrl(origin) {
+                return new URL("/login.html", origin + "/").href;
+            }
+            function sameOrigin(a, b) {
+                try {
+                    return new URL(a).origin === new URL(b).origin;
+                } catch (e) {
+                    return false;
+                }
+            }
+            function hostFromOrigin(origin) {
+                try {
+                    return new URL(origin).host;
+                } catch (e) {
+                    return "";
+                }
+            }
+            fetch("/auth/bootstrap", { credentials: "same-origin" })
+                .then(function (r) {
+                    return r.json();
+                })
+                .then(function (d) {
+                    var loading = document.getElementById("portalLoading");
+                    if (loading) loading.hidden = true;
+                    if (d && d.signedIn) {
+                        window.location.replace("/");
+                        return;
+                    }
+                    if (!d || !d.oauth) {
+                        var err = document.getElementById("portalError");
+                        if (err) {
+                            err.textContent = "Sign-in is not configured on this server.";
+                            err.hidden = false;
+                        }
+                        return;
+                    }
+                    var st = d.portalStagingEnvOrigin;
+                    var su = d.portalSuperEnvOrigin;
+                    if (!st || !su) {
+                        var e2 = document.getElementById("portalError");
+                        if (e2) {
+                            e2.textContent = "Both dronemaps and superdrone URLs must be configured (portal staging/super origins).";
+                            e2.hidden = false;
+                        }
+                        return;
+                    }
+                    var here = window.location.origin;
+                    var active = d.portalActiveSite || "";
+                    var stagingEl = document.getElementById("portalChoiceStaging");
+                    var superEl = document.getElementById("portalChoiceSuper");
+                    var titleSt = document.getElementById("portalTitleStaging");
+                    var titleSu = document.getElementById("portalTitleSuper");
+                    if (titleSt && d.portalStagingEnvLabel) titleSt.textContent = d.portalStagingEnvLabel;
+                    if (titleSu && d.portalSuperEnvLabel) titleSu.textContent = d.portalSuperEnvLabel;
+                    var tagSt = document.getElementById("portalTaglineStaging");
+                    var tagSu = document.getElementById("portalTaglineSuper");
+                    if (tagSt && d.portalStagingEnvTagline) tagSt.textContent = d.portalStagingEnvTagline;
+                    if (tagSu && d.portalSuperEnvTagline) tagSu.textContent = d.portalSuperEnvTagline;
+                    var hostSt = document.getElementById("portalHostStaging");
+                    var hostSu = document.getElementById("portalHostSuper");
+                    if (hostSt) hostSt.textContent = hostFromOrigin(st);
+                    if (hostSu) hostSu.textContent = hostFromOrigin(su);
+                    if (stagingEl) {
+                        stagingEl.href = sameOrigin(st, here) ? "/login.html" : loginUrl(st);
+                        stagingEl.hidden = false;
+                    }
+                    if (superEl) {
+                        superEl.href = sameOrigin(su, here) ? "/login.html" : loginUrl(su);
+                        superEl.hidden = false;
+                    }
+                    function setPortalCurrentEyebrow(el, text) {
+                        if (!el) return;
+                        if (text) {
+                            el.setAttribute("data-portal-eyebrow", text);
+                        } else {
+                            el.removeAttribute("data-portal-eyebrow");
+                        }
+                    }
+                    if (stagingEl) stagingEl.classList.remove("portal-home-choice--current");
+                    if (superEl) superEl.classList.remove("portal-home-choice--current");
+                    setPortalCurrentEyebrow(stagingEl, "");
+                    setPortalCurrentEyebrow(superEl, "");
+                    var onSt = sameOrigin(st, here);
+                    var onSu = sameOrigin(su, here);
+                    var labSt = d.portalStagingEnvLabel || "dronemaps";
+                    var labSu = d.portalSuperEnvLabel || "superdrone";
+                    if (onSt && !onSu) {
+                        setPortalCurrentEyebrow(stagingEl, "You're on " + labSt);
+                        if (stagingEl) stagingEl.classList.add("portal-home-choice--current");
+                    } else if (onSu && !onSt) {
+                        setPortalCurrentEyebrow(superEl, "You're on " + labSu);
+                        if (superEl) superEl.classList.add("portal-home-choice--current");
+                    } else if (active === "staging") {
+                        setPortalCurrentEyebrow(stagingEl, "This deployment is " + labSt);
+                        if (stagingEl) stagingEl.classList.add("portal-home-choice--current");
+                    } else if (active === "super") {
+                        setPortalCurrentEyebrow(superEl, "This deployment is " + labSu);
+                        if (superEl) superEl.classList.add("portal-home-choice--current");
+                    }
+                })
+                .catch(function () {
+                    var loading = document.getElementById("portalLoading");
+                    if (loading) loading.hidden = true;
+                    var err = document.getElementById("portalError");
+                    if (err) {
+                        err.textContent = "Could not load options. Refresh the page.";
+                        err.hidden = false;
+                    }
+                });
+        })();
+    </script>
+</body>
+</html>

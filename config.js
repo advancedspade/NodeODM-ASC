@@ -18,6 +18,37 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 'use strict';
 
 let fs = require('fs');
+const path = require('path');
+
+(function loadEnvFromDotenvFile() {
+	try {
+		const envPath = path.join(__dirname, '.env');
+		if (!fs.existsSync(envPath)) return;
+		let text = fs.readFileSync(envPath, 'utf8');
+		if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+		for (const rawLine of text.split(/\r?\n/)) {
+			const line = rawLine.trim();
+			if (!line || line.startsWith('#')) continue;
+			const eq = line.indexOf('=');
+			if (eq === -1) continue;
+			const key = line.slice(0, eq).trim();
+			if (!key) continue;
+			let val = line.slice(eq + 1).trim();
+			if (
+				(val.startsWith('"') && val.endsWith('"')) ||
+				(val.startsWith("'") && val.endsWith("'"))
+			) {
+				val = val.slice(1, -1);
+			}
+			if (process.env[key] === undefined) {
+				process.env[key] = val;
+			}
+		}
+	} catch (e) {
+		// ignore missing or unreadable .env
+	}
+})();
+
 let argv = require('minimist')(process.argv.slice(2));
 let utils = require('./libs/utils');
 let apps = require('./libs/apps');
@@ -44,6 +75,19 @@ Options:
 	--test_seconds	If test mode is enabled, sleep these many seconds before finishing processing a test task. (default: 0)
 	--powercycle	When set, the application exits immediately after powering up. Useful for testing launch and compilation issues.
 	--token <token>	Sets a token that needs to be passed for every request. This can be used to limit access to the node only to token holders. (default: none)
+	Google OAuth (optional — enables /login.html and cookie session; requires all of the following when used):
+	--oauth_google_client_id <id>	Web application OAuth 2.0 Client ID from Google Cloud Console.
+	--oauth_google_client_secret <secret>	Client secret for the same OAuth client.
+	--oauth_google_redirect_uri <url>	Must exactly match an authorized redirect URI (e.g. https://your-host/auth/google/callback).
+	--session_secret <string>	Secret used to sign session cookies (use a long random string). For cross-host sign-in between dronemaps and superdrone, use the same value on both servers.
+	--oauth_allowed_domains <list>	Optional comma-separated email domains (e.g. example.com,other.org). If set, only Google accounts whose address is exactly user@domain for one of those domains may sign in.
+	--oauth_session_days <n>	OAuth session length in days (JWT + cookie, 1–365). Default: 30.
+	--portal_staging_env_url <url>	Public origin for the dronemaps NodeODM host (e.g. https://dronemaps.example.com).
+	--portal_staging_env_label <text>	Label for that host (e.g. dronemaps).
+	--portal_staging_env_tagline <text>	Short description on the portal (e.g. standard capacity).
+	--portal_super_env_url <url>	Public origin for the superdrone NodeODM host (e.g. https://superdrone.example.com).
+	--portal_super_env_label <text>	Label for that host (e.g. superdrone).
+	--portal_super_env_tagline <text>	Short description on the portal (e.g. high capacity).
 	--max_images <number>	Specify the maximum number of images that this processing node supports. (default: unlimited)
 	--webhook <url>	Specify a POST URL endpoint to be invoked when a task completes processing (default: none)
 	--s3_endpoint <url>	Specify a S3 endpoint (for example, nyc3.digitaloceanspaces.com) to upload completed task results to. (default: do not upload to S3)
@@ -78,11 +122,14 @@ const allOpts = ["slice","help","config","odm_path","log_level","port","p",
 "deamonize","daemon","d","parallel_queue_processing","q",
 "cleanup_tasks_after","cleanup_uploads_after","test","test_skip_orthophotos",
 "test_skip_dems","test_drop_uploads","test_fail_tasks","test_seconds",
-"powercycle","token","max_images","webhook","s3_endpoint","s3_bucket",
+"powercycle","token","oauth_google_client_id","oauth_google_client_secret",
+"oauth_google_redirect_uri","session_secret","oauth_allowed_domains",
+"max_images","webhook","s3_endpoint","s3_bucket",
 "s3_force_path_style","s3_access_key","s3_secret_key","s3_signature_version",
 "s3_acl","s3_upload_everything","s3_ignore_ssl","max_concurrency","max_runtime",
 "gcs_bucket","gcs_project_id","gcs_key_path","gcs_parallel_uploads",
-"gcs_upload_paths","gcs_upload_prefix","gcs_cleanup_after_upload"];
+"gcs_upload_paths","gcs_upload_prefix","gcs_cleanup_after_upload",
+"portal_staging_env_url","portal_staging_env_label","portal_staging_env_tagline","portal_super_env_url","portal_super_env_label","portal_super_env_tagline","oauth_session_days"];
 
 // Support for "-" or "_" style params syntax
 for (let k in argv){
@@ -141,6 +188,82 @@ config.testFailTasks = argv.test_fail_tasks || fromConfigFile("testFailTasks", f
 config.testSeconds = parseInt(argv.test_seconds || fromConfigFile("testSeconds", 0));
 config.powercycle = argv.powercycle || fromConfigFile("powercycle", false);
 config.token = argv.token || fromConfigFile("token", "");
+// Prefer CLI, then JSON; treat empty JSON as unset so .env (loaded above) can supply values.
+config.oauthGoogleClientId = argv.oauth_google_client_id || fromConfigFile("oauthGoogleClientId", "") || process.env.OAUTH_GOOGLE_CLIENT_ID || "";
+config.oauthGoogleClientSecret = argv.oauth_google_client_secret || fromConfigFile("oauthGoogleClientSecret", "") || process.env.OAUTH_GOOGLE_CLIENT_SECRET || "";
+config.oauthGoogleRedirectUri = argv.oauth_google_redirect_uri || fromConfigFile("oauthGoogleRedirectUri", "") || process.env.OAUTH_GOOGLE_REDIRECT_URI || "";
+config.sessionSecret = argv.session_secret || fromConfigFile("sessionSecret", "") || process.env.SESSION_SECRET || "";
+["oauthGoogleClientId", "oauthGoogleClientSecret", "oauthGoogleRedirectUri", "sessionSecret"].forEach(k => {
+	if (typeof config[k] === "string") config[k] = config[k].trim();
+});
+const _oauthDomainsRaw = argv.oauth_allowed_domains || fromConfigFile("oauthAllowedDomains", "") || process.env.OAUTH_ALLOWED_DOMAINS || "";
+config.oauthAllowedDomains = String(_oauthDomainsRaw).split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+config.oauthCookieName = fromConfigFile("oauthCookieName", "ndm_oauth");
+config.oauthSessionDays = Math.min(
+	365,
+	Math.max(
+		1,
+		parseInt(
+			argv.oauth_session_days ||
+				fromConfigFile("oauthSessionDays", "") ||
+				process.env.OAUTH_SESSION_DAYS ||
+				"30",
+			10
+		) || 30
+	)
+);
+function portalOriginFromRaw(raw) {
+	const u = String(raw || "")
+		.trim()
+		.replace(/\/+$/, "");
+	if (!/^https?:\/\//i.test(u)) return "";
+	try {
+		return new URL(u).origin;
+	} catch (e) {
+		return "";
+	}
+}
+config.portalStagingEnvOrigin = portalOriginFromRaw(
+	argv.portal_staging_env_url ||
+		fromConfigFile("portalStagingEnvOrigin", "") ||
+		process.env.PORTAL_STAGING_ENV_URL ||
+		""
+);
+config.portalSuperEnvOrigin = portalOriginFromRaw(
+	argv.portal_super_env_url ||
+		fromConfigFile("portalSuperEnvOrigin", "") ||
+		process.env.PORTAL_SUPER_ENV_URL ||
+		""
+);
+config.portalStagingEnvLabel =
+	argv.portal_staging_env_label ||
+	fromConfigFile("portalStagingEnvLabel", "") ||
+	process.env.PORTAL_STAGING_ENV_LABEL ||
+	"dronemaps";
+config.portalSuperEnvLabel =
+	argv.portal_super_env_label ||
+	fromConfigFile("portalSuperEnvLabel", "") ||
+	process.env.PORTAL_SUPER_ENV_LABEL ||
+	"superdrone";
+if (typeof config.portalStagingEnvLabel === "string") {
+	config.portalStagingEnvLabel = config.portalStagingEnvLabel.trim();
+}
+if (typeof config.portalSuperEnvLabel === "string") {
+	config.portalSuperEnvLabel = config.portalSuperEnvLabel.trim();
+}
+const _portalStTag =
+	argv.portal_staging_env_tagline ||
+	fromConfigFile("portalStagingEnvTagline", "") ||
+	process.env.PORTAL_STAGING_ENV_TAGLINE ||
+	"";
+const _portalSuTag =
+	argv.portal_super_env_tagline ||
+	fromConfigFile("portalSuperEnvTagline", "") ||
+	process.env.PORTAL_SUPER_ENV_TAGLINE ||
+	"";
+config.portalStagingEnvTagline = String(_portalStTag).trim() || "Standard capacity — everyday maps and processing.";
+config.portalSuperEnvTagline = String(_portalSuTag).trim() || "High capacity — large projects and heavier processing.";
+config.oauthEnabled = !!(config.oauthGoogleClientId && config.oauthGoogleClientSecret && config.oauthGoogleRedirectUri && config.sessionSecret);
 config.authorizedIps = fromConfigFile("authorizedIps", []);
 config.maxImages = parseInt(argv.max_images || fromConfigFile("maxImages", "")) || null;
 config.webhook = argv.webhook || fromConfigFile("webhook", "");

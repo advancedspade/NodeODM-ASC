@@ -1,0 +1,14 @@
+{
+  "verbose": false,
+  "delay": "400",
+  "watch": [
+    "index.js",
+    "config.js",
+    "config-default.json",
+    "libs",
+    "views",
+    "helpers"
+  ],
+  "ignore": ["tmp/**", "node_modules/**", "public/**", "tests/**", "*.log"],
+  "ext": "js,mjs,cjs,json,html"
+}

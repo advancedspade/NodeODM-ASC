@@ -29,6 +29,9 @@ const mime = require('mime');
 const cors = require('cors')
 const express = require('express');
 const app = express();
+if (process.env.TRUST_PROXY === '1') {
+    app.set('trust proxy', 1);
+}
 
 const bodyParser = require('body-parser');
 const multer = require('multer');
@@ -51,6 +54,13 @@ let server;
 app.use(cors())
 app.options('*', cors())
 
+let googleOAuth = null;
+if (config.oauthEnabled) {
+    app.use(require('cookie-parser')());
+    googleOAuth = require('./libs/googleOAuth')(config);
+    googleOAuth.attach(app);
+}
+
 const publicDir = path.join(__dirname, 'public');
 function sendWebUiIndex(res) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -59,8 +69,65 @@ function sendWebUiIndex(res) {
     res.setHeader('Surrogate-Control', 'no-store');
     res.sendFile(path.join(publicDir, 'index.html'));
 }
-app.get('/', (req, res) => sendWebUiIndex(res));
-app.get('/index.html', (req, res) => sendWebUiIndex(res));
+app.get('/auth/bootstrap', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    if (config.oauthEnabled && googleOAuth) {
+        let portalActiveSite = "";
+        try {
+            const ro = new URL(config.oauthGoogleRedirectUri || "").origin;
+            if (config.portalStagingEnvOrigin && ro === config.portalStagingEnvOrigin) {
+                portalActiveSite = "staging";
+            } else if (config.portalSuperEnvOrigin && ro === config.portalSuperEnvOrigin) {
+                portalActiveSite = "super";
+            }
+        } catch (e) {
+            portalActiveSite = "";
+        }
+        let crossSso = false;
+        try {
+            const ro = new URL(config.oauthGoogleRedirectUri || "").origin;
+            crossSso = !!(
+                config.portalStagingEnvOrigin &&
+                config.portalSuperEnvOrigin &&
+                (ro === config.portalStagingEnvOrigin || ro === config.portalSuperEnvOrigin)
+            );
+        } catch (e2) {
+            crossSso = false;
+        }
+        const payload = {
+            oauth: true,
+            signedIn: googleOAuth.hasWebAuth(req),
+            portalStagingEnvOrigin: config.portalStagingEnvOrigin || "",
+            portalStagingEnvLabel: config.portalStagingEnvLabel || "dronemaps",
+            portalStagingEnvTagline: config.portalStagingEnvTagline || "",
+            portalSuperEnvOrigin: config.portalSuperEnvOrigin || "",
+            portalSuperEnvLabel: config.portalSuperEnvLabel || "superdrone",
+            portalSuperEnvTagline: config.portalSuperEnvTagline || "",
+            portalActiveSite,
+            oauthSessionDays: config.oauthSessionDays || 30,
+            crossSso
+        };
+        return res.json(payload);
+    }
+    res.json({ oauth: false, signedIn: true });
+});
+const portalHomePath = path.join(publicDir, 'portal.html');
+app.get('/', (req, res) => {
+    if (config.oauthEnabled && googleOAuth && !googleOAuth.hasWebAuth(req)) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+        return res.sendFile(portalHomePath);
+    }
+    sendWebUiIndex(res);
+});
+app.get('/index.html', (req, res) => {
+    if (config.oauthEnabled && googleOAuth && !googleOAuth.hasWebAuth(req)) {
+        return res.redirect(302, '/');
+    }
+    sendWebUiIndex(res);
+});
 
 /** @swagger
  *  /task/list:
@@ -101,9 +168,15 @@ app.get('/task/list', authCheck, (req, res) => {
     res.json(tasks);
 });
 
+const devStaticNoCache = process.env.NODEODM_DEV_STATIC_NO_CACHE === '1';
 app.use(express.static(publicDir, {
-    etag: true,
+    etag: !devStaticNoCache,
     setHeaders(res, filepath) {
+        if (devStaticNoCache) {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            return;
+        }
         if (path.basename(filepath) === 'index.html') {
             res.setHeader('Cache-Control', 'no-store');
         }
@@ -837,8 +910,15 @@ app.get('/info', authCheck, (req, res) => {
  *               description: URL (absolute or relative) where to make a POST request to register a user, or null if registration is disabled.
  */
 app.get('/auth/info', (req, res) => {
+    if (config.oauthEnabled) {
+        return res.json({
+            message: "Sign in with Google to use this node.",
+            loginUrl: '/auth/google',
+            registerUrl: null
+        });
+    }
     res.json({
-        message: "Authentication not available on this node", 
+        message: "Authentication not available on this node",
         loginUrl: null,
         registerUrl: null
     });

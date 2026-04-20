@@ -764,6 +764,24 @@ $(function() {
         var helpStr = this.properties.help;
         this.hasHelpDetail = typeof helpStr === "string" && helpStr.trim().length > 0;
 
+        if (!this.hasHelpDetail) {
+            var bits = [];
+            bits.push("OpenDroneMap option — " + (properties.name || ""));
+            bits.push("Type: " + (properties.type || "string"));
+            if (this.domainTooltipText) {
+                var dt = this.domainTooltipText;
+                if (dt.length > 320) dt = dt.slice(0, 317) + "…";
+                bits.push("Domain / allowed values: " + dt);
+            }
+            if (this.defaultValue !== undefined && this.defaultValue !== null && String(this.defaultValue) !== "") {
+                bits.push("Default in this form: " + String(this.defaultValue));
+            }
+            bits.push("Full CLI help comes from your ODM build when available.");
+            helpStr = bits.join("\n");
+        }
+        this.helpDisplayText = helpStr;
+        this.helpTitleText = String(helpStr).replace(/\r?\n+/g, " ").replace(/\s{2,}/g, " ").trim();
+
         this.value = ko.observable(this.defaultValue);
     }
     Option.prototype.resetToDefault = function() {

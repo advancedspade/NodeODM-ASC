@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+    <title>Sign in — NodeODM</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/css/main.css?t=2">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+    <link rel="stylesheet" href="/css/app.css?t=19">
+</head>
+<body>
+    <div class="page-atmosphere" aria-hidden="true">
+        <div class="page-atmosphere__layer page-atmosphere__layer--grid"></div>
+        <div class="page-atmosphere__layer page-atmosphere__layer--contours">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice">
+                <defs>
+                    <filter id="ndm-atmo-glow" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="sRGB">
+                        <feGaussianBlur stdDeviation="2.4" result="b"/>
+                        <feGaussianBlur in="SourceGraphic" stdDeviation="0.55" result="c"/>
+                        <feMerge>
+                            <feMergeNode in="b"/>
+                            <feMergeNode in="b"/>
+                            <feMergeNode in="c"/>
+                        </feMerge>
+                    </filter>
+                </defs>
+                <g class="page-atmosphere__mapping-fill">
+                    <path class="page-atmosphere__street-block" d="M 436,358 L 516,358 A 24,24 0 0 1 540,382 L 540,640 A 24,24 0 0 1 516,664 L 436,664 A 24,24 0 0 1 412,640 L 412,382 A 24,24 0 0 1 436,358 Z"/>
+                    <g class="page-atmosphere__lower-block" transform="rotate(-45 1078 571)">
+                        <path class="page-atmosphere__street-block" d="M 918,487 L 1238,487 A 24,24 0 0 1 1262,511 L 1262,631 A 24,24 0 0 1 1238,655 L 918,655 A 24,24 0 0 1 894,631 L 894,511 A 24,24 0 0 1 918,487 Z"/>
+                    </g>
+                </g>
+                <g stroke-width="4" fill="none">
+                    <path class="page-atmosphere__mapping-glow page-atmosphere__mapping-glow--sky" d="M 376,613 L 376,346 A 32,32 0 0 1 408,314 L 544,314 A 32,32 0 0 1 576,346 L 576,518"/>
+                </g>
+                <g stroke-width="1.15" fill="none">
+                    <path class="page-atmosphere__mapping-core page-atmosphere__mapping-core--sky" d="M 376,613 L 376,346 A 32,32 0 0 1 408,314 L 544,314 A 32,32 0 0 1 576,346 L 576,518"/>
+                </g>
+                <g class="page-atmosphere__mapping-traces" fill="none" stroke-width="1.15">
+                    <path class="page-atmosphere__mapping-trace page-atmosphere__mapping-trace--slate page-atmosphere__mapping-trace--dash-a" d="M 580 228 C 760 168 920 288 1100 228 C 1260 178 1360 248 1480 208"/>
+                    <path class="page-atmosphere__mapping-trace page-atmosphere__mapping-trace--ice page-atmosphere__mapping-trace--dash-b" d="M 560 340 C 740 400 900 260 1080 320 C 1240 370 1340 290 1500 330"/>
+                </g>
+            </svg>
+        </div>
+        <div class="page-atmosphere__vignette"></div>
+    </div>
+
+    <div class="shell shell--login">
+        <header class="page-header page-header--login">
+            <h1>Drone processing job</h1>
+            <p>Choose the host that fits your job, then continue with Google on that site.</p>
+            <p class="login-back-home"><a class="login-back-home__link" href="/">← Back to environment choice</a></p>
+        </header>
+
+        <p id="loginError" class="error-block login-error login-error--global" role="alert" hidden></p>
+
+        <div class="grid grid--login grid--login-portal grid--login-portal--two" id="loginDualGrid">
+            <div class="card login-card login-card--env" id="loginCardStaging">
+                <div class="card-body">
+                    <h2 class="login-card__title" id="loginTitleStaging">dronemaps</h2>
+                    <p class="login-card__tagline" id="loginTaglineStaging"></p>
+                    <p class="login-lead">Only <strong>@aspadeco.com</strong> Google accounts.</p>
+                    <div class="login-actions">
+                        <a class="btn-primary btn-google" id="loginBtnStaging" href="#">Continue with Google</a>
+                    </div>
+                </div>
+            </div>
+            <div class="card login-card login-card--env" id="loginCardSuper">
+                <div class="card-body">
+                    <h2 class="login-card__title" id="loginTitleSuper">superdrone</h2>
+                    <p class="login-card__tagline" id="loginTaglineSuper"></p>
+                    <p class="login-lead">Only <strong>@aspadeco.com</strong> Google accounts.</p>
+                    <div class="login-actions">
+                        <a class="btn-primary btn-google btn-google--outline" id="loginBtnSuper" href="#">Continue with Google</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            function loginUrl(origin) {
+                return new URL("/login.html", origin + "/").href;
+            }
+            function sameOrigin(a, b) {
+                try {
+                    return new URL(a).origin === new URL(b).origin;
+                } catch (e) {
+                    return false;
+                }
+            }
+            var params = new URLSearchParams(window.location.search);
+            var err = params.get("error");
+            var el = document.getElementById("loginError");
+            if (err && el) {
+                var labels = {
+                    access_denied: "Access was not granted.",
+                    forbidden_domain: "This Google account is not allowed for this site.",
+                    invalid_state: "Session expired. Try again.",
+                    userinfo: "Could not read your Google profile.",
+                    token_exchange: "Google rejected the sign-in (often redirect URI mismatch, wrong client secret, or an expired code). Use the exact same URL in the browser as in Google Cloud (e.g. localhost vs 127.0.0.1). Check server logs for the precise error.",
+                    bridge_invalid: "Cross-host sign-in link was invalid or expired. Sign in again with Google."
+                };
+                el.textContent = labels[err] || ("Sign-in did not complete (" + err + ").");
+                el.hidden = false;
+            }
+            fetch("/auth/bootstrap", { credentials: "same-origin" })
+                .then(function (r) {
+                    return r.json();
+                })
+                .then(function (d) {
+                    if (!d || !d.oauth) return;
+                    var st = d.portalStagingEnvOrigin;
+                    var su = d.portalSuperEnvOrigin;
+                    if (!st || !su) return;
+                    var here = window.location.origin;
+                    var titleSt = document.getElementById("loginTitleStaging");
+                    var titleSu = document.getElementById("loginTitleSuper");
+                    if (titleSt && d.portalStagingEnvLabel) titleSt.textContent = d.portalStagingEnvLabel;
+                    if (titleSu && d.portalSuperEnvLabel) titleSu.textContent = d.portalSuperEnvLabel;
+                    var ltSt = document.getElementById("loginTaglineStaging");
+                    var ltSu = document.getElementById("loginTaglineSuper");
+                    if (ltSt && d.portalStagingEnvTagline) ltSt.textContent = d.portalStagingEnvTagline;
+                    if (ltSu && d.portalSuperEnvTagline) ltSu.textContent = d.portalSuperEnvTagline;
+                    var btnSt = document.getElementById("loginBtnStaging");
+                    var btnSu = document.getElementById("loginBtnSuper");
+                    var cardSt = document.getElementById("loginCardStaging");
+                    var cardSu = document.getElementById("loginCardSuper");
+                    var badgeSt = document.getElementById("loginBadgeStaging");
+                    var badgeSu = document.getElementById("loginBadgeSuper");
+                    var labSt = d.portalStagingEnvLabel || "dronemaps";
+                    var labSu = d.portalSuperEnvLabel || "superdrone";
+                    if (badgeSt) {
+                        badgeSt.hidden = true;
+                        badgeSt.textContent = "";
+                    }
+                    if (badgeSu) {
+                        badgeSu.hidden = true;
+                        badgeSu.textContent = "";
+                    }
+                    if (cardSt) cardSt.classList.remove("login-card--current");
+                    if (cardSu) cardSu.classList.remove("login-card--current");
+                    if (sameOrigin(st, here)) {
+                        if (btnSt) btnSt.href = "/auth/google";
+                        if (btnSu) btnSu.href = loginUrl(su);
+                        if (badgeSt) {
+                            badgeSt.textContent = "You're on " + labSt;
+                            badgeSt.hidden = false;
+                        }
+                        if (cardSt) cardSt.classList.add("login-card--current");
+                    } else if (sameOrigin(su, here)) {
+                        if (btnSu) btnSu.href = "/auth/google";
+                        if (btnSt) btnSt.href = loginUrl(st);
+                        if (badgeSu) {
+                            badgeSu.textContent = "You're on " + labSu;
+                            badgeSu.hidden = false;
+                        }
+                        if (cardSu) cardSu.classList.add("login-card--current");
+                    } else {
+                        if (btnSt) btnSt.href = loginUrl(st);
+                        if (btnSu) btnSu.href = loginUrl(su);
+                    }
+                })
+                .catch(function () {});
+        })();
+    </script>
+</body>
+</html>

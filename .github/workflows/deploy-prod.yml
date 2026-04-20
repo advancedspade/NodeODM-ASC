@@ -107,7 +107,8 @@ jobs:
                 --gcs_bucket nodeodm-outputs-v1 \
                 --gcs_upload_prefix outputs \
                 --gcs_upload_paths '.' \
-                --gcs_cleanup_after_upload
+                --gcs_cleanup_after_upload \
+                --parallel_queue_processing 2
               
               # No --max_concurrency (see deploy-staging.yml): API/UI max-concurrency is not forced to 6.
               

@@ -127,7 +127,8 @@ jobs:
                 --gcs_bucket nodeodm-outputs-v1 \
                 --gcs_upload_prefix outputs \
                 --gcs_upload_paths '.' \
-                --gcs_cleanup_after_upload
+                --gcs_cleanup_after_upload \
+                --parallel_queue_processing 2
               
               # No --max_concurrency: 0 default = no server-wide cap; per-task max-concurrency from API/UI applies,
               # still bounded by RAM in libs/odmInfo.js (safeConcurrencyCap). Use --max_concurrency N only to enforce a hard ceiling.
@@ -217,7 +218,8 @@ jobs:
                 --gcs_bucket nodeodm-outputs-v1 \
                 --gcs_upload_prefix outputs \
                 --gcs_upload_paths '.' \
-                --gcs_cleanup_after_upload
+                --gcs_cleanup_after_upload \
+                --parallel_queue_processing 2
 
               echo '=== Checking container status ==='
               sleep 8

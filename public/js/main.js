@@ -755,8 +755,8 @@ $(function() {
             var st = document.getElementById("ndmEnvStaging");
             var su = document.getElementById("ndmEnvSuper");
             if (wrap && st && su) {
-                st.href = new URL("/", d.portalStagingEnvOrigin + "/").href;
-                su.href = new URL("/", d.portalSuperEnvOrigin + "/").href;
+                st.href = new URL("/login.html", d.portalStagingEnvOrigin + "/").href;
+                su.href = new URL("/login.html", d.portalSuperEnvOrigin + "/").href;
                 st.textContent = d.portalStagingEnvLabel || "dronemaps";
                 su.textContent = d.portalSuperEnvLabel || "superdrone";
                 var metaSt = document.getElementById("ndmEnvStagingTagline");

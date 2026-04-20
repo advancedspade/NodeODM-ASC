@@ -1521,6 +1521,15 @@ fieldset.preset-fieldset legend {
     border: 1px solid rgba(255, 255, 255, 0.22);
 }
 
+/* One host in the URL bar: hide the other card; full dual UI only when origin is neither portal URL */
+.shell--login.login-shell--single-host .grid--login-portal--two {
+    max-width: 26rem;
+}
+
+.shell--login.login-shell--single-host .grid--login-portal--two .login-card {
+    max-width: 100%;
+}
+
 .login-error--global {
     max-width: 52rem;
     margin-left: auto;

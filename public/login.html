@@ -11,7 +11,7 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/css/main.css?t=2">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-    <link rel="stylesheet" href="/css/app.css?t=23">
+    <link rel="stylesheet" href="/css/app.css?t=24">
 </head>
 <body>
     <div class="page-atmosphere" aria-hidden="true">
@@ -52,8 +52,8 @@
 
     <div class="shell shell--login">
         <header class="page-header page-header--login">
-            <h1>Drone processing job</h1>
-            <p>Choose the host that fits your job, then continue with Google on that site.</p>
+            <h1 id="loginHeadline">Drone processing job</h1>
+            <p id="loginSubhead">Choose the host that fits your job, then continue with Google on that site.</p>
         </header>
 
         <p id="loginError" class="error-block login-error login-error--global" role="alert" hidden></p>
@@ -75,7 +75,7 @@
                     <p class="login-card__tagline" id="loginTaglineSuper"></p>
                     <p class="login-lead">Only <strong>@aspadeco.com</strong> Google accounts.</p>
                     <div class="login-actions">
-                        <a class="btn-primary btn-google btn-google--outline" id="loginBtnSuper" href="#">Continue with Google</a>
+                        <a class="btn-primary btn-google" id="loginBtnSuper" href="#">Continue with Google</a>
                     </div>
                 </div>
             </div>
@@ -119,10 +119,12 @@
                     var su = d.portalSuperEnvOrigin;
                     if (!st || !su) return;
                     var here = window.location.origin;
+                    var labSt = d.portalStagingEnvLabel || "dronemaps";
+                    var labSu = d.portalSuperEnvLabel || "superdrone";
                     var titleSt = document.getElementById("loginTitleStaging");
                     var titleSu = document.getElementById("loginTitleSuper");
-                    if (titleSt && d.portalStagingEnvLabel) titleSt.textContent = d.portalStagingEnvLabel;
-                    if (titleSu && d.portalSuperEnvLabel) titleSu.textContent = d.portalSuperEnvLabel;
+                    if (titleSt) titleSt.textContent = labSt;
+                    if (titleSu) titleSu.textContent = labSu;
                     var ltSt = document.getElementById("loginTaglineStaging");
                     var ltSu = document.getElementById("loginTaglineSuper");
                     if (ltSt && d.portalStagingEnvTagline) ltSt.textContent = d.portalStagingEnvTagline;
@@ -131,39 +133,39 @@
                     var btnSu = document.getElementById("loginBtnSuper");
                     var cardSt = document.getElementById("loginCardStaging");
                     var cardSu = document.getElementById("loginCardSuper");
-                    var badgeSt = document.getElementById("loginBadgeStaging");
-                    var badgeSu = document.getElementById("loginBadgeSuper");
-                    var labSt = d.portalStagingEnvLabel || "dronemaps";
-                    var labSu = d.portalSuperEnvLabel || "superdrone";
-                    if (badgeSt) {
-                        badgeSt.hidden = true;
-                        badgeSt.textContent = "";
-                    }
-                    if (badgeSu) {
-                        badgeSu.hidden = true;
-                        badgeSu.textContent = "";
-                    }
-                    if (cardSt) cardSt.classList.remove("login-card--current");
-                    if (cardSu) cardSu.classList.remove("login-card--current");
-                    if (sameOrigin(st, here)) {
+                    var shell = document.querySelector(".shell--login");
+                    var sub = document.getElementById("loginSubhead");
+                    var headline = document.getElementById("loginHeadline");
+                    var onSt = sameOrigin(st, here);
+                    var onSu = sameOrigin(su, here);
+                    if (onSt && !onSu) {
+                        if (shell) shell.classList.add("login-shell--single-host");
+                        if (cardSu) cardSu.hidden = true;
                         if (btnSt) btnSt.href = "/auth/google";
-                        if (btnSu) btnSu.href = loginUrl(su);
-                        if (badgeSt) {
-                            badgeSt.textContent = "You're on " + labSt;
-                            badgeSt.hidden = false;
+                        if (sub) {
+                            sub.textContent =
+                                "Sign in with Google to use this site. To use " +
+                                labSu +
+                                " instead, open that host in your browser.";
                         }
-                        if (cardSt) cardSt.classList.add("login-card--current");
-                    } else if (sameOrigin(su, here)) {
+                        if (headline) headline.textContent = "Sign in — " + labSt;
+                        document.title = "Sign in — " + labSt;
+                    } else if (onSu && !onSt) {
+                        if (shell) shell.classList.add("login-shell--single-host");
+                        if (cardSt) cardSt.hidden = true;
                         if (btnSu) btnSu.href = "/auth/google";
-                        if (btnSt) btnSt.href = loginUrl(st);
-                        if (badgeSu) {
-                            badgeSu.textContent = "You're on " + labSu;
-                            badgeSu.hidden = false;
+                        if (sub) {
+                            sub.textContent =
+                                "Sign in with Google to use this site. To use " +
+                                labSt +
+                                " instead, open that host in your browser.";
                         }
-                        if (cardSu) cardSu.classList.add("login-card--current");
+                        if (headline) headline.textContent = "Sign in — " + labSu;
+                        document.title = "Sign in — " + labSu;
                     } else {
                         if (btnSt) btnSt.href = loginUrl(st);
                         if (btnSu) btnSu.href = loginUrl(su);
+                        if (btnSu) btnSu.classList.add("btn-google--outline");
                     }
                 })
                 .catch(function () {});

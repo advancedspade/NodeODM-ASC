@@ -176,6 +176,15 @@ module.exports = function createGoogleOAuth(config) {
         return false;
     }
 
+    function readWebSession(req) {
+        const c = req.cookies && req.cookies[cookieName];
+        const p = verifySessionJwt(c);
+        if (!p || !p.email) return null;
+        const sub = p.sub != null ? String(p.sub) : "";
+        if (!sub) return null;
+        return { email: String(p.email), sub };
+    }
+
     function attach(app) {
         const loginPage = resolveLoginHtmlPath();
         if (!fs.existsSync(loginPage)) {
@@ -188,6 +197,60 @@ module.exports = function createGoogleOAuth(config) {
             res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
             res.setHeader("Pragma", "no-cache");
             res.sendFile(loginPage);
+        });
+
+        /**
+         * Signed-in user switches host: mint bridge JWT on this origin (cookie), redirect to sibling /auth/session-bridge.
+         * Query: dest=staging|super (portal hosts from config).
+         */
+        app.get("/auth/switch-site", (req, res) => {
+            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+            res.setHeader("Pragma", "no-cache");
+            const raw = String(req.query.dest || req.query.target || "")
+                .toLowerCase()
+                .trim();
+            let destOriginRaw = "";
+            if (raw === "staging" || raw === "st" || raw === "dronemaps") {
+                destOriginRaw = config.portalStagingEnvOrigin || "";
+            } else if (raw === "super" || raw === "su" || raw === "superdrone") {
+                destOriginRaw = config.portalSuperEnvOrigin || "";
+            }
+            let destOrigin = "";
+            try {
+                destOrigin = destOriginRaw ? new URL(destOriginRaw.replace(/\/+$/, "") + "/").origin : "";
+            } catch (e0) {
+                destOrigin = "";
+            }
+            if (!destOrigin) {
+                return res.redirect(302, "/login.html");
+            }
+            let reqOrigin = "";
+            try {
+                const b = publicAppBaseUrl(req);
+                if (b) reqOrigin = new URL(b).origin;
+            } catch (e1) {
+                reqOrigin = "";
+            }
+            if (reqOrigin && reqOrigin === destOrigin) {
+                return res.redirect(302, "/");
+            }
+            const loginOnDest = destOrigin + "/login.html";
+            const session = readWebSession(req);
+            if (!session || !crossSsoEnabled(config)) {
+                return res.redirect(302, loginOnDest);
+            }
+            const nextSafe = validatePortalNextUrl(config, destOrigin + "/");
+            if (!nextSafe) {
+                return res.redirect(302, loginOnDest);
+            }
+            const bridge = issueBridgeJwt(session.email, session.sub);
+            const u =
+                destOrigin +
+                "/auth/session-bridge?token=" +
+                encodeURIComponent(bridge) +
+                "&next=" +
+                encodeURIComponent(nextSafe);
+            return res.redirect(302, u);
         });
 
         app.get("/auth/google", (req, res) => {

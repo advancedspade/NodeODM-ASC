@@ -755,8 +755,32 @@ $(function() {
             var st = document.getElementById("ndmEnvStaging");
             var su = document.getElementById("ndmEnvSuper");
             if (wrap && st && su) {
-                st.href = new URL("/login.html", d.portalStagingEnvOrigin + "/").href;
-                su.href = new URL("/login.html", d.portalSuperEnvOrigin + "/").href;
+                function envSwitchHref(dest) {
+                    var base = dest === "staging" ? d.portalStagingEnvOrigin : d.portalSuperEnvOrigin;
+                    var targetO;
+                    try {
+                        targetO = new URL(base + "/").origin;
+                    } catch (e0) {
+                        return "#";
+                    }
+                    if (window.location.origin === targetO) {
+                        try {
+                            return new URL("/", window.location.origin + "/").href;
+                        } catch (e1) {
+                            return "/";
+                        }
+                    }
+                    if (d.signedIn && d.crossSso) {
+                        return "/auth/switch-site?dest=" + dest;
+                    }
+                    try {
+                        return new URL("/login.html", targetO + "/").href;
+                    } catch (e2) {
+                        return "#";
+                    }
+                }
+                st.href = envSwitchHref("staging");
+                su.href = envSwitchHref("super");
                 st.textContent = d.portalStagingEnvLabel || "dronemaps";
                 su.textContent = d.portalSuperEnvLabel || "superdrone";
                 var metaSt = document.getElementById("ndmEnvStagingTagline");

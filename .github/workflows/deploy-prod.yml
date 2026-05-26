@@ -15,9 +15,11 @@ env:
   WIF_PROVIDER: projects/221915286772/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   SA_EMAIL: nodeodm-service@tools-471222.iam.gserviceaccount.com
 
-# Google OAuth: Secrets on the production environment (or OAuth stays off; /login.html → Cannot GET).
-#   NODEODM_SESSION_SECRET, OAUTH_GOOGLE_CLIENT_ID, OAUTH_GOOGLE_CLIENT_SECRET, OAUTH_GOOGLE_REDIRECT_URI
-#   PORTAL_ENV_URL, PORTAL_SUPER_ENV_URL — mapped to PORTAL_STAGING_ENV_URL / PORTAL_SUPER_ENV_URL in the container
+# Google OAuth: Secrets on the production environment (Settings → Environments → production).
+# Same names as staging (deploy-staging.yml); deploy job uses `environment: production`.
+#   SESSION_SECRET — passed into container as SESSION_SECRET
+#   OAUTH_GOOGLE_CLIENT_ID, OAUTH_GOOGLE_CLIENT_SECRET, OAUTH_GOOGLE_REDIRECT_URI
+#   PORTAL_ENV_URL, PORTAL_SUPER_ENV_URL → container PORTAL_STAGING_ENV_URL / PORTAL_SUPER_ENV_URL
 # Optional Variable: NODEODM_TRUST_PROXY (=1 behind HTTPS LB)
 
 # Required for Workload Identity Federation
@@ -108,7 +110,7 @@ jobs:
                 --memory-swap=112g \
                 -p 3000:3000 \
                 -v /var/www/data:/var/www/data \
-                -e SESSION_SECRET="${{ secrets.NODEODM_SESSION_SECRET }}" \
+                -e SESSION_SECRET="${{ secrets.SESSION_SECRET }}" \
                 -e OAUTH_GOOGLE_CLIENT_ID="${{ secrets.OAUTH_GOOGLE_CLIENT_ID }}" \
                 -e OAUTH_GOOGLE_CLIENT_SECRET="${{ secrets.OAUTH_GOOGLE_CLIENT_SECRET }}" \
                 -e OAUTH_GOOGLE_REDIRECT_URI="${{ secrets.OAUTH_GOOGLE_REDIRECT_URI }}" \
@@ -162,7 +164,7 @@ jobs:
           
           login_url=$(curl -sf "http://$VM_IP:3000/auth/info" | jq -r '.loginUrl // empty')
           if [ -z "$login_url" ] || [ "$login_url" = "null" ]; then
-            echo "❌ OAuth is OFF. Set production Environment secrets: NODEODM_SESSION_SECRET, OAUTH_GOOGLE_CLIENT_ID, OAUTH_GOOGLE_CLIENT_SECRET, OAUTH_GOOGLE_REDIRECT_URI, PORTAL_ENV_URL, PORTAL_SUPER_ENV_URL."
+            echo "❌ OAuth is OFF. Set production Environment secrets: SESSION_SECRET, OAUTH_GOOGLE_CLIENT_ID, OAUTH_GOOGLE_CLIENT_SECRET, OAUTH_GOOGLE_REDIRECT_URI, PORTAL_ENV_URL, PORTAL_SUPER_ENV_URL."
             exit 1
           fi
           echo "✅ Production up; OAuth enabled (loginUrl=$login_url)"

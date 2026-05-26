@@ -93,7 +93,11 @@ $(function() {
             return "The server did not return JSON. Open this UI from your NodeODM URL, or set window.NDM_API_BASE to the API root.";
         }
         if (xhr && xhr.status === 0) {
-            return "Cannot reach the API at " + (attemptedUrl || "this URL") + ". Use the same host/port as NodeODM, or set window.NDM_API_BASE (e.g. http://127.0.0.1:3000).";
+            var displayUrl = attemptedUrl;
+            if (displayUrl && displayUrl.indexOf("http") !== 0 && typeof location !== "undefined") {
+                displayUrl = location.origin + displayUrl;
+            }
+            return "Cannot reach the API at " + (displayUrl || "this URL") + ". Use the same host/port as NodeODM, or set window.NDM_API_BASE (e.g. http://127.0.0.1:3000).";
         }
         if (xhr && xhr.status === 404) {
             return "404 for " + (attemptedUrl || "this URL") + " — wrong API host/path. Try: open this page from NodeODM (same port), add ?ndm_port=PORT (NodeODM’s port) to the URL, set window.NDM_API_BASE, or NDM_API_PATH_PREFIX if the API is under a subpath.";
@@ -248,7 +252,10 @@ $(function() {
     var rtkMapTimer = null;
     var ndmRtkXhr = null;
     var ndmRtkRequestSeq = 0;
+    var ndmRtkSessionId = null;
+    var ndmRtkActiveXhrs = [];
     var ndmRtkByFilename = Object.create(null);
+    var ndmRtkAjaxOpts = { xhrFields: { withCredentials: true } };
     var ndmRtkEnabled = true;
     /** Blob URLs for map popup previews; revoked when markers refresh */
     var ndmGpsPreviewUrls = [];
@@ -559,12 +566,42 @@ $(function() {
         if (status) status.classList.toggle("loading", !!loading);
     }
 
-    function clearNdmRtkState() {
-        clearTimeout(rtkMapTimer);
+    function abortNdmRtkWork() {
+        ndmRtkActiveXhrs.forEach(function(x) {
+            if (x && x.abort) {
+                try { x.abort(); } catch (e) { /* ignore */ }
+            }
+        });
+        ndmRtkActiveXhrs = [];
         if (ndmRtkXhr && ndmRtkXhr.abort) {
             try { ndmRtkXhr.abort(); } catch (e) { /* ignore */ }
         }
         ndmRtkXhr = null;
+    }
+
+    function destroyNdmRtkSession() {
+        if (!ndmRtkSessionId) return;
+        var sid = ndmRtkSessionId;
+        ndmRtkSessionId = null;
+        $.ajax($.extend({
+            url: ndmApi("/rtk/session/" + sid) + ndmTokenQs(),
+            type: "DELETE"
+        }, ndmRtkAjaxOpts));
+    }
+
+    function trackNdmRtkXhr(xhr) {
+        ndmRtkActiveXhrs.push(xhr);
+        xhr.always(function() {
+            var i = ndmRtkActiveXhrs.indexOf(xhr);
+            if (i >= 0) ndmRtkActiveXhrs.splice(i, 1);
+        });
+        return xhr;
+    }
+
+    function clearNdmRtkState() {
+        clearTimeout(rtkMapTimer);
+        abortNdmRtkWork();
+        destroyNdmRtkSession();
         ndmRtkByFilename = Object.create(null);
         var banner = document.getElementById("ndmRtkBanner");
         var stats = document.getElementById("ndmRtkStats");
@@ -656,6 +693,67 @@ $(function() {
         renderNdmFileRows(ndmLastGpsResults);
     }
 
+    function uploadNdmRtkSessionFiles(sessionId, files, seq) {
+        var def = $.Deferred();
+        var uploaded = 0;
+        var idx = 0;
+        var active = 0;
+        var concurrency = 4;
+        var failed = null;
+
+        function uploadOne(file) {
+            var fd = new FormData();
+            fd.append("images", file, file.name);
+            return trackNdmRtkXhr($.ajax($.extend({
+                url: ndmApi("/rtk/session/" + sessionId + "/upload") + ndmTokenQs(),
+                type: "POST",
+                data: fd,
+                processData: false,
+                contentType: false,
+                timeout: 120000
+            }, ndmRtkAjaxOpts)));
+        }
+
+        function pump() {
+            if (failed || seq !== ndmRtkRequestSeq) {
+                if (!failed) failed = { aborted: true };
+                if (def.state() === "pending") def.reject(failed);
+                return;
+            }
+            while (active < concurrency && idx < files.length) {
+                var file = files[idx++];
+                active++;
+                uploadOne(file).done(function() {
+                    active--;
+                    uploaded++;
+                    setNdmRtkStatus("Uploading " + uploaded + " / " + files.length + " for RTK analysis…");
+                    if (uploaded >= files.length) {
+                        def.resolve();
+                    } else {
+                        pump();
+                    }
+                }).fail(function(xhr, status) {
+                    if (!failed) {
+                        failed = {
+                            xhr: xhr,
+                            status: status,
+                            url: ndmApi("/rtk/session/" + sessionId + "/upload")
+                        };
+                    }
+                    active--;
+                    if (def.state() === "pending") def.reject(failed);
+                });
+            }
+        }
+
+        if (!files.length) {
+            def.resolve();
+        } else {
+            pump();
+        }
+        return def.promise();
+    }
+
     function refreshRtkFromDropzone() {
         var files = (dz.files || []).filter(ndmIsImageFile);
         if (!ndmRtkEnabled) {
@@ -679,45 +777,72 @@ $(function() {
             return;
         }
 
-        if (ndmRtkXhr && ndmRtkXhr.abort) {
-            try { ndmRtkXhr.abort(); } catch (e) { /* ignore */ }
-        }
+        abortNdmRtkWork();
+        destroyNdmRtkSession();
 
         setNdmRtkBadge("Analyzing…", "busy");
         setNdmRtkStatus("Uploading " + files.length + " image(s) for RTK analysis…");
         setNdmRtkLoading(true);
 
-        var formData = new FormData();
-        files.forEach(function(f) {
-            formData.append("images", f, f.name);
-        });
-
         var seq = ++ndmRtkRequestSeq;
-        ndmRtkXhr = $.ajax({
-            url: ndmApi("/rtk/analyze") + ndmTokenQs(),
-            type: "POST",
-            data: formData,
-            processData: false,
-            contentType: false,
-            timeout: 600000
-        }).done(function(result) {
+        var analyzeUrl = "";
+
+        ndmRtkXhr = trackNdmRtkXhr($.ajax($.extend({
+            url: ndmApi("/rtk/session") + ndmTokenQs(),
+            type: "POST"
+        }, ndmRtkAjaxOpts))).done(function(sessionResp) {
             if (seq !== ndmRtkRequestSeq) return;
-            setNdmRtkLoading(false);
-            if (result.error) {
+            if (sessionResp.error) {
+                setNdmRtkLoading(false);
                 setNdmRtkBadge("Unavailable", "pending");
-                setNdmRtkStatus(result.error);
+                setNdmRtkStatus(sessionResp.error);
                 return;
             }
-            ndmRtkByFilename = Object.create(null);
-            (result.records || []).forEach(function(rec) {
-                ndmRtkByFilename[rec.filename] = rec;
+
+            var sessionId = sessionResp.sessionId;
+            ndmRtkSessionId = sessionId;
+            analyzeUrl = ndmApi("/rtk/session/" + sessionId + "/analyze");
+
+            uploadNdmRtkSessionFiles(sessionId, files, seq).done(function() {
+                if (seq !== ndmRtkRequestSeq) return;
+                setNdmRtkStatus("Running RTK analysis…");
+
+                ndmRtkXhr = trackNdmRtkXhr($.ajax($.extend({
+                    url: analyzeUrl + ndmTokenQs(),
+                    type: "POST",
+                    timeout: 600000
+                }, ndmRtkAjaxOpts))).done(function(result) {
+                    if (seq !== ndmRtkRequestSeq) return;
+                    ndmRtkSessionId = null;
+                    setNdmRtkLoading(false);
+                    if (result.error) {
+                        setNdmRtkBadge("Unavailable", "pending");
+                        setNdmRtkStatus(result.error);
+                        return;
+                    }
+                    ndmRtkByFilename = Object.create(null);
+                    (result.records || []).forEach(function(rec) {
+                        ndmRtkByFilename[rec.filename] = rec;
+                    });
+                    updateNdmRtkUi(result);
+                }).fail(function(xhr, status) {
+                    if (seq !== ndmRtkRequestSeq || status === "abort") return;
+                    setNdmRtkLoading(false);
+                    setNdmRtkBadge("Error", "pending");
+                    setNdmRtkStatus(ndmAjaxFailMessage(xhr, status, analyzeUrl));
+                });
+            }).fail(function(err) {
+                if (seq !== ndmRtkRequestSeq || (err && err.aborted)) return;
+                setNdmRtkLoading(false);
+                setNdmRtkBadge("Error", "pending");
+                var failUrl = (err && err.url) || ndmApi("/rtk/session");
+                setNdmRtkStatus(ndmAjaxFailMessage(err && err.xhr, err && err.status, failUrl));
             });
-            updateNdmRtkUi(result);
         }).fail(function(xhr, status) {
             if (seq !== ndmRtkRequestSeq || status === "abort") return;
             setNdmRtkLoading(false);
             setNdmRtkBadge("Error", "pending");
-            setNdmRtkStatus(ndmAjaxFailMessage(xhr, status, ndmApi("/rtk/analyze")));
+            setNdmRtkStatus(ndmAjaxFailMessage(xhr, status, ndmApi("/rtk/session")));
         });
     }
 
@@ -966,7 +1091,7 @@ $(function() {
 
     setTimeout(scheduleGpsFromDropzone, 400);
 
-    $.get(ndmApi("/rtk/status") + ndmTokenQs()).done(function(st) {
+    $.get(ndmApi("/rtk/status") + ndmTokenQs(), ndmRtkAjaxOpts).done(function(st) {
         ndmRtkEnabled = !!(st && st.enabled && st.available);
         setNdmRtkPanelVisible(ndmRtkEnabled);
         if (!ndmRtkEnabled && st && st.reason) {

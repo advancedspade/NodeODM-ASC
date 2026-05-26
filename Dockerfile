@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y curl gpg-agent ca-certificates gnupg &&
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list && \
     apt-get update && \
-    apt-get install -y nodejs unzip p7zip-full && \
+    apt-get install -y nodejs unzip p7zip-full libimage-exiftool-perl && \
     npm install -g nodemon && \
     ln -sf /code/SuperBuild/install/bin/untwine /usr/bin/untwine && \
     ln -sf /code/SuperBuild/install/bin/entwine /usr/bin/entwine && \

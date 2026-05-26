@@ -12,7 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/main.css?t=2">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-    <link rel="stylesheet" href="css/app.css?t=20">
+    <link rel="stylesheet" href="css/app.css?t=27">
 </head>
 <body>
     <div class="page-atmosphere" aria-hidden="true">
@@ -293,6 +293,31 @@
                                 <button type="button" id="ndmPolyCancel">Cancel</button>
                             </span>
                         </div>
+                    </div>
+                </section>
+
+                <section class="card ndm-rtk-panel" id="ndmRtkPanel" hidden aria-label="RTK positioning quality preview">
+                    <div class="ndm-rtk-panel__header">
+                        <div class="ndm-rtk-panel__title-row">
+                            <h2>RTK Analysis</h2>
+                            <span class="ndm-rtk-badge ndm-rtk-badge--pending" id="ndmRtkBadge">Pending</span>
+                        </div>
+                        <p class="sub" id="ndmRtkStatus">Add DJI images in the drop zone to analyze RTK metadata automatically.</p>
+                    </div>
+                    <div class="ndm-rtk-panel__body">
+                        <div class="ndm-rtk-loading" id="ndmRtkLoading" hidden aria-live="polite" aria-busy="true">
+                            <div class="ndm-rtk-loading__inner">
+                                <div class="ndm-rtk-spinner" aria-hidden="true"></div>
+                                <p class="ndm-rtk-loading__label">Analyzing RTK metadata…</p>
+                            </div>
+                        </div>
+                        <div class="ndm-rtk-banner" id="ndmRtkBanner" hidden role="alert"></div>
+                        <div class="ndm-rtk-stats" id="ndmRtkStats" hidden></div>
+                        <details class="ndm-rtk-details" id="ndmRtkDetails" hidden>
+                            <summary>Flagged images &amp; full report</summary>
+                            <ul class="ndm-rtk-flagged" id="ndmRtkFlagged"></ul>
+                            <pre class="ndm-rtk-report" id="ndmRtkReport"></pre>
+                        </details>
                     </div>
                 </section>
 

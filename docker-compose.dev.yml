@@ -22,10 +22,13 @@ services:
     env_file:
       - .env
     environment:
-      # Allow session cookie on http://localhost when the base image sets NODE_ENV=production
-      OAUTH_COOKIE_SECURE: "0"
       # Express static uses ETag by default — browsers often keep old CSS/JS without this.
       NODEODM_DEV_STATIC_NO_CACHE: "1"
+      # Disable Google OAuth locally (.env would otherwise enable it and redirect to /login.html)
+      OAUTH_GOOGLE_CLIENT_ID: ""
+      OAUTH_GOOGLE_CLIENT_SECRET: ""
+      OAUTH_GOOGLE_REDIRECT_URI: ""
+      SESSION_SECRET: ""
     ports:
       - "3000:3000"
     entrypoint: ["/usr/bin/nodemon", "--legacy-watch"]

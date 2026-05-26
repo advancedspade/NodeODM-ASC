@@ -130,6 +130,7 @@ $(function() {
         this.uuid("");
         this.uploadedFiles(0);
         this.fileUploadStatus.removeAll();
+        clearNdmRtkState();
         dz.removeAllFiles(true);
     };
     App.prototype.startTask = function(){
@@ -244,6 +245,11 @@ $(function() {
     var ndmGpsMap = null;
     var ndmGpsMarkers = null;
     var gpsMapTimer = null;
+    var rtkMapTimer = null;
+    var ndmRtkXhr = null;
+    var ndmRtkRequestSeq = 0;
+    var ndmRtkByFilename = Object.create(null);
+    var ndmRtkEnabled = true;
     /** Blob URLs for map popup previews; revoked when markers refresh */
     var ndmGpsPreviewUrls = [];
     var ndmLastGpsResults = [];
@@ -519,6 +525,207 @@ $(function() {
         return (typeof n === "number" && !isNaN(n)) ? n.toFixed(6) : "—";
     }
 
+    function ndmRtkQualityClass(quality) {
+        if (quality === "PASS") return "rtk-pass";
+        if (quality === "WARN") return "rtk-warn";
+        if (quality === "FAIL") return "rtk-fail";
+        return "";
+    }
+
+    function ndmRtkLabelForRecord(rec) {
+        if (!rec) return "RTK pending";
+        if (rec.quality === "PASS") return "RTK " + (rec.rtk_solution || "PASS");
+        return "RTK " + (rec.quality || "?") + " — " + (rec.rtk_solution || "unknown");
+    }
+
+    function setNdmRtkBadge(text, kind) {
+        var badge = document.getElementById("ndmRtkBadge");
+        if (!badge) return;
+        badge.textContent = text;
+        badge.className = "ndm-rtk-badge ndm-rtk-badge--" + (kind || "pending");
+    }
+
+    function setNdmRtkPanelVisible(visible) {
+        var panel = document.getElementById("ndmRtkPanel");
+        if (panel) panel.hidden = !visible;
+    }
+
+    function setNdmRtkLoading(loading) {
+        var overlay = document.getElementById("ndmRtkLoading");
+        var panel = document.getElementById("ndmRtkPanel");
+        var status = document.getElementById("ndmRtkStatus");
+        if (overlay) overlay.hidden = !loading;
+        if (panel) panel.classList.toggle("ndm-rtk-panel--loading", !!loading);
+        if (status) status.classList.toggle("loading", !!loading);
+    }
+
+    function clearNdmRtkState() {
+        clearTimeout(rtkMapTimer);
+        if (ndmRtkXhr && ndmRtkXhr.abort) {
+            try { ndmRtkXhr.abort(); } catch (e) { /* ignore */ }
+        }
+        ndmRtkXhr = null;
+        ndmRtkByFilename = Object.create(null);
+        var banner = document.getElementById("ndmRtkBanner");
+        var stats = document.getElementById("ndmRtkStats");
+        var details = document.getElementById("ndmRtkDetails");
+        var flagged = document.getElementById("ndmRtkFlagged");
+        var report = document.getElementById("ndmRtkReport");
+        setNdmRtkPanelVisible(ndmRtkEnabled);
+        if (banner) { banner.hidden = true; banner.textContent = ""; banner.className = "ndm-rtk-banner"; }
+        if (stats) { stats.hidden = true; stats.innerHTML = ""; }
+        if (details) details.hidden = true;
+        if (flagged) flagged.innerHTML = "";
+        if (report) report.textContent = "";
+        setNdmRtkLoading(false);
+        setNdmRtkStatus("Add DJI images in the drop zone to analyze RTK metadata automatically.");
+        setNdmRtkBadge("Pending", "pending");
+    }
+
+    function setNdmRtkStatus(text) {
+        var el = document.getElementById("ndmRtkStatus");
+        if (el) el.textContent = text;
+    }
+
+    function updateNdmRtkUi(payload) {
+        var panel = document.getElementById("ndmRtkPanel");
+        var banner = document.getElementById("ndmRtkBanner");
+        var stats = document.getElementById("ndmRtkStats");
+        var details = document.getElementById("ndmRtkDetails");
+        var flaggedEl = document.getElementById("ndmRtkFlagged");
+        var reportEl = document.getElementById("ndmRtkReport");
+        if (!panel) return;
+
+        setNdmRtkLoading(false);
+        setNdmRtkPanelVisible(true);
+        var summary = payload.summary || {};
+        var q = summary.quality || {};
+        var severity = payload.severity || "ok";
+
+        if (severity === "error") {
+            setNdmRtkBadge("Issues found", "error");
+        } else if (severity === "warn") {
+            setNdmRtkBadge("Review recommended", "warn");
+        } else {
+            setNdmRtkBadge("All clear", "ok");
+        }
+
+        setNdmRtkStatus(payload.message || "RTK analysis complete.");
+
+        if (banner) {
+            if (payload.hasDiscrepancies) {
+                banner.hidden = false;
+                banner.textContent = payload.message || "RTK quality issues detected.";
+                banner.className = "ndm-rtk-banner ndm-rtk-banner--" + (severity === "error" ? "error" : "warn");
+            } else {
+                banner.hidden = true;
+                banner.textContent = "";
+            }
+        }
+
+        if (stats) {
+            stats.hidden = false;
+            stats.innerHTML =
+                "<span class=\"ndm-rtk-stat\"><strong>Images:</strong> " + (summary.total || 0) + "</span>" +
+                "<span class=\"ndm-rtk-stat\"><strong>RTK fixed:</strong> " + (summary.fixed_pct != null ? summary.fixed_pct : "—") + "%</span>" +
+                "<span class=\"ndm-rtk-stat\"><strong>PASS:</strong> " + (q.PASS || 0) + "</span>" +
+                "<span class=\"ndm-rtk-stat\"><strong>WARN:</strong> " + (q.WARN || 0) + "</span>" +
+                "<span class=\"ndm-rtk-stat\"><strong>FAIL:</strong> " + (q.FAIL || 0) + "</span>";
+        }
+
+        if (details && flaggedEl && reportEl) {
+            var flagged = summary.flagged || [];
+            flaggedEl.innerHTML = "";
+            flagged.forEach(function(item) {
+                var li = document.createElement("li");
+                if (item.quality === "FAIL") li.classList.add("ndm-rtk-flagged--fail");
+                var name = document.createElement("span");
+                name.className = "name";
+                name.textContent = item.filename;
+                var issues = document.createElement("span");
+                issues.className = "issues";
+                issues.textContent = item.issues || item.rtk_solution || "";
+                li.appendChild(name);
+                li.appendChild(issues);
+                flaggedEl.appendChild(li);
+            });
+            reportEl.textContent = payload.reportText || "";
+            details.hidden = !(flagged.length || payload.reportText);
+        }
+
+        renderNdmFileRows(ndmLastGpsResults);
+    }
+
+    function refreshRtkFromDropzone() {
+        var files = (dz.files || []).filter(ndmIsImageFile);
+        if (!ndmRtkEnabled) {
+            setNdmRtkPanelVisible(false);
+            if (!files.length) {
+                clearNdmRtkState();
+            } else {
+                setNdmRtkPanelVisible(true);
+                setNdmRtkBadge("Unavailable", "pending");
+            }
+            return;
+        }
+
+        setNdmRtkPanelVisible(true);
+        if (app && app.uploading && app.uploading()) {
+            return;
+        }
+
+        if (!files.length) {
+            clearNdmRtkState();
+            return;
+        }
+
+        if (ndmRtkXhr && ndmRtkXhr.abort) {
+            try { ndmRtkXhr.abort(); } catch (e) { /* ignore */ }
+        }
+
+        setNdmRtkBadge("Analyzing…", "busy");
+        setNdmRtkStatus("Uploading " + files.length + " image(s) for RTK analysis…");
+        setNdmRtkLoading(true);
+
+        var formData = new FormData();
+        files.forEach(function(f) {
+            formData.append("images", f, f.name);
+        });
+
+        var seq = ++ndmRtkRequestSeq;
+        ndmRtkXhr = $.ajax({
+            url: ndmApi("/rtk/analyze") + ndmTokenQs(),
+            type: "POST",
+            data: formData,
+            processData: false,
+            contentType: false,
+            timeout: 600000
+        }).done(function(result) {
+            if (seq !== ndmRtkRequestSeq) return;
+            setNdmRtkLoading(false);
+            if (result.error) {
+                setNdmRtkBadge("Unavailable", "pending");
+                setNdmRtkStatus(result.error);
+                return;
+            }
+            ndmRtkByFilename = Object.create(null);
+            (result.records || []).forEach(function(rec) {
+                ndmRtkByFilename[rec.filename] = rec;
+            });
+            updateNdmRtkUi(result);
+        }).fail(function(xhr, status) {
+            if (seq !== ndmRtkRequestSeq || status === "abort") return;
+            setNdmRtkLoading(false);
+            setNdmRtkBadge("Error", "pending");
+            setNdmRtkStatus(ndmAjaxFailMessage(xhr, status, ndmApi("/rtk/analyze")));
+        });
+    }
+
+    function scheduleRtkFromDropzone() {
+        clearTimeout(rtkMapTimer);
+        rtkMapTimer = setTimeout(refreshRtkFromDropzone, 700);
+    }
+
     function renderNdmFileRows(results) {
         var panel = document.getElementById("ndmFilePanel");
         var list = document.getElementById("ndmFileList");
@@ -536,6 +743,12 @@ $(function() {
             var hasGps = r.lat != null && r.lng != null;
             var key = ndmPhotoKey(r.file);
             if (hasGps && ndmDeselectedIds.has(key)) li.classList.add("excluded");
+
+            var rtkRec = ndmRtkByFilename[r.file.name];
+            if (rtkRec && rtkRec.quality) {
+                var rtkClass = ndmRtkQualityClass(rtkRec.quality);
+                if (rtkClass) li.classList.add(rtkClass);
+            }
 
             var name = document.createElement("span");
             name.className = "name";
@@ -558,6 +771,17 @@ $(function() {
             li.appendChild(name);
             li.appendChild(meta);
             li.appendChild(gps);
+
+            var rtk = document.createElement("span");
+            rtk.className = "rtk";
+            if (rtkRec) {
+                rtk.classList.add(rtkRec.quality === "PASS" ? "has-pass" : (rtkRec.quality === "WARN" ? "has-warn" : "has-fail"));
+                rtk.textContent = ndmRtkLabelForRecord(rtkRec);
+            } else if (ndmRtkEnabled && (dz.files || []).filter(ndmIsImageFile).length) {
+                rtk.classList.add("missing");
+                rtk.textContent = "RTK pending";
+            }
+            if (rtk.textContent) li.appendChild(rtk);
 
             if (hasGps) {
                 var proc = document.createElement("span");
@@ -704,6 +928,7 @@ $(function() {
     .on("addedfiles", function(files){
         app.filesCount(app.filesCount() + files.length);
         scheduleGpsFromDropzone();
+        scheduleRtkFromDropzone();
     })
     .on("complete", function(file){
         if (file.status === "success"){
@@ -732,12 +957,24 @@ $(function() {
     .on("reset", function(){
         app.filesCount(0);
         scheduleGpsFromDropzone();
+        scheduleRtkFromDropzone();
     })
     .on("removedfile", function(){
         scheduleGpsFromDropzone();
+        scheduleRtkFromDropzone();
     });
 
     setTimeout(scheduleGpsFromDropzone, 400);
+
+    $.get(ndmApi("/rtk/status") + ndmTokenQs()).done(function(st) {
+        ndmRtkEnabled = !!(st && st.enabled && st.available);
+        setNdmRtkPanelVisible(ndmRtkEnabled);
+        if (!ndmRtkEnabled && st && st.reason) {
+            setNdmRtkStatus("RTK preview unavailable: " + st.reason);
+        }
+    }).always(function() {
+        scheduleRtkFromDropzone();
+    });
 
     app = new App();
     var appRoot = document.getElementById("app");

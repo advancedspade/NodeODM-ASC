@@ -32,6 +32,7 @@ const Directories = require('./Directories');
 const kill = require('tree-kill');
 const S3 = require('./S3');
 const GCS = require('./GCS');
+const rtkRunner = require('./rtkRunner');
 const request = require('request');
 const utils = require('./utils');
 const archiver = require('archiver');
@@ -550,6 +551,50 @@ module.exports = class Task{
             if (os.platform() !== "win32" && !this.skipPostProcessing){
                 tasks.push(runPostProcessingScript());
             }
+
+            const runRtkAnalysis = () => {
+                return (done) => {
+                    if (!config.rtkAnalysis){
+                        this.output.push("RTK analysis disabled by configuration.");
+                        return done();
+                    }
+                    if (!rtkRunner.isAvailable()){
+                        this.output.push("RTK analysis skipped (exiftool/python not available).");
+                        return done();
+                    }
+
+                    const imagesDir = this.getImagesFolderPath();
+                    const outputDir = path.join(this.getProjectFolderPath(), "rtk_analysis");
+
+                    fs.access(imagesDir, fs.constants.R_OK, err => {
+                        if (err){
+                            this.output.push("RTK analysis skipped (images folder missing or unreadable).");
+                            return done();
+                        }
+
+                        this.output.push("Running RTK positioning quality analysis...");
+                        rtkRunner.runAnalysis(imagesDir, outputDir, (rtkErr, result) => {
+                            if (rtkErr){
+                                this.output.push(`RTK analysis warning: ${rtkErr.message}`);
+                                return done();
+                            }
+
+                            const q = result.summary.quality || {};
+                            this.output.push(
+                                `RTK analysis complete: ${result.summary.fixed_pct}% RTK fixed, ` +
+                                `PASS ${q.PASS || 0}, WARN ${q.WARN || 0}, FAIL ${q.FAIL || 0}. ` +
+                                `Outputs in rtk_analysis/`
+                            );
+                            if (GCS.enabled()){
+                                this.output.push("RTK reports will be included in GCS upload with task outputs.");
+                            }
+                            done();
+                        });
+                    });
+                };
+            };
+
+            tasks.push(runRtkAnalysis());
 
             const taskOutputFile = path.join(this.getProjectFolderPath(), 'task_output.txt');
             tasks.push(saveTaskOutput(taskOutputFile));

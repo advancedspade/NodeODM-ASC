@@ -47,6 +47,7 @@ const { applyUiDefaultsToOptions, OPTION_UI_DEFAULTS } = require('./libs/odmUiDe
 const auth = require('./libs/auth/factory').fromConfig(config);
 const authCheck = auth.getMiddleware();
 const taskNew = require('./libs/taskNew');
+const rtkApi = require('./libs/rtkApi');
 
 let taskManager;
 let server;
@@ -253,6 +254,9 @@ const jsonBodyParser = bodyParser.json();
  *          schema:
  *            $ref: '#/definitions/Error'
  */
+app.get('/rtk/status', authCheck, rtkApi.handleStatus);
+app.post('/rtk/analyze', authCheck, rtkApi.assignPreviewDir, rtkApi.uploadImages, rtkApi.handleAnalyze);
+
 app.post('/task/new/init', authCheck, taskNew.assignUUID, formDataParser, taskNew.handleInit);
 
 /** @swagger

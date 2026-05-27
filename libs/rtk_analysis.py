@@ -149,8 +149,8 @@ def assess_quality(
         issues.append(f"Horizontal std dev {horiz:.4f} m exceeds 5 cm")
     if std_hgt is not None and std_hgt > 0.10:
         issues.append(f"Vertical std dev {std_hgt:.4f} m exceeds 10 cm")
-    if diff_age is not None and diff_age > 5.0:
-        issues.append(f"Correction age {diff_age:.1f} s exceeds 5 s")
+    if diff_age is not None and diff_age > 3.0:
+        issues.append(f"Correction age {diff_age:.1f} s exceeds 3 s")
 
     if not issues:
         return "PASS", issues

@@ -142,7 +142,8 @@ function handleStatus(req, res) {
     res.json({
         enabled: config.rtkAnalysis !== false,
         available: status.available,
-        reason: status.reason
+        reason: status.reason,
+        sessionUpload: true
     });
 }
 

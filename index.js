@@ -165,6 +165,13 @@ app.get('/task/list', authCheck, (req, res) => {
     res.json(tasks);
 });
 
+app.get('/rtk/status', authCheck, rtkApi.handleStatus);
+app.post('/rtk/session', authCheck, rtkApi.handleSessionCreate);
+app.post('/rtk/session/:sessionId/upload', authCheck, rtkApi.assignSessionDir, rtkApi.uploadSessionImage, rtkApi.handleSessionUpload);
+app.post('/rtk/session/:sessionId/analyze', authCheck, rtkApi.assignSessionDir, rtkApi.handleSessionAnalyze);
+app.delete('/rtk/session/:sessionId', authCheck, rtkApi.handleSessionDelete);
+app.post('/rtk/analyze', authCheck, rtkApi.assignPreviewDir, rtkApi.uploadImages, rtkApi.handleAnalyze);
+
 const devStaticNoCache = process.env.NODEODM_DEV_STATIC_NO_CACHE === '1';
 app.use(express.static(publicDir, {
     etag: !devStaticNoCache,
@@ -254,13 +261,6 @@ const jsonBodyParser = bodyParser.json();
  *          schema:
  *            $ref: '#/definitions/Error'
  */
-app.get('/rtk/status', authCheck, rtkApi.handleStatus);
-app.post('/rtk/session', authCheck, rtkApi.handleSessionCreate);
-app.post('/rtk/session/:sessionId/upload', authCheck, rtkApi.assignSessionDir, rtkApi.uploadSessionImage, rtkApi.handleSessionUpload);
-app.post('/rtk/session/:sessionId/analyze', authCheck, rtkApi.assignSessionDir, rtkApi.handleSessionAnalyze);
-app.delete('/rtk/session/:sessionId', authCheck, rtkApi.handleSessionDelete);
-app.post('/rtk/analyze', authCheck, rtkApi.assignPreviewDir, rtkApi.uploadImages, rtkApi.handleAnalyze);
-
 app.post('/task/new/init', authCheck, taskNew.assignUUID, formDataParser, taskNew.handleInit);
 
 /** @swagger

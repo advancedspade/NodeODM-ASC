@@ -100,7 +100,11 @@ $(function() {
             return "Cannot reach the API at " + (displayUrl || "this URL") + ". Use the same host/port as NodeODM, or set window.NDM_API_BASE (e.g. http://127.0.0.1:3000).";
         }
         if (xhr && xhr.status === 404) {
-            return "404 for " + (attemptedUrl || "this URL") + " — wrong API host/path. Try: open this page from NodeODM (same port), add ?ndm_port=PORT (NodeODM’s port) to the URL, set window.NDM_API_BASE, or NDM_API_PATH_PREFIX if the API is under a subpath.";
+            var url404 = attemptedUrl;
+            if (url404 && url404.indexOf("http") !== 0 && typeof location !== "undefined") {
+                url404 = location.origin + url404;
+            }
+            return "404 for " + (url404 || "this URL") + " — wrong API host/path. Try: open this page from NodeODM (same port), add ?ndm_port=PORT (NodeODM’s port) to the URL, set window.NDM_API_BASE, or NDM_API_PATH_PREFIX if the API is under a subpath.";
         }
         if (xhr && xhr.status >= 400) {
             return "Request failed (" + xhr.status + "): " + (attemptedUrl || "");
@@ -255,6 +259,7 @@ $(function() {
     var ndmRtkSessionId = null;
     var ndmRtkActiveXhrs = [];
     var ndmRtkByFilename = Object.create(null);
+    var ndmRtkSessionUpload = null;
     var ndmRtkAjaxOpts = { xhrFields: { withCredentials: true } };
     var ndmRtkEnabled = true;
     /** Blob URLs for map popup previews; revoked when markers refresh */
@@ -754,37 +759,46 @@ $(function() {
         return def.promise();
     }
 
-    function refreshRtkFromDropzone() {
-        var files = (dz.files || []).filter(ndmIsImageFile);
-        if (!ndmRtkEnabled) {
-            setNdmRtkPanelVisible(false);
-            if (!files.length) {
-                clearNdmRtkState();
-            } else {
-                setNdmRtkPanelVisible(true);
-                setNdmRtkBadge("Unavailable", "pending");
-            }
+    function applyNdmRtkAnalysisResult(result, seq) {
+        if (seq !== ndmRtkRequestSeq) return;
+        setNdmRtkLoading(false);
+        if (result.error) {
+            setNdmRtkBadge("Unavailable", "pending");
+            setNdmRtkStatus(result.error);
             return;
         }
+        ndmRtkByFilename = Object.create(null);
+        (result.records || []).forEach(function(rec) {
+            ndmRtkByFilename[rec.filename] = rec;
+        });
+        updateNdmRtkUi(result);
+    }
 
-        setNdmRtkPanelVisible(true);
-        if (app && app.uploading && app.uploading()) {
-            return;
-        }
-
-        if (!files.length) {
-            clearNdmRtkState();
-            return;
-        }
-
-        abortNdmRtkWork();
-        destroyNdmRtkSession();
-
-        setNdmRtkBadge("Analyzing…", "busy");
+    function refreshRtkLegacyFromDropzone(files, seq) {
         setNdmRtkStatus("Uploading " + files.length + " image(s) for RTK analysis…");
-        setNdmRtkLoading(true);
+        var formData = new FormData();
+        files.forEach(function(f) {
+            formData.append("images", f, f.name);
+        });
+        var analyzeUrl = ndmApi("/rtk/analyze");
+        ndmRtkXhr = trackNdmRtkXhr($.ajax($.extend({
+            url: analyzeUrl + ndmTokenQs(),
+            type: "POST",
+            data: formData,
+            processData: false,
+            contentType: false,
+            timeout: 600000
+        }, ndmRtkAjaxOpts))).done(function(result) {
+            applyNdmRtkAnalysisResult(result, seq);
+        }).fail(function(xhr, status) {
+            if (seq !== ndmRtkRequestSeq || status === "abort") return;
+            setNdmRtkLoading(false);
+            setNdmRtkBadge("Error", "pending");
+            setNdmRtkStatus(ndmAjaxFailMessage(xhr, status, analyzeUrl));
+        });
+    }
 
-        var seq = ++ndmRtkRequestSeq;
+    function refreshRtkSessionFromDropzone(files, seq) {
         var analyzeUrl = "";
 
         ndmRtkXhr = trackNdmRtkXhr($.ajax($.extend({
@@ -814,17 +828,7 @@ $(function() {
                 }, ndmRtkAjaxOpts))).done(function(result) {
                     if (seq !== ndmRtkRequestSeq) return;
                     ndmRtkSessionId = null;
-                    setNdmRtkLoading(false);
-                    if (result.error) {
-                        setNdmRtkBadge("Unavailable", "pending");
-                        setNdmRtkStatus(result.error);
-                        return;
-                    }
-                    ndmRtkByFilename = Object.create(null);
-                    (result.records || []).forEach(function(rec) {
-                        ndmRtkByFilename[rec.filename] = rec;
-                    });
-                    updateNdmRtkUi(result);
+                    applyNdmRtkAnalysisResult(result, seq);
                 }).fail(function(xhr, status) {
                     if (seq !== ndmRtkRequestSeq || status === "abort") return;
                     setNdmRtkLoading(false);
@@ -840,10 +844,52 @@ $(function() {
             });
         }).fail(function(xhr, status) {
             if (seq !== ndmRtkRequestSeq || status === "abort") return;
+            if (xhr && xhr.status === 404) {
+                ndmRtkSessionUpload = false;
+                refreshRtkLegacyFromDropzone(files, seq);
+                return;
+            }
             setNdmRtkLoading(false);
             setNdmRtkBadge("Error", "pending");
             setNdmRtkStatus(ndmAjaxFailMessage(xhr, status, ndmApi("/rtk/session")));
         });
+    }
+
+    function refreshRtkFromDropzone() {
+        var files = (dz.files || []).filter(ndmIsImageFile);
+        if (!ndmRtkEnabled) {
+            setNdmRtkPanelVisible(false);
+            if (!files.length) {
+                clearNdmRtkState();
+            } else {
+                setNdmRtkPanelVisible(true);
+                setNdmRtkBadge("Unavailable", "pending");
+            }
+            return;
+        }
+
+        setNdmRtkPanelVisible(true);
+        if (app && app.uploading && app.uploading()) {
+            return;
+        }
+
+        if (!files.length) {
+            clearNdmRtkState();
+            return;
+        }
+
+        abortNdmRtkWork();
+        destroyNdmRtkSession();
+
+        setNdmRtkBadge("Analyzing…", "busy");
+        setNdmRtkLoading(true);
+
+        var seq = ++ndmRtkRequestSeq;
+        if (ndmRtkSessionUpload === false) {
+            refreshRtkLegacyFromDropzone(files, seq);
+            return;
+        }
+        refreshRtkSessionFromDropzone(files, seq);
     }
 
     function scheduleRtkFromDropzone() {
@@ -1093,9 +1139,18 @@ $(function() {
 
     $.get(ndmApi("/rtk/status") + ndmTokenQs(), ndmRtkAjaxOpts).done(function(st) {
         ndmRtkEnabled = !!(st && st.enabled && st.available);
+        if (st && st.sessionUpload === false) {
+            ndmRtkSessionUpload = false;
+        } else if (st && st.sessionUpload === true) {
+            ndmRtkSessionUpload = true;
+        }
         setNdmRtkPanelVisible(ndmRtkEnabled);
         if (!ndmRtkEnabled && st && st.reason) {
             setNdmRtkStatus("RTK preview unavailable: " + st.reason);
+        }
+    }).fail(function(xhr, status) {
+        if (xhr && xhr.status === 404) {
+            ndmRtkSessionUpload = false;
         }
     }).always(function() {
         scheduleRtkFromDropzone();

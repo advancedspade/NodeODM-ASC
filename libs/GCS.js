@@ -56,8 +56,12 @@ module.exports = {
                 // Test connection by checking if bucket exists
                 bucket.exists((err, exists) => {
                     if (err) {
+                        storage = null;
+                        bucket = null;
                         cb(new Error(`Cannot connect to GCS: ${err.message}`));
                     } else if (!exists) {
+                        storage = null;
+                        bucket = null;
                         cb(new Error(`GCS bucket '${config.gcsBucket}' does not exist or is not accessible`));
                     } else {
                         logger.info(`Connected to GCS bucket: ${config.gcsBucket}`);
@@ -65,6 +69,8 @@ module.exports = {
                     }
                 });
             } catch (err) {
+                storage = null;
+                bucket = null;
                 cb(new Error(`Failed to initialize GCS: ${err.message}`));
             }
         } else {
@@ -80,8 +86,9 @@ module.exports = {
      * @param {String[]} paths - List of paths relative to srcFolder to upload
      * @param {Function} cb - Callback function
      * @param {Function} onOutput - Optional callback for progress output
+     * @param {Function} onFileDone - Optional callback(completed, total, filename) after each file
      */
-    uploadPaths: function(srcFolder, bucketName, dstFolder, paths, cb, onOutput) {
+    uploadPaths: function(srcFolder, bucketName, dstFolder, paths, cb, onOutput, onFileDone) {
         if (!storage || !bucket) {
             return cb(new Error("GCS is not initialized"));
         }
@@ -189,6 +196,9 @@ module.exports = {
                     if (onOutput) {
                         onOutput(`[${progress}%] Uploaded ${filename} (${fileSizeMB} MB in ${elapsed}s)`);
                     }
+                    if (onFileDone) {
+                        onFileDone(completedUploads, totalFiles, file.relativePath || filename);
+                    }
 
                     done();
                 });
@@ -222,6 +232,40 @@ module.exports = {
      * @param {Function} cb - Callback
      * @param {Function} onOutput - Optional output callback
      */
+    /**
+     * List project folder names under gcsUploadPrefix (top-level "directories" in the bucket).
+     */
+    listProjects: function(cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+
+        const prefix = config.gcsUploadPrefix
+            ? String(config.gcsUploadPrefix).replace(/\/$/, "") + "/"
+            : "";
+
+        bucket.getFiles({ prefix, delimiter: "/", autoPaginate: false, maxResults: 5000 }, (err, files, nextQuery, apiResponse) => {
+            if (err) return cb(err);
+
+            const names = new Set();
+            (apiResponse && apiResponse.prefixes || []).forEach(p => {
+                let name = p.slice(prefix.length).replace(/\/$/, "");
+                if (name && !name.includes("/")) names.add(name);
+            });
+
+            // Fallback: infer folder names from object keys when delimiter prefixes are empty.
+            (files || []).forEach(file => {
+                const key = file.name || "";
+                if (!key.startsWith(prefix)) return;
+                const rest = key.slice(prefix.length);
+                const seg = rest.split("/")[0];
+                if (seg) names.add(seg);
+            });
+
+            cb(null, Array.from(names).sort((a, b) => a.localeCompare(b)));
+        });
+    },
+
     cleanupLocalPaths: function(srcFolder, paths, cb, onOutput) {
         if (onOutput) onOutput("Cleaning up local files after GCS upload...");
         logger.info(`Starting cleanup of ${paths.length} paths in ${srcFolder}`);

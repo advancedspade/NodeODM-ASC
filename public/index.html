@@ -12,7 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/main.css?t=2">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-    <link rel="stylesheet" href="css/app.css?t=27">
+    <link rel="stylesheet" href="css/app.css?t=31">
 </head>
 <body>
     <div class="page-atmosphere" aria-hidden="true">
@@ -112,7 +112,30 @@
         </div>
         <div class="page-atmosphere__vignette"></div>
     </div>
+    <div class="app-layout" id="ndmAppLayout">
+        <aside class="ndm-sidebar" id="ndmSidebar" aria-label="Main navigation">
+            <div class="ndm-sidebar__brand">
+                <span class="ndm-sidebar__logo" aria-hidden="true">◆</span>
+                <span class="ndm-sidebar__title">NodeODM</span>
+            </div>
+            <button type="button" class="ndm-sidebar__collapse" id="ndmSidebarCollapse" aria-expanded="true" aria-controls="ndmSidebarNav" title="Collapse sidebar">
+                <span aria-hidden="true">‹</span>
+            </button>
+            <nav class="ndm-sidebar__nav" id="ndmSidebarNav">
+                <button type="button" class="ndm-nav-item ndm-nav-item--active" data-ndm-view="home" id="ndmNavHome">
+                    <span class="ndm-nav-item__icon" aria-hidden="true">⌂</span>
+                    <span class="ndm-nav-item__label">Home</span>
+                </button>
+                <button type="button" class="ndm-nav-item" data-ndm-view="uploads" id="ndmNavUploads">
+                    <span class="ndm-nav-item__icon" aria-hidden="true">↑</span>
+                    <span class="ndm-nav-item__label">Uploads</span>
+                </button>
+            </nav>
+        </aside>
+
+        <div class="app-main">
     <div class="shell">
+        <div class="ndm-view" id="ndmViewHome" data-ndm-view="home">
         <header class="page-header">
             <div class="page-header__headline">
                 <h1 class="page-header__title">Drone processing job</h1>
@@ -395,7 +418,71 @@
                 </div>
             </div>
         </div>
+        </div><!-- /ndmViewHome -->
+
+        <div class="ndm-view" id="ndmViewUploads" data-ndm-view="uploads" hidden>
+            <header class="page-header">
+                <div class="page-header__headline">
+                    <h1 class="page-header__title">Upload to cloud storage</h1>
+                </div>
+                <p>Upload processed outputs (images, GeoTIFFs, point clouds, ZIP archives, etc.) into the same GCS bucket used for completed drone jobs.</p>
+                <p class="page-header__featureline" id="ndmGcsUploadHint">Checking cloud storage…</p>
+            </header>
+
+            <div class="grid grid--uploads">
+                <div class="card">
+                    <div class="card-body">
+                        <section class="section ndm-gcs-project-section">
+                            <label class="ndm-label" for="gcsProjectName">Project title</label>
+                            <p class="project-name-hint">Search existing bucket folders or type a new title. Matches the same names used for processed jobs (e.g. <code>North_field_survey</code>).</p>
+                            <div class="ndm-gcs-project-field">
+                                <div class="project-name-row">
+                                    <input type="text" class="ndm-input" id="gcsProjectName" autocomplete="off" spellcheck="false"
+                                        placeholder="Search or type project title…"
+                                        role="combobox" aria-expanded="false" aria-controls="gcsProjectSuggest" aria-autocomplete="list">
+                                    <button type="button" class="btn-ghost" id="gcsRefreshProjects" title="Reload projects from bucket">Refresh</button>
+                                </div>
+                                <p class="file-meta ndm-gcs-project-status" id="gcsProjectStatus" aria-live="polite"></p>
+                                <ul class="ndm-gcs-project-suggest" id="gcsProjectSuggest" role="listbox" hidden></ul>
+                            </div>
+                            <p class="file-meta" id="gcsProjectUri" hidden></p>
+                        </section>
+
+                        <section class="section">
+                            <span class="ndm-label">Files to upload</span>
+                            <p class="project-name-hint">Drop a folder, ZIP, or individual files. Folder structure is preserved under the project prefix (same layout as post-ODM outputs).</p>
+                            <div id="gcsUploadDropzone" class="drop-zone dropzone ndm-gcs-dropzone">
+                                <p class="ndm-gcs-dropzone__hint">Drop files or an unzipped folder here, or click to browse</p>
+                                <input type="file" id="gcsUploadInput" class="ndm-gcs-dropzone__input" multiple accept="*/*">
+                                <input type="file" id="gcsUploadFolderInput" class="ndm-gcs-dropzone__input ndm-gcs-dropzone__input--folder" webkitdirectory directory multiple>
+                            </div>
+                            <p class="mode-switch">
+                                <button type="button" class="btn-ghost" id="gcsChooseFolder">Choose folder…</button>
+                            </p>
+                            <ul class="file-list ndm-gcs-file-list" id="gcsUploadFileList"></ul>
+                        </section>
+
+                        <div id="gcsUploadError" class="error-block" hidden role="alert"></div>
+
+                        <div class="actions">
+                            <button type="button" class="btn-primary" id="gcsUploadStart" disabled>Upload to GCS</button>
+                            <button type="button" class="btn-ghost" id="gcsUploadClear">Clear files</button>
+                        </div>
+
+                        <div class="ndm-gcs-progress" id="gcsUploadProgress" hidden>
+                            <div class="ndm-progress">
+                                <div class="ndm-progress__bar" id="gcsUploadProgressBar" role="progressbar" style="width:0%">0%</div>
+                            </div>
+                            <p class="file-meta" id="gcsUploadProgressLabel"></p>
+                            <ul class="ndm-gcs-log" id="gcsUploadLog"></ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div><!-- /ndmViewUploads -->
     </div>
+        </div><!-- /app-main -->
+    </div><!-- /app-layout -->
 
     <script src="//ajax.googleapis.com/ajax/libs/jquery/1.11.2/jquery.min.js"></script>
     <script>
@@ -406,6 +493,6 @@
     <script src="js/dropzone.js" type="text/javascript"></script>
     <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-    <script src="js/main.js?t=49"></script>
+    <script src="js/main.js?t=56"></script>
 </body>
 </html>

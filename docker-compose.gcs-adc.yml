@@ -1,0 +1,16 @@
+# Optional overlay: GCS via Application Default Credentials (no JSON key file).
+# On your host, run once:  gcloud auth application-default login
+#
+# Usage:
+#   export GCS_BUCKET=nodeodm-outputs-v1
+#   docker compose -f docker-compose.dev.yml -f docker-compose.gcs-adc.yml up --build
+#
+services:
+  nodeodm:
+    environment:
+      GCS_BUCKET: ${GCS_BUCKET}
+      GCS_PROJECT_ID: ${GCS_PROJECT_ID:-}
+      GCS_UPLOAD_PREFIX: ${GCS_UPLOAD_PREFIX:-outputs}
+      GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
+    volumes:
+      - ${HOME}/.config/gcloud:/root/.config/gcloud:ro

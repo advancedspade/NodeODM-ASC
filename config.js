@@ -281,13 +281,14 @@ config.maxRuntime = parseInt(argv.max_runtime || fromConfigFile("maxRuntime", -1
 config.dockerMemoryLimit = argv.docker_memory_limit || fromConfigFile("dockerMemoryLimit", "");
 
 // GCS (Google Cloud Storage) configuration
-config.gcsBucket = argv.gcs_bucket || fromConfigFile("gcsBucket", process.env.GCS_BUCKET || "");
-config.gcsProjectId = argv.gcs_project_id || fromConfigFile("gcsProjectId", process.env.GCS_PROJECT_ID || "");
-config.gcsKeyPath = argv.gcs_key_path || fromConfigFile("gcsKeyPath",
-	process.env.GCS_KEY_PATH || process.env.GOOGLE_APPLICATION_CREDENTIALS || "");
+// Empty strings in config-default.json must not block env vars (GCS_BUCKET, etc.).
+config.gcsBucket = argv.gcs_bucket || fromConfigFile("gcsBucket", "") || process.env.GCS_BUCKET || "";
+config.gcsProjectId = argv.gcs_project_id || fromConfigFile("gcsProjectId", "") || process.env.GCS_PROJECT_ID || "";
+config.gcsKeyPath = argv.gcs_key_path || fromConfigFile("gcsKeyPath", "") ||
+	process.env.GCS_KEY_PATH || process.env.GOOGLE_APPLICATION_CREDENTIALS || "";
 config.gcsParallelUploads = parseInt(argv.gcs_parallel_uploads || fromConfigFile("gcsParallelUploads", 16));
 config.gcsUploadPaths = argv.gcs_upload_paths || fromConfigFile("gcsUploadPaths", ".");
-config.gcsUploadPrefix = argv.gcs_upload_prefix || fromConfigFile("gcsUploadPrefix", "");
+config.gcsUploadPrefix = argv.gcs_upload_prefix || fromConfigFile("gcsUploadPrefix", "") || process.env.GCS_UPLOAD_PREFIX || "";
 // Boolean flag - check for explicit true/false or presence of flag
 config.gcsCleanupAfterUpload = argv.gcs_cleanup_after_upload === true || 
     argv.gcs_cleanup_after_upload === 'true' || 

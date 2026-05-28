@@ -1215,6 +1215,9 @@ $(function() {
                 wrap.hidden = false;
             }
         }
+        if (d.gcsUpload) {
+            ndmGcsApplyStatus(d.gcsUpload);
+        }
     });
 
     function hoursMinutesSecs(t) {
@@ -1752,6 +1755,864 @@ $(function() {
                     if (ndmGpsMap) ndmGpsMap.invalidateSize();
                 }, 200);
             }
+        });
+    })();
+
+    (function setupNdmAppNav() {
+        var layout = document.getElementById("ndmAppLayout");
+        var collapseBtn = document.getElementById("ndmSidebarCollapse");
+        var navItems = document.querySelectorAll("[data-ndm-view]");
+        var views = document.querySelectorAll(".ndm-view");
+        if (!layout || !views.length) return;
+
+        var sidebarKey = "ndmSidebarCollapsed";
+        try {
+            if (localStorage.getItem(sidebarKey) === "1") {
+                layout.classList.add("ndm-sidebar--collapsed");
+                if (collapseBtn) collapseBtn.setAttribute("aria-expanded", "false");
+            }
+        } catch (e0) { /* ignore */ }
+
+        if (collapseBtn) {
+            collapseBtn.addEventListener("click", function() {
+                var collapsed = layout.classList.toggle("ndm-sidebar--collapsed");
+                collapseBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+                try { localStorage.setItem(sidebarKey, collapsed ? "1" : "0"); } catch (e1) { /* ignore */ }
+                setTimeout(function() {
+                    if (ndmGpsMap) ndmGpsMap.invalidateSize();
+                }, 220);
+            });
+        }
+
+        function showView(name) {
+            views.forEach(function(v) {
+                var match = v.getAttribute("data-ndm-view") === name;
+                v.hidden = !match;
+            });
+            document.querySelectorAll(".ndm-nav-item").forEach(function(btn) {
+                var active = btn.getAttribute("data-ndm-view") === name;
+                btn.classList.toggle("ndm-nav-item--active", active);
+            });
+            if (name === "home") {
+                setTimeout(function() {
+                    if (ndmGpsMap) ndmGpsMap.invalidateSize();
+                }, 200);
+            }
+            if (name === "uploads" && typeof ndmGcsUploadOnView === "function") {
+                ndmGcsUploadOnView();
+            }
+        }
+
+        document.querySelectorAll(".ndm-nav-item[data-ndm-view]").forEach(function(btn) {
+            btn.addEventListener("click", function() {
+                showView(btn.getAttribute("data-ndm-view"));
+            });
+        });
+
+        var hash = (location.hash || "").replace(/^#/, "");
+        if (hash === "uploads") showView("uploads");
+    })();
+
+    var ndmGcsEnabled = false;
+    var ndmGcsFiles = [];
+    var ndmGcsProjectsCache = [];
+    var ndmGcsProjectsCacheMeta = { key: "", fetchedAt: 0 };
+    var ndmGcsProjectsFetch = null;
+    var ndmGcsCacheKeyStr = "";
+    var ndmGcsSuggestIndex = -1;
+    var ndmGcsAjaxOpts = { xhrFields: { withCredentials: true } };
+    var NDM_GCS_PROJECTS_CACHE_STORAGE = "ndmGcsProjectsCacheV1";
+    var NDM_GCS_PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+    function ndmGcsSetError(msg) {
+        var el = document.getElementById("gcsUploadError");
+        if (!el) return;
+        if (msg) {
+            el.textContent = msg;
+            el.hidden = false;
+        } else {
+            el.textContent = "";
+            el.hidden = true;
+        }
+    }
+
+    function ndmGcsRenderFileList() {
+        var list = document.getElementById("gcsUploadFileList");
+        var startBtn = document.getElementById("gcsUploadStart");
+        if (!list) return;
+        list.innerHTML = "";
+        ndmGcsFiles.forEach(function(item) {
+            var li = document.createElement("li");
+            var name = document.createElement("span");
+            name.className = "name";
+            name.textContent = item.relativePath || item.file.name;
+            var meta = document.createElement("span");
+            meta.className = "meta";
+            meta.textContent = (item.file.size / (1024 * 1024)).toFixed(2) + " MB";
+            var rm = document.createElement("button");
+            rm.type = "button";
+            rm.className = "btn-ghost";
+            rm.textContent = "Remove";
+            rm.addEventListener("click", function() {
+                ndmGcsFiles = ndmGcsFiles.filter(function(x) { return x !== item; });
+                ndmGcsRenderFileList();
+            });
+            li.appendChild(name);
+            li.appendChild(meta);
+            li.appendChild(rm);
+            list.appendChild(li);
+        });
+        if (startBtn) {
+            startBtn.disabled = !ndmGcsEnabled || !ndmGcsFiles.length || !(document.getElementById("gcsProjectName") || {}).value.trim();
+        }
+    }
+
+    function ndmGcsNormalizeRelativePath(raw, fallbackName) {
+        var s = String(raw || fallbackName || "file").replace(/\\/g, "/").replace(/^\/+/, "");
+        var parts = s.split("/").filter(function(p) { return p && p !== "." && p !== ".."; });
+        return parts.join("/") || fallbackName || "file";
+    }
+
+    function ndmGcsReadAllDirectoryEntries(reader) {
+        return new Promise(function(resolve, reject) {
+            var all = [];
+            function readBatch() {
+                reader.readEntries(function(entries) {
+                    if (!entries.length) return resolve(all);
+                    all = all.concat(Array.prototype.slice.call(entries));
+                    readBatch();
+                }, reject);
+            }
+            readBatch();
+        });
+    }
+
+    function ndmGcsTraverseEntry(entry, prefix) {
+        if (entry.isFile) {
+            return new Promise(function(resolve, reject) {
+                entry.file(function(file) {
+                    resolve([{ file: file, relativePath: ndmGcsNormalizeRelativePath(prefix + file.name) }]);
+                }, reject);
+            });
+        }
+        if (entry.isDirectory) {
+            var dirPrefix = prefix + entry.name + "/";
+            return ndmGcsReadAllDirectoryEntries(entry.createReader()).then(function(entries) {
+                return Promise.all(entries.map(function(e) {
+                    return ndmGcsTraverseEntry(e, dirPrefix);
+                })).then(function(chunks) {
+                    return Array.prototype.concat.apply([], chunks);
+                });
+            });
+        }
+        return Promise.resolve([]);
+    }
+
+    function ndmGcsCollectDroppedItems(dataTransfer) {
+        if (!dataTransfer) return Promise.resolve([]);
+
+        var items = dataTransfer.items;
+        if (items && items.length && items[0].webkitGetAsEntry) {
+            var entries = [];
+            for (var i = 0; i < items.length; i++) {
+                var entry = items[i].webkitGetAsEntry();
+                if (entry) entries.push(entry);
+            }
+            if (entries.length) {
+                return Promise.all(entries.map(function(entry) {
+                    return ndmGcsTraverseEntry(entry, "");
+                })).then(function(chunks) {
+                    return Array.prototype.concat.apply([], chunks);
+                });
+            }
+        }
+
+        return Promise.resolve(Array.prototype.map.call(dataTransfer.files || [], function(f) {
+            return {
+                file: f,
+                relativePath: ndmGcsNormalizeRelativePath(f.webkitRelativePath || f.name)
+            };
+        }));
+    }
+
+    function ndmGcsAddFileItems(items) {
+        var seen = Object.create(null);
+        ndmGcsFiles.forEach(function(it) {
+            seen[it.relativePath] = true;
+        });
+        (items || []).forEach(function(it) {
+            if (!it || !it.file) return;
+            var rel = ndmGcsNormalizeRelativePath(it.relativePath, it.file.name);
+            if (seen[rel]) return;
+            seen[rel] = true;
+            ndmGcsFiles.push({ file: it.file, relativePath: rel });
+        });
+        ndmGcsRenderFileList();
+    }
+
+    function ndmGcsSetProjectStatus(text, kind) {
+        var el = document.getElementById("gcsProjectStatus");
+        if (!el) return;
+        el.textContent = text || "";
+        el.className = "file-meta ndm-gcs-project-status" + (kind ? " ndm-gcs-project-status--" + kind : "");
+    }
+
+    function ndmGcsHideSuggest() {
+        var list = document.getElementById("gcsProjectSuggest");
+        var input = document.getElementById("gcsProjectName");
+        if (list) list.hidden = true;
+        if (input) input.setAttribute("aria-expanded", "false");
+        ndmGcsSuggestIndex = -1;
+    }
+
+    function ndmGcsShowSuggest() {
+        var list = document.getElementById("gcsProjectSuggest");
+        var input = document.getElementById("gcsProjectName");
+        if (!list || !input || input.disabled) return;
+        list.hidden = false;
+        input.setAttribute("aria-expanded", "true");
+    }
+
+    function ndmGcsSelectProject(item) {
+        var input = document.getElementById("gcsProjectName");
+        if (!input || !item) return;
+        input.value = item.displayName || item.name || "";
+        ndmGcsHideSuggest();
+        ndmGcsRenderFileList();
+        ndmGcsUpdateProjectUriPreview();
+    }
+
+    function ndmGcsUpdateProjectUriPreview() {
+        var uriEl = document.getElementById("gcsProjectUri");
+        var input = document.getElementById("gcsProjectName");
+        if (!uriEl || !input) return;
+        var val = input.value.trim();
+        if (!val || !ndmGcsEnabled) {
+            uriEl.hidden = true;
+            return;
+        }
+        uriEl.hidden = false;
+        uriEl.textContent = "Will upload under project: " + val.replace(/\s+/g, "_").substring(0, 100);
+    }
+
+    function ndmGcsFilterProjects(query) {
+        var q = String(query || "").trim().toLowerCase();
+        if (!q) return ndmGcsProjectsCache.slice(0, 50);
+        return ndmGcsProjectsCache.filter(function(p) {
+            return (p.name && p.name.toLowerCase().indexOf(q) !== -1) ||
+                (p.displayName && p.displayName.toLowerCase().indexOf(q) !== -1);
+        }).slice(0, 50);
+    }
+
+    function ndmGcsRenderProjectSuggest(query) {
+        var list = document.getElementById("gcsProjectSuggest");
+        var input = document.getElementById("gcsProjectName");
+        if (!list || !input) return;
+
+        var matches = ndmGcsFilterProjects(query);
+        list.innerHTML = "";
+        ndmGcsSuggestIndex = -1;
+
+        if (!ndmGcsEnabled) {
+            list.innerHTML = "<li class=\"ndm-gcs-project-suggest__empty\">Cloud storage is not available on this server.</li>";
+            ndmGcsShowSuggest();
+            return;
+        }
+
+        if (!matches.length) {
+            var empty = document.createElement("li");
+            empty.className = "ndm-gcs-project-suggest__empty";
+            empty.textContent = query
+                ? "No matching projects — press Enter to use \"" + query + "\" as a new title."
+                : (ndmGcsProjectsCache.length
+                    ? "Type to search " + ndmGcsProjectsCache.length + " project(s)."
+                    : "No projects in bucket yet — type a new title.");
+            list.appendChild(empty);
+            ndmGcsShowSuggest();
+            return;
+        }
+
+        matches.forEach(function(item, i) {
+            var li = document.createElement("li");
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "ndm-gcs-project-suggest__item";
+            btn.setAttribute("role", "option");
+            btn.setAttribute("data-index", String(i));
+            var title = document.createElement("span");
+            title.textContent = item.displayName || item.name || "";
+            var meta = document.createElement("span");
+            meta.className = "ndm-gcs-project-suggest__meta";
+            meta.textContent = item.name || "";
+            btn.appendChild(title);
+            btn.appendChild(meta);
+            btn.addEventListener("mousedown", function(e) {
+                e.preventDefault();
+                ndmGcsSelectProject(item);
+            });
+            li.appendChild(btn);
+            list.appendChild(li);
+        });
+        ndmGcsShowSuggest();
+    }
+
+    function ndmGcsProjectsCacheKey(st) {
+        if (st && st.bucket) {
+            return String(st.bucket) + "|" + String(st.prefix || "");
+        }
+        return ndmGcsCacheKeyStr || "";
+    }
+
+    function ndmGcsProjectsCacheFresh(cacheKey) {
+        if (!cacheKey || ndmGcsProjectsCacheMeta.key !== cacheKey) return false;
+        if (!ndmGcsProjectsCache.length && ndmGcsProjectsCacheMeta.fetchedAt === 0) return false;
+        return Date.now() - ndmGcsProjectsCacheMeta.fetchedAt < NDM_GCS_PROJECTS_CACHE_TTL_MS;
+    }
+
+    function ndmGcsReadProjectsSessionCache(cacheKey) {
+        try {
+            var raw = sessionStorage.getItem(NDM_GCS_PROJECTS_CACHE_STORAGE);
+            if (!raw) return null;
+            var parsed = JSON.parse(raw);
+            if (!parsed || parsed.key !== cacheKey) return null;
+            if (Date.now() - parsed.fetchedAt > NDM_GCS_PROJECTS_CACHE_TTL_MS) return null;
+            return parsed;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function ndmGcsWriteProjectsSessionCache(cacheKey, projects) {
+        try {
+            sessionStorage.setItem(NDM_GCS_PROJECTS_CACHE_STORAGE, JSON.stringify({
+                key: cacheKey,
+                fetchedAt: Date.now(),
+                projects: projects || []
+            }));
+        } catch (e) { /* quota / private mode */ }
+    }
+
+    function ndmGcsClearProjectsCache() {
+        ndmGcsProjectsCache = [];
+        ndmGcsProjectsCacheMeta = { key: "", fetchedAt: 0 };
+        try { sessionStorage.removeItem(NDM_GCS_PROJECTS_CACHE_STORAGE); } catch (e) { /* ignore */ }
+    }
+
+    function ndmGcsStoreProjectsCache(projects, cacheKey) {
+        ndmGcsProjectsCache = projects || [];
+        ndmGcsProjectsCacheMeta = { key: cacheKey, fetchedAt: Date.now() };
+        ndmGcsWriteProjectsSessionCache(cacheKey, ndmGcsProjectsCache);
+    }
+
+    function ndmGcsSetProjectStatusFromCache(fromSession) {
+        var suffix = fromSession ? " (loaded from cache)" : " (cached)";
+        ndmGcsSetProjectStatus(
+            ndmGcsProjectsCache.length
+                ? ndmGcsProjectsCache.length + " project(s) — type to search or pick from the list." + suffix
+                : "No existing projects found — type a new title to create one." + suffix,
+            ""
+        );
+    }
+
+    function ndmGcsMergeProjectIntoCache(projectName, sanitizedName) {
+        if (!sanitizedName) return;
+        var displayName = projectName || sanitizedName.replace(/_/g, " ");
+        var exists = ndmGcsProjectsCache.some(function(p) {
+            return p.name === sanitizedName;
+        });
+        if (!exists) {
+            ndmGcsProjectsCache.push({ name: sanitizedName, displayName: displayName });
+            ndmGcsProjectsCache.sort(function(a, b) {
+                return (a.displayName || a.name).localeCompare(b.displayName || b.name);
+            });
+            if (ndmGcsProjectsCacheMeta.key) {
+                ndmGcsWriteProjectsSessionCache(ndmGcsProjectsCacheMeta.key, ndmGcsProjectsCache);
+            }
+        }
+    }
+
+    function ndmGcsSetupHintHtml(st) {
+        var base = (st && st.reason) ? st.reason : "GCS is not connected on this server.";
+        var local = "";
+        if (typeof location !== "undefined") {
+            var host = location.hostname;
+            if (host === "localhost" || host === "127.0.0.1") {
+                local = " Local dev: set GCS_BUCKET in .env (see env.gcs.example), run " +
+                    "gcloud auth application-default login, then " +
+                    "docker compose -f docker-compose.dev.yml -f docker-compose.gcs-adc.yml up --build. " +
+                    "Staging uses the VM service account (no key file).";
+            }
+        }
+        return base + local;
+    }
+
+    /** Load project list; uses memory + sessionStorage cache unless forceRefresh. */
+    function ndmGcsLoadProjects(forceRefresh) {
+        if (!ndmGcsEnabled) {
+            return $.when();
+        }
+
+        var cacheKey = ndmGcsCacheKeyStr;
+        var input = document.getElementById("gcsProjectName");
+        var query = input ? input.value : "";
+
+        if (!forceRefresh && ndmGcsProjectsCacheFresh(cacheKey)) {
+            ndmGcsSetProjectStatusFromCache(false);
+            ndmGcsRenderProjectSuggest(query);
+            return $.when();
+        }
+
+        if (!forceRefresh) {
+            var stored = ndmGcsReadProjectsSessionCache(cacheKey);
+            if (stored && stored.projects) {
+                ndmGcsStoreProjectsCache(stored.projects, cacheKey);
+                ndmGcsProjectsCacheMeta.fetchedAt = stored.fetchedAt;
+                ndmGcsSetProjectStatusFromCache(true);
+                ndmGcsRenderProjectSuggest(query);
+                return $.when();
+            }
+        }
+
+        if (ndmGcsProjectsFetch) {
+            return ndmGcsProjectsFetch.then(function() {
+                ndmGcsRenderProjectSuggest(query);
+            });
+        }
+
+        ndmGcsSetProjectStatus("Loading projects from bucket…", "loading");
+        var url = ndmApi("/gcs/projects") + ndmTokenQs();
+
+        ndmGcsProjectsFetch = $.get(url, ndmGcsAjaxOpts).done(function(data) {
+            if (data && data.error) {
+                ndmGcsClearProjectsCache();
+                ndmGcsSetProjectStatus(data.error, "error");
+                return;
+            }
+            var projects = (data && data.projects) ? data.projects : [];
+            if (data && data.bucket) {
+                ndmGcsCacheKeyStr = String(data.bucket) + "|" + String(data.prefix || "");
+                cacheKey = ndmGcsCacheKeyStr;
+            }
+            ndmGcsStoreProjectsCache(projects, cacheKey);
+            ndmGcsSetProjectStatus(
+                ndmGcsProjectsCache.length
+                    ? ndmGcsProjectsCache.length + " project(s) in bucket — type to search or pick from the list."
+                    : "No existing projects found — type a new title to create one.",
+                ""
+            );
+        }).fail(function(xhr, status) {
+            if (!ndmGcsProjectsCacheFresh(cacheKey)) {
+                ndmGcsClearProjectsCache();
+            }
+            ndmGcsSetProjectStatus(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/projects")), "error");
+        }).always(function() {
+            ndmGcsProjectsFetch = null;
+            ndmGcsRenderProjectSuggest(input ? input.value : "");
+        });
+
+        return ndmGcsProjectsFetch;
+    }
+
+    function ndmGcsRefreshProjects() {
+        return ndmGcsLoadProjects(true);
+    }
+
+    function ndmGcsApplyStatus(st) {
+        var hint = document.getElementById("ndmGcsUploadHint");
+        var view = document.getElementById("ndmViewUploads");
+        var nameEl = document.getElementById("gcsProjectName");
+        var refreshBtn = document.getElementById("gcsRefreshProjects");
+        ndmGcsEnabled = !!(st && st.enabled);
+        if (hint) {
+            if (!ndmGcsEnabled) {
+                hint.textContent = (st && st.reason) || "GCS uploads are not configured on this server.";
+            } else {
+                hint.innerHTML = "Destination bucket: <strong>" + (st.bucket || "") + "</strong>" +
+                    (st.prefix ? " · prefix: <code>" + st.prefix + "/</code>" : "");
+            }
+        }
+        if (view) view.setAttribute("aria-disabled", ndmGcsEnabled ? "false" : "true");
+        if (nameEl) {
+            nameEl.disabled = false;
+            nameEl.placeholder = ndmGcsEnabled
+                ? "Search or type project title…"
+                : "Connect GCS to search existing projects (see note below)";
+        }
+        if (refreshBtn) refreshBtn.disabled = !ndmGcsEnabled;
+        if (!ndmGcsEnabled) {
+            ndmGcsHideSuggest();
+            ndmGcsClearProjectsCache();
+            if (hint) {
+                hint.innerHTML = ndmGcsSetupHintHtml(st);
+            }
+            ndmGcsSetProjectStatus("Project search requires GCS. Upload button stays disabled until connected.", "error");
+        } else {
+            ndmGcsCacheKeyStr = ndmGcsProjectsCacheKey(st);
+            ndmGcsLoadProjects(false);
+        }
+        ndmGcsRenderFileList();
+    }
+
+    function ndmGcsUploadOnView() {
+        ndmGcsLoadProjects(false);
+        var nameEl = document.getElementById("gcsProjectName");
+        if (nameEl && !nameEl.disabled) {
+            nameEl.focus();
+            ndmGcsRenderProjectSuggest(nameEl.value || "");
+        }
+    }
+
+    function ndmGcsLogLine(text, kind) {
+        var log = document.getElementById("gcsUploadLog");
+        if (!log) return;
+        var li = document.createElement("li");
+        if (kind) li.className = "ndm-gcs-log--" + kind;
+        li.textContent = text;
+        log.appendChild(li);
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function ndmGcsSetProgress(pct, label, indeterminate) {
+        var wrap = document.getElementById("gcsUploadProgress");
+        var bar = document.getElementById("gcsUploadProgressBar");
+        var lbl = document.getElementById("gcsUploadProgressLabel");
+        if (wrap) {
+            wrap.hidden = false;
+            wrap.classList.toggle("ndm-gcs-progress--busy", !!indeterminate);
+        }
+        if (bar) {
+            bar.classList.toggle("ndm-gcs-progress__bar--indeterminate", !!indeterminate);
+            if (!indeterminate) {
+                bar.style.width = pct + "%";
+                bar.textContent = Math.round(pct) + "%";
+            } else {
+                bar.style.width = "35%";
+                bar.textContent = "…";
+            }
+        }
+        if (lbl) lbl.textContent = label || "";
+    }
+
+    function ndmGcsFormatElapsed(seconds) {
+        var s = Math.max(0, Math.floor(seconds || 0));
+        var mins = Math.floor(s / 60);
+        var rem = s % 60;
+        if (mins > 0) return mins + "m " + rem + "s";
+        return rem + "s";
+    }
+
+    function ndmGcsPollCommitProgress(uploadId) {
+        var def = $.Deferred();
+        var started = Date.now();
+        var lastLogged = 0;
+
+        function poll() {
+            $.get(ndmApi("/gcs/upload/" + uploadId + "/progress") + ndmTokenQs(), ndmGcsAjaxOpts)
+                .done(function(p) {
+                    if (p && p.done) {
+                        if (p.error) {
+                            def.reject(p.error);
+                            return;
+                        }
+                        def.resolve(p);
+                        return;
+                    }
+                    var total = (p && p.filesTotal) || 0;
+                    var done = (p && p.filesCompleted) || 0;
+                    var pct = total > 0 ? 85 + Math.round((done / total) * 15) : 88;
+                    var elapsed = ndmGcsFormatElapsed((Date.now() - started) / 1000);
+                    var label = total > 0
+                        ? "Uploading to GCS: " + done + " / " + total + " files (" + elapsed + ")…"
+                        : "Uploading to GCS… (" + elapsed + ") — large folders can take several minutes";
+                    if (p && p.currentFile) {
+                        label += " — " + p.currentFile;
+                    }
+                    ndmGcsSetProgress(pct, label, total === 0);
+                    if (done > 0 && (done - lastLogged >= 10 || done === total)) {
+                        ndmGcsLogLine("GCS upload: " + done + "/" + total + (p.currentFile ? " — " + p.currentFile : ""), "ok");
+                        lastLogged = done;
+                    }
+                    setTimeout(poll, 2000);
+                })
+                .fail(function() {
+                    setTimeout(poll, 3000);
+                });
+        }
+
+        poll();
+        return def.promise();
+    }
+
+    function ndmGcsUploadOneFile(uploadId, item) {
+        var fd = new FormData();
+        fd.append("file", item.file, item.file.name);
+        fd.append("relativePath", item.relativePath || item.file.name);
+        return $.ajax($.extend({
+            url: ndmApi("/gcs/upload/" + uploadId + "/file") + ndmTokenQs(),
+            type: "POST",
+            data: fd,
+            processData: false,
+            contentType: false,
+            timeout: 0
+        }, ndmGcsAjaxOpts));
+    }
+
+    function ndmGcsCommitUpload(uploadId) {
+        return $.ajax($.extend({
+            url: ndmApi("/gcs/upload/" + uploadId + "/commit") + ndmTokenQs(),
+            type: "POST",
+            timeout: 0
+        }, ndmGcsAjaxOpts));
+    }
+
+    function ndmGcsStageFilesParallel(uploadId, items, onProgress) {
+        var def = $.Deferred();
+        var uploaded = 0;
+        var idx = 0;
+        var active = 0;
+        var concurrency = 4;
+        var failed = null;
+
+        function pump() {
+            if (failed) {
+                if (def.state() === "pending") def.reject(failed);
+                return;
+            }
+            while (active < concurrency && idx < items.length) {
+                (function(capturedItem) {
+                    active++;
+                    ndmGcsUploadOneFile(uploadId, capturedItem).done(function(res) {
+                        active--;
+                        uploaded++;
+                        if (onProgress) onProgress(uploaded, items.length, capturedItem, res);
+                        if (res.error) {
+                            failed = res.error;
+                            if (def.state() === "pending") def.reject(failed);
+                            return;
+                        }
+                        if (uploaded >= items.length && active === 0) {
+                            def.resolve();
+                        } else {
+                            pump();
+                        }
+                    }).fail(function(xhr, status) {
+                        active--;
+                        failed = ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/file"));
+                        if (def.state() === "pending") def.reject(failed);
+                    });
+                })(items[idx++]);
+            }
+            if (active === 0 && uploaded >= items.length && !failed) {
+                def.resolve();
+            }
+        }
+
+        if (!items.length) {
+            def.resolve();
+        } else {
+            pump();
+        }
+        return def.promise();
+    }
+
+    function ndmGcsRunUpload() {
+        var projectName = (document.getElementById("gcsProjectName") || {}).value.trim();
+        if (!projectName) {
+            ndmGcsSetError("Enter a project title.");
+            return;
+        }
+        if (!ndmGcsFiles.length) {
+            ndmGcsSetError("Add at least one file.");
+            return;
+        }
+        ndmGcsSetError("");
+        var startBtn = document.getElementById("gcsUploadStart");
+        var clearBtn = document.getElementById("gcsUploadClear");
+        if (startBtn) startBtn.disabled = true;
+        if (clearBtn) clearBtn.disabled = true;
+
+        var log = document.getElementById("gcsUploadLog");
+        if (log) log.innerHTML = "";
+        ndmGcsSetProgress(0, "Starting upload session…");
+
+        $.ajax($.extend({
+            url: ndmApi("/gcs/upload/init") + ndmTokenQs(),
+            type: "POST",
+            contentType: "application/json",
+            data: JSON.stringify({ projectName: projectName })
+        }, ndmGcsAjaxOpts)).done(function(session) {
+            if (session.error) {
+                ndmGcsSetError(session.error);
+                if (startBtn) startBtn.disabled = false;
+                if (clearBtn) clearBtn.disabled = false;
+                return;
+            }
+
+            var uriEl = document.getElementById("gcsProjectUri");
+            if (uriEl) {
+                uriEl.hidden = false;
+                uriEl.textContent = "Target: " + (session.gcsUri || "");
+            }
+
+            var uploadId = session.uploadId;
+            var total = ndmGcsFiles.length;
+
+            ndmGcsStageFilesParallel(uploadId, ndmGcsFiles, function(done, tot, item, res) {
+                ndmGcsSetProgress((done / tot) * 80, "Staging " + done + " / " + tot + ": " + (item.relativePath || item.file.name));
+                if (res && res.extracted) {
+                    ndmGcsLogLine((item.relativePath || item.file.name) + " → extracted to folder (" + (res.stagedFiles || "?") + " file(s) staged)", "ok");
+                } else {
+                    ndmGcsLogLine((item.relativePath || item.file.name) + " → staged", "ok");
+                }
+            }).done(function() {
+                ndmGcsSetProgress(82, "Starting upload to GCS…");
+                return ndmGcsCommitUpload(uploadId);
+            }).done(function(start) {
+                if (start && start.error) {
+                    return $.Deferred().reject(start.error).promise();
+                }
+                ndmGcsLogLine("Uploading " + ((start && start.filesTotal) || "?") + " staged file(s) to GCS…", "ok");
+                return ndmGcsPollCommitProgress(uploadId);
+            }).done(function(commit) {
+                ndmGcsSetProgress(100, "Uploaded " + (commit.filesUploaded || 0) + " file(s) to " + (commit.gcsUri || "GCS"), false);
+                ndmGcsLogLine("Complete: " + (commit.filesUploaded || 0) + " object(s) at " + (commit.gcsUri || ""), "ok");
+                ndmGcsMergeProjectIntoCache(session.projectName, session.sanitizedName);
+                ndmGcsSetProjectStatusFromCache(false);
+            }).fail(function(err) {
+                if (err) ndmGcsSetError(String(err));
+            }).always(function() {
+                var wrap = document.getElementById("gcsUploadProgress");
+                if (wrap) wrap.classList.remove("ndm-gcs-progress--busy");
+                var bar = document.getElementById("gcsUploadProgressBar");
+                if (bar) bar.classList.remove("ndm-gcs-progress__bar--indeterminate");
+                $.ajax($.extend({
+                    url: ndmApi("/gcs/upload/" + uploadId) + ndmTokenQs(),
+                    type: "DELETE"
+                }, ndmGcsAjaxOpts));
+                if (startBtn) startBtn.disabled = !ndmGcsEnabled || !ndmGcsFiles.length;
+                if (clearBtn) clearBtn.disabled = false;
+            });
+        }).fail(function(xhr, status) {
+            ndmGcsSetError(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/init")));
+            if (startBtn) startBtn.disabled = false;
+            if (clearBtn) clearBtn.disabled = false;
+        });
+    }
+
+    (function setupNdmGcsUpload() {
+        var drop = document.getElementById("gcsUploadDropzone");
+        var input = document.getElementById("gcsUploadInput");
+        var folderInput = document.getElementById("gcsUploadFolderInput");
+        var chooseFolderBtn = document.getElementById("gcsChooseFolder");
+        var nameEl = document.getElementById("gcsProjectName");
+        var startBtn = document.getElementById("gcsUploadStart");
+        var clearBtn = document.getElementById("gcsUploadClear");
+        var refreshBtn = document.getElementById("gcsRefreshProjects");
+        if (!drop || !input) return;
+
+        input.addEventListener("change", function() {
+            ndmGcsAddFileItems(Array.prototype.map.call(input.files || [], function(f) {
+                return { file: f, relativePath: f.name };
+            }));
+            input.value = "";
+        });
+
+        if (folderInput) {
+            folderInput.addEventListener("change", function() {
+                ndmGcsAddFileItems(Array.prototype.map.call(folderInput.files || [], function(f) {
+                    return {
+                        file: f,
+                        relativePath: ndmGcsNormalizeRelativePath(f.webkitRelativePath || f.name)
+                    };
+                }));
+                folderInput.value = "";
+            });
+        }
+
+        if (chooseFolderBtn && folderInput) {
+            chooseFolderBtn.addEventListener("click", function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                folderInput.click();
+            });
+        }
+
+        drop.addEventListener("dragover", function(e) {
+            e.preventDefault();
+            drop.classList.add("ndm-gcs-dropzone--drag");
+        });
+        drop.addEventListener("dragleave", function() {
+            drop.classList.remove("ndm-gcs-dropzone--drag");
+        });
+        drop.addEventListener("drop", function(e) {
+            e.preventDefault();
+            drop.classList.remove("ndm-gcs-dropzone--drag");
+            ndmGcsCollectDroppedItems(e.dataTransfer).then(function(items) {
+                ndmGcsAddFileItems(items);
+            }).catch(function() {
+                ndmGcsSetError("Could not read dropped folder.");
+            });
+        });
+
+        if (nameEl) {
+            nameEl.addEventListener("input", function() {
+                ndmGcsRenderFileList();
+                ndmGcsUpdateProjectUriPreview();
+                ndmGcsRenderProjectSuggest(nameEl.value);
+            });
+            nameEl.addEventListener("focus", function() {
+                ndmGcsLoadProjects(false).always(function() {
+                    ndmGcsRenderProjectSuggest(nameEl.value);
+                });
+            });
+            nameEl.addEventListener("keydown", function(e) {
+                var list = document.getElementById("gcsProjectSuggest");
+                if (!list || list.hidden) return;
+                var items = list.querySelectorAll(".ndm-gcs-project-suggest__item");
+                if (!items.length) return;
+                if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    ndmGcsSuggestIndex = Math.min(ndmGcsSuggestIndex + 1, items.length - 1);
+                } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    ndmGcsSuggestIndex = Math.max(ndmGcsSuggestIndex - 1, 0);
+                } else if (e.key === "Enter" && ndmGcsSuggestIndex >= 0) {
+                    e.preventDefault();
+                    var picked = ndmGcsFilterProjects(nameEl.value)[ndmGcsSuggestIndex];
+                    if (picked) ndmGcsSelectProject(picked);
+                    return;
+                } else if (e.key === "Escape") {
+                    ndmGcsHideSuggest();
+                    return;
+                } else {
+                    return;
+                }
+                items.forEach(function(el, i) {
+                    el.classList.toggle("ndm-gcs-project-suggest__item--active", i === ndmGcsSuggestIndex);
+                });
+                if (ndmGcsSuggestIndex >= 0) items[ndmGcsSuggestIndex].scrollIntoView({ block: "nearest" });
+            });
+        }
+
+        document.addEventListener("click", function(e) {
+            var field = document.querySelector(".ndm-gcs-project-field");
+            if (field && !field.contains(e.target)) {
+                ndmGcsHideSuggest();
+            }
+        });
+
+        if (startBtn) startBtn.addEventListener("click", ndmGcsRunUpload);
+        if (clearBtn) {
+            clearBtn.addEventListener("click", function() {
+                ndmGcsFiles = [];
+                ndmGcsRenderFileList();
+                ndmGcsSetError("");
+            });
+        }
+        if (refreshBtn) refreshBtn.addEventListener("click", ndmGcsRefreshProjects);
+
+        $.get(ndmApi("/gcs/upload/status") + ndmTokenQs(), ndmGcsAjaxOpts).done(ndmGcsApplyStatus).fail(function() {
+            ndmGcsApplyStatus({ enabled: false, reason: "Could not reach GCS upload API." });
         });
     })();
 });

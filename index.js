@@ -48,6 +48,11 @@ const auth = require('./libs/auth/factory').fromConfig(config);
 const authCheck = auth.getMiddleware();
 const taskNew = require('./libs/taskNew');
 const rtkApi = require('./libs/rtkApi');
+const gcsUploadApi = require('./libs/gcsUploadApi');
+
+const formDataParser = multer().none();
+const urlEncodedBodyParser = bodyParser.urlencoded({ extended: false });
+const jsonBodyParser = bodyParser.json();
 
 let taskManager;
 let server;
@@ -99,6 +104,11 @@ app.get('/auth/bootstrap', (req, res) => {
         const payload = {
             oauth: true,
             signedIn: googleOAuth.hasWebAuth(req),
+            gcsUpload: GCS.enabled() ? {
+                enabled: true,
+                bucket: config.gcsBucket,
+                prefix: config.gcsUploadPrefix || ""
+            } : { enabled: false },
             portalStagingEnvOrigin: config.portalStagingEnvOrigin || "",
             portalStagingEnvLabel: config.portalStagingEnvLabel || "dronemaps",
             portalStagingEnvTagline: config.portalStagingEnvTagline || "",
@@ -111,7 +121,15 @@ app.get('/auth/bootstrap', (req, res) => {
         };
         return res.json(payload);
     }
-    res.json({ oauth: false, signedIn: true });
+    res.json({
+        oauth: false,
+        signedIn: true,
+        gcsUpload: GCS.enabled() ? {
+            enabled: true,
+            bucket: config.gcsBucket,
+            prefix: config.gcsUploadPrefix || ""
+        } : { enabled: false }
+    });
 });
 app.get('/', (req, res) => {
     if (config.oauthEnabled && googleOAuth && !googleOAuth.hasWebAuth(req)) {
@@ -172,6 +190,14 @@ app.post('/rtk/session/:sessionId/analyze', authCheck, rtkApi.assignSessionDir, 
 app.delete('/rtk/session/:sessionId', authCheck, rtkApi.handleSessionDelete);
 app.post('/rtk/analyze', authCheck, rtkApi.assignPreviewDir, rtkApi.uploadImages, rtkApi.handleAnalyze);
 
+app.get('/gcs/upload/status', authCheck, gcsUploadApi.handleStatus);
+app.get('/gcs/projects', authCheck, gcsUploadApi.handleListProjects);
+app.post('/gcs/upload/init', authCheck, urlEncodedBodyParser, jsonBodyParser, gcsUploadApi.handleInit);
+app.post('/gcs/upload/:uploadId/file', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.uploadMiddleware, gcsUploadApi.handleFile);
+app.post('/gcs/upload/:uploadId/commit', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.handleCommit);
+app.get('/gcs/upload/:uploadId/progress', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.handleProgress);
+app.delete('/gcs/upload/:uploadId', authCheck, gcsUploadApi.handleDelete);
+
 const devStaticNoCache = process.env.NODEODM_DEV_STATIC_NO_CACHE === '1';
 app.use(express.static(publicDir, {
     etag: !devStaticNoCache,
@@ -187,10 +213,6 @@ app.use(express.static(publicDir, {
     }
 }));
 app.use('/swagger.json', express.static('docs/swagger.json'));
-
-const formDataParser = multer().none();
-const urlEncodedBodyParser = bodyParser.urlencoded({extended: false});
-const jsonBodyParser = bodyParser.json();
 
 /** @swagger
  *  /task/new/init:
@@ -1034,7 +1056,13 @@ let commands = [
     cb => odmInfo.initialize(cb),
     cb => auth.initialize(cb),
     cb => S3.initialize(cb),
-    cb => GCS.initialize(cb),
+    cb => GCS.initialize(err => {
+        if (err) {
+            logger.warn(`GCS upload disabled: ${err.message}`);
+            return cb();
+        }
+        cb();
+    }),
     cb => { 
         TaskManager.initialize(cb);
         taskManager = TaskManager.singleton();

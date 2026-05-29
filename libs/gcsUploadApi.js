@@ -356,9 +356,9 @@ function commitFromGcsStaging(session, uploadId, cb, onFileDone) {
 
                         uploadFolderToGcs(extractDir, destPath, (upErr, stats) => {
                             if (upErr) return cb(upErr);
-                            GCS.deletePrefix(stagingPath, delErr => {
-                                if (delErr) logger.warn(`GCS staging cleanup: ${delErr.message}`);
-                                cb(null, stats);
+                            cb(null, stats);
+                            GCS.deletePrefixWithRetry(stagingPath, delErr => {
+                                if (delErr) logger.warn(`GCS staging cleanup failed for ${stagingPath}: ${delErr.message}`);
                             });
                         }, null, onFileDone);
                     });
@@ -369,9 +369,10 @@ function commitFromGcsStaging(session, uploadId, cb, onFileDone) {
 
         GCS.copyPrefix(stagingPath, destPath, (copyErr, stats) => {
             if (copyErr) return cb(copyErr);
-            GCS.deletePrefix(stagingPath, delErr => {
-                if (delErr) logger.warn(`GCS staging cleanup: ${delErr.message}`);
-                cb(null, stats);
+            cb(null, stats);
+            GCS.deletePrefixWithRetry(stagingPath, delErr => {
+                if (delErr) logger.warn(`GCS staging cleanup failed for ${stagingPath}: ${delErr.message}`);
+                else logger.info(`GCS staging cleaned up: ${stagingPath}`);
             });
         }, onFileDone);
     });
@@ -589,7 +590,13 @@ function handleCommit(req, res) {
         if (!staged) {
             return res.json({ error: "No files staged for upload." });
         }
-        return finishStart(staged);
+        return GCS.listFilesUnderPrefix(session.gcsStagingPath, (listErr, objects) => {
+            if (listErr) return res.json({ error: listErr.message });
+            if (!objects.length) {
+                return res.json({ error: "No files found in GCS staging for this session." });
+            }
+            finishStart(objects.length);
+        });
     }
 
     const fileCount = countFilesUnder(stagingDir);
@@ -644,7 +651,7 @@ function handleDelete(req, res) {
     };
 
     if (session && session.directUpload && session.gcsStagingPath) {
-        GCS.deletePrefix(session.gcsStagingPath, delErr => {
+        GCS.deletePrefixWithRetry(session.gcsStagingPath, delErr => {
             if (delErr) logger.warn(`GCS staging prefix cleanup: ${delErr.message}`);
             finish();
         });

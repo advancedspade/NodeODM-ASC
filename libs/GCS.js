@@ -335,6 +335,8 @@ module.exports = {
 
             let completed = 0;
             const total = files.length;
+            if (onFileDone) onFileDone(0, total, "starting…");
+
             const q = async.queue((file, done) => {
                 const rel = file.name.slice(srcBase.length);
                 const dest = destBase + rel;
@@ -346,10 +348,9 @@ module.exports = {
                 });
             }, PARALLEL);
 
-            q.push(files, qErr => {
-                if (qErr) return cb(qErr);
-                cb(null, { fileCount: total });
-            });
+            q.error = err => cb(err);
+            q.drain = () => cb(null, { fileCount: total });
+            q.push(files);
         });
     },
 
@@ -363,6 +364,20 @@ module.exports = {
             if (!files || !files.length) return cb();
             async.eachLimit(files, 16, (file, done) => file.delete(done), cb);
         });
+    },
+
+    deletePrefixWithRetry: function(prefix, cb) {
+        const attempt = (n) => {
+            module.exports.deletePrefix(prefix, err => {
+                if (!err) return cb();
+                if (n < 2) {
+                    logger.warn(`GCS staging delete retry (${n + 1}/2) for ${prefix}: ${err.message}`);
+                    return setTimeout(() => attempt(n + 1), 2000);
+                }
+                cb(err);
+            });
+        };
+        attempt(0);
     },
 
     downloadFile: function(objectPath, destPath, cb) {

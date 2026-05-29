@@ -1933,9 +1933,15 @@ fieldset.preset-fieldset legend {
 }
 
 .ndm-sidebar {
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    z-index: 20;
     flex: 0 0 220px;
     display: flex;
     flex-direction: column;
+    max-height: 100vh;
+    overflow-y: auto;
     padding: 1.25rem 0.75rem 1.5rem;
     background: rgba(12, 18, 28, 0.72);
     border-right: 1px solid var(--border);
@@ -2184,6 +2190,13 @@ fieldset.preset-fieldset legend {
     margin-top: 0.75rem;
 }
 
+.ndm-gcs-file-list__summary {
+    font-size: 0.9rem;
+    color: var(--muted);
+    padding: 0.35rem 0;
+    list-style: none;
+}
+
 .ndm-gcs-file-list .name {
     word-break: break-all;
 }
@@ -2237,7 +2250,10 @@ fieldset.preset-fieldset legend {
     }
 
     .ndm-sidebar {
+        position: sticky;
+        top: 0;
         flex: 0 0 auto;
+        max-height: none;
         flex-direction: row;
         flex-wrap: wrap;
         align-items: center;

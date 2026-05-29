@@ -1825,6 +1825,7 @@ $(function() {
     var NDM_GCS_PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000;
     var NDM_GCS_MAX_INDIVIDUAL_FILES = 2500;
     var NDM_GCS_STALL_MS = 5 * 60 * 1000;
+    var NDM_GCS_FILE_LIST_PREVIEW = 30;
     var ndmGcsDirectUpload = false;
 
     function ndmGcsIsRemoteHost() {
@@ -1859,7 +1860,23 @@ $(function() {
         var startBtn = document.getElementById("gcsUploadStart");
         if (!list) return;
         list.innerHTML = "";
-        ndmGcsFiles.forEach(function(item) {
+        var total = ndmGcsFiles.length;
+        var totalBytes = 0;
+        ndmGcsFiles.forEach(function(item) { totalBytes += item.file.size; });
+        var preview = total > NDM_GCS_FILE_LIST_PREVIEW
+            ? ndmGcsFiles.slice(0, NDM_GCS_FILE_LIST_PREVIEW)
+            : ndmGcsFiles;
+
+        if (total > NDM_GCS_FILE_LIST_PREVIEW) {
+            var summary = document.createElement("li");
+            summary.className = "ndm-gcs-file-list__summary";
+            summary.textContent = total + " file(s) selected (" +
+                (totalBytes / (1024 * 1024 * 1024)).toFixed(2) + " GB total) — showing first " +
+                NDM_GCS_FILE_LIST_PREVIEW;
+            list.appendChild(summary);
+        }
+
+        preview.forEach(function(item) {
             var li = document.createElement("li");
             var name = document.createElement("span");
             name.className = "name";
@@ -2321,14 +2338,19 @@ $(function() {
         return rem + "s";
     }
 
-    function ndmGcsPollCommitProgress(uploadId) {
+    function ndmGcsPollCommitProgress(uploadId, expectedTotal) {
         var def = $.Deferred();
         var started = Date.now();
         var lastLogged = 0;
+        var lastDone = -1;
 
         function poll() {
             $.get(ndmApi("/gcs/upload/" + uploadId + "/progress") + ndmTokenQs(), ndmGcsAjaxOpts)
                 .done(function(p) {
+                    if (p && p.error && !p.done) {
+                        def.reject(p.error);
+                        return;
+                    }
                     if (p && p.done) {
                         if (p.error) {
                             def.reject(p.error);
@@ -2337,9 +2359,9 @@ $(function() {
                         def.resolve(p);
                         return;
                     }
-                    var total = (p && p.filesTotal) || 0;
+                    var total = (p && p.filesTotal) || expectedTotal || 0;
                     var done = (p && p.filesCompleted) || 0;
-                    var pct = total > 0 ? 50 + Math.round((done / total) * 50) : 52;
+                    var pct = total > 0 ? 50 + Math.round((done / total) * 50) : 55;
                     var elapsed = ndmGcsFormatElapsed((Date.now() - started) / 1000);
                     var label = total > 0
                         ? "Step 2/2 — Finalizing project folder: " + done + " / " + total + " (" + elapsed + ")"
@@ -2349,14 +2371,19 @@ $(function() {
                         if (short.length > 48) short = "…" + short.slice(-45);
                         label += " — " + short;
                     }
-                    ndmGcsSetProgress(pct, label, total === 0);
-                    if (done > 0 && (done - lastLogged >= 10 || done === total)) {
-                        ndmGcsLogLine("GCS upload: " + done + "/" + total + (p.currentFile ? " — " + p.currentFile : ""), "ok");
+                    ndmGcsSetProgress(pct, label, total === 0 && done === 0);
+                    if (done > 0 && (done !== lastDone) && (done - lastLogged >= 10 || done === total)) {
+                        ndmGcsLogLine("Organizing in GCS: " + done + "/" + total + (p.currentFile ? " — " + p.currentFile : ""), "ok");
                         lastLogged = done;
+                        lastDone = done;
                     }
                     setTimeout(poll, 2000);
                 })
-                .fail(function() {
+                .fail(function(xhr, status) {
+                    if (Date.now() - started > 30 * 60 * 1000) {
+                        def.reject(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/progress")));
+                        return;
+                    }
                     setTimeout(poll, 3000);
                 });
         }
@@ -2567,7 +2594,8 @@ $(function() {
         return $.ajax($.extend({
             url: ndmApi("/gcs/upload/" + uploadId + "/commit") + ndmTokenQs(),
             type: "POST",
-            timeout: 0
+            dataType: "json",
+            timeout: 120000
         }, ndmGcsAjaxOpts));
     }
 
@@ -2841,9 +2869,10 @@ $(function() {
                 if (start && start.error) {
                     return $.Deferred().reject(start.error).promise();
                 }
-                var n = (start && start.filesTotal) || "?";
+                var n = (start && start.filesTotal != null) ? start.filesTotal : total;
+                ndmGcsSetProgress(50, "Step 2/2 — Finalizing project folder: 0 / " + n);
                 ndmGcsLogLine("Step 2/2 — organizing " + n + " file(s) into project folder…", "ok");
-                return ndmGcsPollCommitProgress(uploadId);
+                return ndmGcsPollCommitProgress(uploadId, n);
             }).done(function(commit) {
                 ndmGcsSetProgress(100, "Done — " + (commit.filesUploaded || 0) + " file(s) in Google Cloud", false);
                 ndmGcsLogLine("Complete: " + (commit.filesUploaded || 0) + " object(s) at " + (commit.gcsUri || ""), "ok");

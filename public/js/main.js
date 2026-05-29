@@ -2349,23 +2349,34 @@ $(function() {
     }
 
     function ndmGcsUploadOneFile(uploadId, item, attempt) {
+        attempt = attempt || 0;
+        var def = $.Deferred();
         var fd = new FormData();
         fd.append("file", item.file, item.file.name);
         fd.append("relativePath", item.relativePath || item.file.name);
-        var timeoutMs = item.file.size > 50 * 1024 * 1024 ? 1800000 : 600000;
-        return $.ajax($.extend({
+        var sizeMb = item.file.size / (1024 * 1024);
+        var timeoutMs = sizeMb > 100 ? 3600000 : sizeMb > 25 ? 1800000 : 600000;
+        var jqXhr = $.ajax($.extend({
             url: ndmApi("/gcs/upload/" + uploadId + "/file") + ndmTokenQs(),
             type: "POST",
             data: fd,
             processData: false,
             contentType: false,
             timeout: timeoutMs
-        }, ndmGcsAjaxOpts)).then(null, function(xhr, status) {
-            if ((attempt || 0) < 2 && status !== "abort") {
-                return ndmGcsUploadOneFile(uploadId, item, (attempt || 0) + 1);
+        }, ndmGcsAjaxOpts));
+        jqXhr.done(function(res) {
+            if (res && res.error) def.reject(res.error);
+            else def.resolve(res, jqXhr);
+        }).fail(function(xhr, status) {
+            if (attempt < 2 && status !== "abort") {
+                ndmGcsUploadOneFile(uploadId, item, attempt + 1).then(def.resolve, def.reject);
+            } else {
+                var label = item.relativePath || item.file.name;
+                def.reject(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/file")) +
+                    " (" + label + ")");
             }
-            return $.Deferred().reject(xhr, status).promise();
         });
+        return def.promise();
     }
 
     function ndmGcsCommitUpload(uploadId) {
@@ -2378,63 +2389,109 @@ $(function() {
 
     function ndmGcsStageFilesParallel(uploadId, items, onProgress) {
         var def = $.Deferred();
+        var queue = items.slice().sort(function(a, b) { return a.file.size - b.file.size; });
         var uploaded = 0;
         var idx = 0;
         var active = 0;
-        var concurrency = items.length > 500 ? 8 : 4;
+        var activeLarge = 0;
         var failed = null;
+        var inFlight = [];
         var lastProgressAt = Date.now();
-        var stallTimer = setInterval(function() {
-            if (def.state() !== "pending") return;
-            if (Date.now() - lastProgressAt > NDM_GCS_STALL_MS) {
-                failed = "No progress for 5 minutes. For large folders (especially entwine/3d_tiles), zip the project and upload one .zip file instead.";
-                def.reject(failed);
+        var maxConcurrent = queue.length > 500 ? 6 : 4;
+        var largeThreshold = 25 * 1024 * 1024;
+        var maxLargeConcurrent = 2;
+
+        function notifyProgress(item, res) {
+            if (onProgress) onProgress(uploaded, queue.length, item, res, inFlight.slice());
+        }
+
+        function finishOne(capturedItem, res) {
+            active--;
+            if (capturedItem.file.size > largeThreshold) activeLarge--;
+            for (var i = 0; i < inFlight.length; i++) {
+                if (inFlight[i].item === capturedItem) {
+                    inFlight.splice(i, 1);
+                    break;
+                }
             }
-        }, 30000);
+            uploaded++;
+            lastProgressAt = Date.now();
+            notifyProgress(capturedItem, res);
+            if (uploaded >= queue.length && active === 0) {
+                clearInterval(stallTimer);
+                clearInterval(heartbeatTimer);
+                def.resolve();
+            } else {
+                pump();
+            }
+        }
+
+        function failOne(err) {
+            failed = err;
+            clearInterval(stallTimer);
+            clearInterval(heartbeatTimer);
+            if (def.state() === "pending") def.reject(failed);
+        }
 
         function pump() {
-            if (failed) {
-                clearInterval(stallTimer);
-                if (def.state() === "pending") def.reject(failed);
-                return;
-            }
-            while (active < concurrency && idx < items.length) {
+            if (failed || def.state() !== "pending") return;
+            while (active < maxConcurrent && idx < queue.length) {
+                var next = queue[idx];
+                var isLarge = next.file.size > largeThreshold;
+                if (isLarge && activeLarge >= maxLargeConcurrent) break;
+                idx++;
+                active++;
+                if (isLarge) activeLarge++;
                 (function(capturedItem) {
-                    active++;
-                    ndmGcsUploadOneFile(uploadId, capturedItem).done(function(res) {
+                    var entry = { item: capturedItem, startedAt: Date.now() };
+                    inFlight.push(entry);
+                    var promise = ndmGcsUploadOneFile(uploadId, capturedItem);
+                    promise.done(function(res) {
+                        finishOne(capturedItem, res);
+                    }).fail(function(err) {
                         active--;
-                        uploaded++;
-                        lastProgressAt = Date.now();
-                        if (onProgress) onProgress(uploaded, items.length, capturedItem, res);
-                        if (res.error) {
-                            failed = res.error;
-                            clearInterval(stallTimer);
-                            if (def.state() === "pending") def.reject(failed);
-                            return;
+                        if (capturedItem.file.size > largeThreshold) activeLarge--;
+                        for (var j = 0; j < inFlight.length; j++) {
+                            if (inFlight[j].item === capturedItem) {
+                                inFlight.splice(j, 1);
+                                break;
+                            }
                         }
-                        if (uploaded >= items.length && active === 0) {
-                            clearInterval(stallTimer);
-                            def.resolve();
-                        } else {
-                            pump();
-                        }
-                    }).fail(function(xhr, status) {
-                        active--;
-                        if (status === "abort") return;
-                        failed = ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/file"));
-                        clearInterval(stallTimer);
-                        if (def.state() === "pending") def.reject(failed);
+                        if (!failed) failOne(err);
                     });
-                })(items[idx++]);
+                })(next);
             }
-            if (active === 0 && uploaded >= items.length && !failed) {
+            if (active === 0 && uploaded >= queue.length && !failed) {
                 clearInterval(stallTimer);
+                clearInterval(heartbeatTimer);
                 def.resolve();
             }
         }
 
-        if (!items.length) {
-            clearInterval(stallTimer);
+        var stallTimer = setInterval(function() {
+            if (def.state() !== "pending") return;
+            var stalledMs = Date.now() - lastProgressAt;
+            var remaining = queue.length - uploaded;
+            var stallLimit = remaining <= 10 ? 3 * 60 * 1000 : NDM_GCS_STALL_MS;
+            if (stalledMs > stallLimit) {
+                var names = inFlight.map(function(f) {
+                    return f.item.relativePath || f.item.file.name;
+                }).slice(0, 5);
+                var hint = names.length ? " Still waiting on: " + names.join(", ") + (inFlight.length > 5 ? "…" : "") + "." : "";
+                failOne(
+                    "No progress for " + Math.round(stallLimit / 60000) + " minutes (" +
+                    uploaded + " / " + queue.length + " sent)." + hint +
+                    " Large point-cloud tiles (.laz) upload slowly — zip the folder and upload one .zip instead."
+                );
+            }
+        }, 15000);
+
+        var heartbeatTimer = setInterval(function() {
+            if (def.state() !== "pending" || !inFlight.length) return;
+            notifyProgress(null, null);
+        }, 3000);
+
+        if (!queue.length) {
             def.resolve();
         } else {
             pump();
@@ -2501,15 +2558,29 @@ $(function() {
             var uploadId = session.uploadId;
             var total = ndmGcsFiles.length;
 
-            ndmGcsStageFilesParallel(uploadId, ndmGcsFiles, function(done, tot, item, res) {
+            ndmGcsStageFilesParallel(uploadId, ndmGcsFiles, function(done, tot, item, res, inFlight) {
                 var phasePct = tot > 0 ? Math.round((done / tot) * 45) : 0;
-                ndmGcsSetProgress(phasePct, "Step 1/2 — Sending to server: " + done + " / " + tot);
+                var inProgress = (inFlight && inFlight.length) || 0;
+                var label = "Step 1/2 — Sending to server: " + done + " / " + tot;
+                if (inProgress) {
+                    label += " (" + inProgress + " in progress";
+                    var big = inFlight.filter(function(f) { return f.item.file.size > 25 * 1024 * 1024; });
+                    if (big.length) {
+                        var name = big[0].item.relativePath || big[0].item.file.name;
+                        if (name.length > 40) name = "…" + name.slice(-37);
+                        label += ", large: " + name;
+                    }
+                    label += ")";
+                }
+                ndmGcsSetProgress(phasePct, label);
                 if (res && res.extracted) {
                     if (done === 1 || done === tot || done % 25 === 0) {
                         ndmGcsLogLine((item.relativePath || item.file.name) + " → ZIP extracted on server", "ok");
                     }
-                } else if (done === 1 || done === tot || done % 25 === 0) {
+                } else if (item && (done === 1 || done === tot || done % 25 === 0)) {
                     ndmGcsLogLine("Server received " + done + " / " + tot + " files (not in GCS yet)", "ok");
+                } else if (!item && inProgress && done > 0 && (done === tot - inProgress || done % 25 === 0)) {
+                    ndmGcsLogLine("Still sending " + inProgress + " file(s) to server…", "ok");
                 }
             }).done(function() {
                 ndmGcsSetProgress(48, "Step 1/2 complete — starting upload to Google Cloud…");

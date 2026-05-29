@@ -11,6 +11,7 @@ the Free Software Foundation, either version 3 of the License, or
 
 const fs = require("fs");
 const path = require("path");
+const async = require("async");
 const multer = require("multer");
 const rimraf = require("rimraf");
 const uuidv4 = require("uuid/v4");
@@ -68,18 +69,28 @@ function assignUpload(req, res, next) {
     next();
 }
 
+const multerStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        const incoming = path.join(req.gcsUploadDir, "incoming");
+        fs.mkdir(incoming, { recursive: true }, err => cb(err, incoming));
+    },
+    filename: (req, file, cb) => {
+        cb(null, `upload-${uuidv4()}${path.extname(file.originalname || "")}`);
+    }
+});
+
 const uploadMiddleware = multer({
-    storage: multer.diskStorage({
-        destination: (req, file, cb) => {
-            const incoming = path.join(req.gcsUploadDir, "incoming");
-            fs.mkdir(incoming, { recursive: true }, err => cb(err, incoming));
-        },
-        filename: (req, file, cb) => {
-            cb(null, `upload-${uuidv4()}${path.extname(file.originalname || "")}`);
-        }
-    }),
+    storage: multerStorage,
     limits: { fileSize: 1024 * 1024 * 1024 * 15 }
 }).single("file");
+
+const uploadBatchMiddleware = multer({
+    storage: multerStorage,
+    limits: {
+        fileSize: 1024 * 1024 * 1024 * 15,
+        files: 50
+    }
+}).array("files", 50);
 
 function handleStatus(req, res) {
     if (!GCS.enabled()) {
@@ -269,6 +280,79 @@ function handleFile(req, res) {
     });
 }
 
+function cleanupIncomingFiles(files, cb) {
+    async.each(files || [], (f, next) => {
+        rimraf(f.path, () => next());
+    }, cb || (() => {}));
+}
+
+function handleBatch(req, res) {
+    const session = req.gcsUploadSession;
+    const uploadId = req.gcsUploadId;
+    const stagingDir = sessionStagingDir(uploadId);
+    const files = req.files || [];
+
+    if (!stagingDir) {
+        return res.json({ error: "Invalid upload session." });
+    }
+    if (!files.length) {
+        return res.json({ error: "No files received." });
+    }
+
+    let relativePaths;
+    try {
+        relativePaths = JSON.parse(req.body.relativePaths || "[]");
+    } catch (e) {
+        cleanupIncomingFiles(files);
+        return res.json({ error: "Invalid relativePaths JSON." });
+    }
+    if (!Array.isArray(relativePaths) || relativePaths.length !== files.length) {
+        cleanupIncomingFiles(files);
+        return res.json({
+            error: `relativePaths must be a JSON array with one entry per file (got ${relativePaths.length}, expected ${files.length}).`
+        });
+    }
+
+    for (let i = 0; i < files.length; i++) {
+        const name = files[i].originalname || path.basename(files[i].path);
+        if (ZIP_EXT.test(name)) {
+            cleanupIncomingFiles(files);
+            return res.json({ error: "Upload .zip files one at a time (not in a batch)." });
+        }
+    }
+
+    fs.mkdir(stagingDir, { recursive: true }, mkdirErr => {
+        if (mkdirErr) {
+            cleanupIncomingFiles(files);
+            return res.json({ error: mkdirErr.message });
+        }
+
+        const entries = files.map((f, i) => ({
+            file: f,
+            relativePath: relativePaths[i] || f.originalname || path.basename(f.path)
+        }));
+
+        async.eachSeries(entries, (entry, cb) => {
+            stageFileAtPath(stagingDir, entry.relativePath, entry.file.path, err => {
+                rimraf(entry.file.path, () => cb(err));
+            });
+        }, err => {
+            if (err) {
+                logger.warn(`GCS manual upload batch staging failed: ${err.message}`);
+                return res.json({ error: err.message });
+            }
+            session.stagedFileCount = countFilesUnder(stagingDir);
+            res.json({
+                success: true,
+                staged: true,
+                batchSize: files.length,
+                stagedFiles: session.stagedFileCount,
+                gcsDestPath: session.gcsDestPath
+            });
+        });
+    });
+}
+
 function handleCommit(req, res) {
     const session = req.gcsUploadSession;
     const uploadId = req.gcsUploadId;
@@ -377,10 +461,12 @@ function handleDelete(req, res) {
 module.exports = {
     assignUpload,
     uploadMiddleware,
+    uploadBatchMiddleware,
     handleStatus,
     handleListProjects,
     handleInit,
     handleFile,
+    handleBatch,
     handleCommit,
     handleProgress,
     handleDelete

@@ -1964,6 +1964,7 @@ $(function() {
             seen[rel] = true;
             ndmGcsFiles.push({ file: it.file, relativePath: rel });
         });
+        ndmGcsSetError("");
         ndmGcsRenderFileList();
     }
 
@@ -2410,43 +2411,112 @@ $(function() {
         }, ndmGcsAjaxOpts));
     }
 
-    function ndmGcsStageFilesParallel(uploadId, items, onProgress) {
-        var def = $.Deferred();
-        var queue = items.slice().sort(function(a, b) { return a.file.size - b.file.size; });
-        var uploaded = 0;
-        var idx = 0;
-        var active = 0;
-        var activeLarge = 0;
-        var failed = null;
-        var inFlight = [];
-        var lastProgressAt = Date.now();
-        var remote = ndmGcsIsRemoteHost();
-        var maxConcurrent = remote ? (queue.length > 500 ? 3 : 2) : (queue.length > 500 ? 6 : 4);
-        var largeThreshold = 25 * 1024 * 1024;
-        var maxLargeConcurrent = remote ? 1 : 2;
+    function ndmGcsIsZipItem(item) {
+        var name = (item && (item.relativePath || item.file.name)) || "";
+        return /\.zip$/i.test(name);
+    }
 
-        function notifyProgress(item, res) {
-            if (onProgress) onProgress(uploaded, queue.length, item, res, inFlight.slice());
+    function ndmGcsBuildUploadBatches(items) {
+        var remote = ndmGcsIsRemoteHost();
+        var maxFiles = remote ? 20 : 40;
+        var maxBytes = remote ? 64 * 1024 * 1024 : 160 * 1024 * 1024;
+        var largeThreshold = 25 * 1024 * 1024;
+        var sorted = items.slice().sort(function(a, b) { return a.file.size - b.file.size; });
+        var batches = [];
+        var current = [];
+        var currentBytes = 0;
+
+        function flush() {
+            if (current.length) {
+                batches.push(current);
+                current = [];
+                currentBytes = 0;
+            }
         }
 
-        function finishOne(capturedItem, res) {
-            active--;
-            if (capturedItem.file.size > largeThreshold) activeLarge--;
-            for (var i = 0; i < inFlight.length; i++) {
-                if (inFlight[i].item === capturedItem) {
-                    inFlight.splice(i, 1);
-                    break;
-                }
+        sorted.forEach(function(item) {
+            if (ndmGcsIsZipItem(item)) {
+                flush();
+                batches.push([item]);
+                return;
             }
-            uploaded++;
-            lastProgressAt = Date.now();
-            notifyProgress(capturedItem, res);
-            if (uploaded >= queue.length && active === 0) {
-                clearInterval(stallTimer);
-                clearInterval(heartbeatTimer);
-                def.resolve();
+            if (item.file.size > largeThreshold) {
+                flush();
+                batches.push([item]);
+                return;
+            }
+            if (current.length >= maxFiles || (currentBytes + item.file.size > maxBytes && current.length)) {
+                flush();
+            }
+            current.push(item);
+            currentBytes += item.file.size;
+        });
+        flush();
+        return batches;
+    }
+
+    function ndmGcsUploadBatch(uploadId, batchItems, attempt, onUploadProgress) {
+        attempt = attempt || 0;
+        if (batchItems.length === 1) {
+            return ndmGcsUploadOneFile(uploadId, batchItems[0], attempt, onUploadProgress);
+        }
+        var def = $.Deferred();
+        var fd = new FormData();
+        var paths = [];
+        var totalBytes = 0;
+        batchItems.forEach(function(item) {
+            fd.append("files", item.file, item.file.name);
+            paths.push(item.relativePath || item.file.name);
+            totalBytes += item.file.size;
+        });
+        fd.append("relativePaths", JSON.stringify(paths));
+        var totalMb = totalBytes / (1024 * 1024);
+        var timeoutMs = totalMb > 200 ? 3600000 : totalMb > 50 ? 1800000 : 900000;
+        var jqXhr = $.ajax($.extend({
+            url: ndmApi("/gcs/upload/" + uploadId + "/batch") + ndmTokenQs(),
+            type: "POST",
+            data: fd,
+            processData: false,
+            contentType: false,
+            timeout: timeoutMs,
+            xhr: function() {
+                var xhr = $.ajaxSettings.xhr();
+                if (xhr.upload && onUploadProgress) {
+                    xhr.upload.addEventListener("progress", function(e) {
+                        if (e.lengthComputable && e.loaded > 0) onUploadProgress(e);
+                    });
+                }
+                return xhr;
+            }
+        }, ndmGcsAjaxOpts));
+        jqXhr.done(function(res) {
+            if (res && res.error) def.reject(res.error);
+            else def.resolve(res);
+        }).fail(function(xhr, status) {
+            if (attempt < 2 && status !== "abort") {
+                ndmGcsUploadBatch(uploadId, batchItems, attempt + 1, onUploadProgress).then(def.resolve, def.reject);
             } else {
-                pump();
+                def.reject(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/batch")) +
+                    " (batch of " + batchItems.length + " files)");
+            }
+        });
+        return def.promise();
+    }
+
+    function ndmGcsStageFilesParallel(uploadId, items, onProgress) {
+        var def = $.Deferred();
+        var batches = ndmGcsBuildUploadBatches(items);
+        var totalFiles = items.length;
+        var uploaded = 0;
+        var batchIdx = 0;
+        var failed = null;
+        var inFlight = null;
+        var lastProgressAt = Date.now();
+        var remote = ndmGcsIsRemoteHost();
+
+        function notifyProgress(res) {
+            if (onProgress) {
+                onProgress(uploaded, totalFiles, null, res, inFlight ? [inFlight] : []);
             }
         }
 
@@ -2457,83 +2527,67 @@ $(function() {
             if (def.state() === "pending") def.reject(failed);
         }
 
-        function pump() {
+        function uploadNextBatch() {
             if (failed || def.state() !== "pending") return;
-            while (active < maxConcurrent && idx < queue.length) {
-                var next = queue[idx];
-                var isLarge = next.file.size > largeThreshold;
-                if (isLarge && activeLarge >= maxLargeConcurrent) break;
-                idx++;
-                active++;
-                if (isLarge) activeLarge++;
-                (function(capturedItem) {
-                    var entry = { item: capturedItem, startedAt: Date.now(), lastByteAt: Date.now() };
-                    inFlight.push(entry);
-                    var promise = ndmGcsUploadOneFile(uploadId, capturedItem, 0, function() {
-                        entry.lastByteAt = Date.now();
-                        lastProgressAt = Date.now();
-                    });
-                    promise.done(function(res) {
-                        finishOne(capturedItem, res);
-                    }).fail(function(err) {
-                        active--;
-                        if (capturedItem.file.size > largeThreshold) activeLarge--;
-                        for (var j = 0; j < inFlight.length; j++) {
-                            if (inFlight[j].item === capturedItem) {
-                                inFlight.splice(j, 1);
-                                break;
-                            }
-                        }
-                        if (!failed) failOne(err);
-                    });
-                })(next);
-            }
-            if (active === 0 && uploaded >= queue.length && !failed) {
+            if (batchIdx >= batches.length) {
                 clearInterval(stallTimer);
                 clearInterval(heartbeatTimer);
                 def.resolve();
+                return;
             }
+            var batch = batches[batchIdx++];
+            var batchNum = batchIdx;
+            var batchBytes = 0;
+            batch.forEach(function(it) { batchBytes += it.file.size; });
+            inFlight = {
+                item: { relativePath: "batch " + batchNum + "/" + batches.length + " (" + batch.length + " files)", file: { size: batchBytes } },
+                startedAt: Date.now(),
+                lastByteAt: Date.now()
+            };
+            notifyProgress(null);
+
+            ndmGcsUploadBatch(uploadId, batch, 0, function() {
+                if (inFlight) inFlight.lastByteAt = Date.now();
+                lastProgressAt = Date.now();
+            }).done(function(res) {
+                uploaded += batch.length;
+                lastProgressAt = Date.now();
+                inFlight = null;
+                notifyProgress(res);
+                uploadNextBatch();
+            }).fail(function(err) {
+                inFlight = null;
+                if (!failed) failOne(err);
+            });
         }
 
         var stallTimer = setInterval(function() {
             if (def.state() !== "pending") return;
             var now = Date.now();
-            if (inFlight.length > 0) {
-                var bytesMoving = false;
-                var withinBudget = false;
-                for (var k = 0; k < inFlight.length; k++) {
-                    var flight = inFlight[k];
-                    var lastActivity = flight.lastByteAt || flight.startedAt;
-                    if (now - lastActivity < 120000) bytesMoving = true;
-                    if (now - flight.startedAt < ndmGcsFileStallBudgetMs(flight.item)) withinBudget = true;
-                }
-                if (bytesMoving || withinBudget) return;
+            if (inFlight) {
+                var lastActivity = inFlight.lastByteAt || inFlight.startedAt;
+                if (now - lastActivity < 120000) return;
+                if (now - inFlight.startedAt < ndmGcsFileStallBudgetMs(inFlight.item)) return;
             }
             var stalledMs = now - lastProgressAt;
-            var stallLimit = inFlight.length ? 15 * 60 * 1000 : NDM_GCS_STALL_MS;
-            if (stalledMs > stallLimit) {
-                var names = inFlight.map(function(f) {
-                    return f.item.relativePath || f.item.file.name;
-                }).slice(0, 5);
-                var hint = names.length ? " Still waiting on: " + names.join(", ") + (inFlight.length > 5 ? "…" : "") + "." : "";
+            if (stalledMs > (inFlight ? 20 * 60 * 1000 : NDM_GCS_STALL_MS)) {
+                var hint = inFlight ? " Still waiting on: " + (inFlight.item.relativePath || "current batch") + "." : "";
                 var remoteHint = remote
-                    ? " Over HTTPS (staging), large ODM files (.tif, .mvs, .laz) upload much slower than localhost — zip the folder and upload one .zip when possible."
-                    : " Large ODM outputs (.tif, .mvs, .laz) upload slowly — zip the folder and upload one .zip instead.";
-                failOne(
-                    "Upload stalled (" + uploaded + " / " + queue.length + " sent)." + hint + remoteHint
-                );
+                    ? " Try uploading one .zip instead of many files over HTTPS."
+                    : " Large folders upload faster as one .zip.";
+                failOne("Upload stalled (" + uploaded + " / " + totalFiles + " sent)." + hint + remoteHint);
             }
         }, 15000);
 
         var heartbeatTimer = setInterval(function() {
-            if (def.state() !== "pending" || !inFlight.length) return;
-            notifyProgress(null, null);
+            if (def.state() !== "pending" || !inFlight) return;
+            notifyProgress(null);
         }, 3000);
 
-        if (!queue.length) {
+        if (!totalFiles) {
             def.resolve();
         } else {
-            pump();
+            uploadNextBatch();
         }
         return def.promise();
     }
@@ -2591,27 +2645,22 @@ $(function() {
 
             ndmGcsStageFilesParallel(uploadId, ndmGcsFiles, function(done, tot, item, res, inFlight) {
                 var phasePct = tot > 0 ? Math.round((done / tot) * 45) : 0;
-                var inProgress = (inFlight && inFlight.length) || 0;
                 var label = "Step 1/2 — Sending to server: " + done + " / " + tot;
-                if (inProgress) {
-                    label += " (" + inProgress + " in progress";
-                    var big = inFlight.filter(function(f) { return f.item.file.size > 25 * 1024 * 1024; });
-                    if (big.length) {
-                        var name = big[0].item.relativePath || big[0].item.file.name;
-                        if (name.length > 40) name = "…" + name.slice(-37);
-                        label += ", large: " + name;
-                    }
-                    label += ")";
+                if (inFlight && inFlight.length) {
+                    var flight = inFlight[0];
+                    var name = flight.item.relativePath || flight.item.file.name || "";
+                    if (name.length > 48) name = "…" + name.slice(-45);
+                    label += " — " + name;
                 }
                 ndmGcsSetProgress(phasePct, label);
                 if (res && res.extracted) {
-                    if (done === 1 || done === tot || done % 25 === 0) {
-                        ndmGcsLogLine((item.relativePath || item.file.name) + " → ZIP extracted on server", "ok");
+                    ndmGcsLogLine("ZIP extracted on server", "ok");
+                } else if (res && res.batchSize) {
+                    if (done === tot || done % 50 === 0 || done < 50) {
+                        ndmGcsLogLine("Server received " + done + " / " + tot + " files (batch upload)", "ok");
                     }
-                } else if (item && (done === 1 || done === tot || done % 25 === 0)) {
+                } else if (done === 1 || done === tot || done % 50 === 0) {
                     ndmGcsLogLine("Server received " + done + " / " + tot + " files (not in GCS yet)", "ok");
-                } else if (!item && inProgress && done > 0 && (done === tot - inProgress || done % 25 === 0)) {
-                    ndmGcsLogLine("Still sending " + inProgress + " file(s) to server…", "ok");
                 }
             }).done(function() {
                 ndmGcsSetProgress(48, "Step 1/2 complete — starting upload to Google Cloud…");

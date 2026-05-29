@@ -275,19 +275,25 @@ module.exports = {
         });
     },
 
-    getSignedUploadUrl: function(objectPath, contentType, cb) {
+    /**
+     * Resumable upload session URL (uses VM/service-account OAuth — no signBlob IAM needed).
+     * Browser PUTs the file body to the returned URL.
+     */
+    getResumableUploadUrl: function(objectPath, contentType, origin, cb) {
         if (!bucket) {
             return cb(new Error("GCS is not initialized"));
         }
         const file = bucket.file(objectPath);
-        file.getSignedUrl({
-            version: "v4",
-            action: "write",
-            expires: Date.now() + 60 * 60 * 1000,
-            contentType: contentType || "application/octet-stream"
-        }, (err, urls) => {
+        const opts = {
+            metadata: {
+                contentType: contentType || "application/octet-stream"
+            }
+        };
+        if (origin) opts.origin = origin;
+
+        file.createResumableUpload(opts, (err, uri) => {
             if (err) return cb(err);
-            cb(null, urls[0]);
+            cb(null, uri);
         });
     },
 

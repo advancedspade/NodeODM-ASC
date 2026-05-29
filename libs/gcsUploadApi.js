@@ -24,7 +24,6 @@ const { sanitizeProjectName, gcsDestPathForProject } = require("./gcsProjectName
 
 const UPLOAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-7][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ZIP_EXT = /\.zip$/i;
-const SIGN_URL_TTL_MS = 60 * 60 * 1000;
 const MAX_SIGN_BATCH = 50;
 
 const sessions = new Map();
@@ -233,18 +232,19 @@ function gcsObjectPathForRelative(session, relativePath) {
     return `${session.gcsStagingPath}/${rel}`;
 }
 
-function signOneFile(session, relativePath, contentType, cb) {
+function signOneFile(session, relativePath, contentType, origin, cb) {
     const rel = sanitizeRelativePath(relativePath);
     const objectPath = gcsObjectPathForRelative(session, rel);
     const ct = contentType || GCS.contentTypeForPath(rel);
-    GCS.getSignedUploadUrl(objectPath, ct, (err, signedUrl) => {
+    GCS.getResumableUploadUrl(objectPath, ct, origin, (err, uploadUrl) => {
         if (err) return cb(err);
         cb(null, {
             relativePath: rel,
             objectPath,
-            signedUrl,
+            signedUrl: uploadUrl,
+            uploadUrl,
             contentType: ct,
-            expiresIn: Math.floor(SIGN_URL_TTL_MS / 1000)
+            uploadMethod: "resumable"
         });
     });
 }
@@ -282,8 +282,10 @@ function handleSign(req, res) {
         }
     }
 
+    const origin = req.headers.origin || "";
+
     async.mapLimit(entries, 16, (entry, cb) => {
-        signOneFile(session, entry.relativePath, entry.contentType, cb);
+        signOneFile(session, entry.relativePath, entry.contentType, origin, cb);
     }, (err, signatures) => {
         if (err) {
             logger.warn(`GCS signed URL failed: ${err.message}`);

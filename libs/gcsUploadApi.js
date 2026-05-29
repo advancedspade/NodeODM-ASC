@@ -146,6 +146,16 @@ const uploadBatchMiddleware = multer({
     }
 }).array("files", 50);
 
+function publicUploadPayload(obj) {
+    if (!obj || typeof obj !== "object") return obj;
+    const out = Object.assign({}, obj);
+    delete out.gcsUri;
+    delete out.gcsDestPath;
+    delete out.gcsStagingPath;
+    delete out.bucket;
+    return out;
+}
+
 function handleStatus(req, res) {
     if (!GCS.enabled()) {
         let reason = "GCS bucket is not configured on this node (set GCS_BUCKET or --gcs_bucket).";
@@ -161,10 +171,7 @@ function handleStatus(req, res) {
     }
     res.json({
         enabled: true,
-        bucket: config.gcsBucket,
-        prefix: config.gcsUploadPrefix || "",
-        directUpload: true,
-        uriExample: `gs://${config.gcsBucket}/${gcsDestPathForProject("My_Project", config.gcsUploadPrefix)}/`
+        directUpload: true
     });
 }
 
@@ -194,9 +201,7 @@ function handleListProjects(req, res) {
         }
 
         res.json({
-            projects: list,
-            prefix: config.gcsUploadPrefix || "",
-            bucket: config.gcsBucket
+            projects: list
         });
     });
 }
@@ -234,11 +239,7 @@ function handleInit(req, res) {
             uploadId,
             projectName: String(rawName).trim(),
             sanitizedName,
-            gcsDestPath: gcsDest,
-            gcsStagingPath: gcsSessionStagingPath(uploadId),
-            bucket: config.gcsBucket,
-            directUpload: true,
-            gcsUri: `gs://${config.gcsBucket}/${gcsDest}/`
+            directUpload: true
         });
     });
 }
@@ -276,7 +277,8 @@ function stageFileAtPath(stagingDir, relativePath, srcPath, cb) {
 
 function gcsObjectPathForRelative(session, relativePath) {
     const rel = sanitizeRelativePath(relativePath);
-    return `${session.gcsStagingPath}/${rel}`;
+    const destBase = String(session.gcsDestPath || "").replace(/\/+$/, "");
+    return `${destBase}/${rel}`;
 }
 
 function signOneFile(session, relativePath, contentType, origin, cb) {
@@ -287,7 +289,6 @@ function signOneFile(session, relativePath, contentType, origin, cb) {
         if (err) return cb(err);
         cb(null, {
             relativePath: rel,
-            objectPath,
             signedUrl: uploadUrl,
             uploadUrl,
             contentType: ct,
@@ -362,9 +363,110 @@ function handleComplete(req, res) {
     res.json({
         success: true,
         stagedFiles: session.stagedFileCount,
-        relativePaths: staged,
-        gcsDestPath: session.gcsDestPath
+        relativePaths: staged
     });
+}
+
+function verifyObjectsAtDest(session, relativePaths, cb, onFileDone) {
+    const destBase = String(session.gcsDestPath || "").replace(/\/+$/, "") + "/";
+    const paths = relativePaths.map(p => sanitizeRelativePath(p));
+    let completed = 0;
+    const total = paths.length;
+    if (onFileDone) onFileDone(0, total, "verifying…");
+
+    async.eachLimit(paths, 32, (rel, done) => {
+        GCS.objectExists(destBase + rel, (err, exists) => {
+            if (err) return done(err);
+            if (!exists) return done(new Error(`Missing uploaded file: ${rel}`));
+            completed++;
+            if (onFileDone) onFileDone(completed, total, rel);
+            done();
+        });
+    }, err => {
+        if (err) return cb(err);
+        if (onFileDone) onFileDone(total, total, "");
+        cb(null, { fileCount: total });
+    });
+}
+
+function cleanupStagingPrefix(stagingPath, cb) {
+    GCS.deletePrefixWithRetry(stagingPath, delErr => {
+        if (delErr) {
+            logger.warn(`GCS staging cleanup failed for ${stagingPath}: ${delErr.message}`);
+            return cb(delErr);
+        }
+        logger.info(`GCS staging cleaned up: ${stagingPath}`);
+        cb();
+    });
+}
+
+function cleanupAbandonedDirectUpload(session, cb) {
+    const destBase = String(session.gcsDestPath || "").replace(/\/+$/, "") + "/";
+    const relPaths = session.stagedRelativePaths ? Array.from(session.stagedRelativePaths) : [];
+    const objectPaths = relPaths.map(rel => destBase + sanitizeRelativePath(rel));
+
+    async.series([
+        next => {
+            if (!objectPaths.length) return next();
+            GCS.deleteObjects(objectPaths, next);
+        },
+        next => {
+            if (!session.gcsStagingPath) return next();
+            GCS.deletePrefixWithRetry(session.gcsStagingPath, next);
+        }
+    ], cb);
+}
+
+function commitDirectGcsUpload(session, uploadId, cb, onFileDone) {
+    const destPath = session.gcsDestPath;
+    const tmpDir = sessionTmpDir(uploadId);
+    const localStaging = sessionStagingDir(uploadId);
+    const paths = session.stagedRelativePaths ? Array.from(session.stagedRelativePaths) : [];
+
+    if (!paths.length) {
+        return cb(new Error("No files staged for this session."));
+    }
+
+    const zipPaths = paths.filter(p => ZIP_EXT.test(p));
+    const nonZipPaths = paths.filter(p => !ZIP_EXT.test(p));
+
+    if (zipPaths.length > 1 || (zipPaths.length === 1 && nonZipPaths.length > 0)) {
+        return cb(new Error("Upload either one .zip or individual files, not both."));
+    }
+
+    if (zipPaths.length === 1) {
+        const zipRel = zipPaths[0];
+        const zipObjectPath = gcsObjectPathForRelative(session, zipRel);
+        const zipLocal = path.join(tmpDir, "upload.zip");
+        const extractDir = localStaging;
+
+        fs.mkdir(extractDir, { recursive: true }, mkdirErr => {
+            if (mkdirErr) return cb(mkdirErr);
+
+            GCS.downloadFile(zipObjectPath, zipLocal, dlErr => {
+                if (dlErr) return cb(dlErr);
+
+                ziputils.unzip(zipLocal, extractDir, unzipErr => {
+                    rimraf(zipLocal, () => {});
+                    if (unzipErr) return cb(unzipErr);
+
+                    uploadFolderToGcs(extractDir, destPath, (upErr, stats) => {
+                        if (upErr) return cb(upErr);
+                        GCS.deleteObjects([zipObjectPath], delErr => {
+                            if (delErr) {
+                                logger.warn(`GCS zip cleanup failed for ${zipObjectPath}: ${delErr.message}`);
+                                return cb(new Error(`Archive extracted but could not remove .zip from project folder: ${delErr.message}`));
+                            }
+                            cb(null, stats);
+                        });
+                    }, null, onFileDone);
+                });
+            });
+        });
+        return;
+    }
+
+    verifyObjectsAtDest(session, paths, cb, onFileDone);
 }
 
 function commitFromGcsStaging(session, uploadId, cb, onFileDone) {
@@ -403,9 +505,11 @@ function commitFromGcsStaging(session, uploadId, cb, onFileDone) {
 
                         uploadFolderToGcs(extractDir, destPath, (upErr, stats) => {
                             if (upErr) return cb(upErr);
-                            cb(null, stats);
-                            GCS.deletePrefixWithRetry(stagingPath, delErr => {
-                                if (delErr) logger.warn(`GCS staging cleanup failed for ${stagingPath}: ${delErr.message}`);
+                            cleanupStagingPrefix(stagingPath, delErr => {
+                                if (delErr) {
+                                    return cb(new Error(`Upload copied but staging cleanup failed: ${delErr.message}`));
+                                }
+                                cb(null, stats);
                             });
                         }, null, onFileDone);
                     });
@@ -416,10 +520,11 @@ function commitFromGcsStaging(session, uploadId, cb, onFileDone) {
 
         GCS.copyPrefix(stagingPath, destPath, (copyErr, stats) => {
             if (copyErr) return cb(copyErr);
-            cb(null, stats);
-            GCS.deletePrefixWithRetry(stagingPath, delErr => {
-                if (delErr) logger.warn(`GCS staging cleanup failed for ${stagingPath}: ${delErr.message}`);
-                else logger.info(`GCS staging cleaned up: ${stagingPath}`);
+            cleanupStagingPrefix(stagingPath, delErr => {
+                if (delErr) {
+                    return cb(new Error(`Upload copied but staging cleanup failed: ${delErr.message}`));
+                }
+                cb(null, stats);
             });
         }, onFileDone);
     });
@@ -451,8 +556,7 @@ function handleFile(req, res) {
             filename: originalName,
             relativePath: result.relativePath,
             extracted: !!result.extracted,
-            stagedFiles: result.stagedFiles,
-            gcsDestPath: session.gcsDestPath
+            stagedFiles: result.stagedFiles
         });
     };
 
@@ -557,8 +661,7 @@ function handleBatch(req, res) {
                 success: true,
                 staged: true,
                 batchSize: files.length,
-                stagedFiles: session.stagedFileCount,
-                gcsDestPath: session.gcsDestPath
+                stagedFiles: session.stagedFileCount
             });
         });
     });
@@ -630,7 +733,14 @@ function handleCommit(req, res) {
             };
 
             if (session.directUpload) {
-                commitFromGcsStaging(session, uploadId, done, onFileDone);
+                GCS.listFilesUnderPrefix(session.gcsStagingPath, (listErr, stagingObjects) => {
+                    if (listErr) return done(listErr);
+                    if (stagingObjects && stagingObjects.length) {
+                        commitFromGcsStaging(session, uploadId, done, onFileDone);
+                    } else {
+                        commitDirectGcsUpload(session, uploadId, done, onFileDone);
+                    }
+                });
             } else {
                 uploadFolderToGcs(stagingDir, session.gcsDestPath, done, onFileDone);
             }
@@ -638,17 +748,12 @@ function handleCommit(req, res) {
     };
 
     if (session.directUpload) {
-        const staged = session.stagedFileCount || 0;
+        const staged = session.stagedFileCount ||
+            (session.stagedRelativePaths && session.stagedRelativePaths.size) || 0;
         if (!staged) {
             return res.json({ error: "No files staged for upload." });
         }
-        return GCS.listFilesUnderPrefix(session.gcsStagingPath, (listErr, objects) => {
-            if (listErr) return res.json({ error: listErr.message });
-            if (!objects.length) {
-                return res.json({ error: "No files found in GCS staging for this session." });
-            }
-            finishStart(objects.length);
-        });
+        return finishStart(staged);
     }
 
     const fileCount = countFilesUnder(stagingDir);
@@ -664,7 +769,7 @@ function handleProgress(req, res) {
         if (disk.error) {
             return res.json({ done: true, error: disk.error, phase: "error" });
         }
-        return res.json(Object.assign({ done: true, phase: "complete", success: true }, disk));
+        return res.json(Object.assign({ done: true, phase: "complete", success: true }, publicUploadPayload(disk)));
     }
 
     const session = req.gcsUploadSession;
@@ -674,7 +779,7 @@ function handleProgress(req, res) {
             if (disk.error) {
                 return res.json({ done: true, error: disk.error, phase: "error" });
             }
-            return res.json(Object.assign({ done: true, phase: "complete", success: true }, disk));
+            return res.json(Object.assign({ done: true, phase: "complete", success: true }, publicUploadPayload(disk)));
         }
         return res.json({ error: "Upload session not found or expired." });
     }
@@ -687,7 +792,7 @@ function handleProgress(req, res) {
                 phase: "error"
             });
         }
-        return res.json(Object.assign({ done: true, phase: "complete" }, session.commitResult));
+        return res.json(Object.assign({ done: true, phase: "complete" }, publicUploadPayload(session.commitResult)));
     }
 
     if (session.progress) {
@@ -699,7 +804,7 @@ function handleProgress(req, res) {
             session.progress.filesCompleted >= session.progress.filesTotal) {
             const disk = readCommitStatus(req.gcsUploadId);
             if (disk && disk.success) {
-                return res.json(Object.assign({ done: true, phase: "complete", success: true }, disk));
+                return res.json(Object.assign({ done: true, phase: "complete", success: true }, publicUploadPayload(disk)));
             }
             out.done = true;
             out.phase = "complete";
@@ -721,6 +826,9 @@ function handleDelete(req, res) {
     const uploadId = req.params.uploadId;
     const dir = sessionTmpDir(uploadId);
     const session = getSession(uploadId);
+    const disk = readCommitStatus(uploadId);
+    const committed = (session && session.commitResult && session.commitResult.success) ||
+        (disk && disk.success);
     sessions.delete(uploadId);
 
     const finish = () => {
@@ -733,14 +841,26 @@ function handleDelete(req, res) {
         });
     };
 
-    if (session && session.directUpload && session.gcsStagingPath) {
-        GCS.deletePrefixWithRetry(session.gcsStagingPath, delErr => {
-            if (delErr) logger.warn(`GCS staging prefix cleanup: ${delErr.message}`);
+    const cleanupGcs = () => {
+        if (!session || !session.directUpload) {
+            return finish();
+        }
+        if (committed) {
+            if (session.gcsStagingPath) {
+                return GCS.deletePrefixWithRetry(session.gcsStagingPath, delErr => {
+                    if (delErr) logger.warn(`GCS legacy staging cleanup: ${delErr.message}`);
+                    finish();
+                });
+            }
+            return finish();
+        }
+        cleanupAbandonedDirectUpload(session, err => {
+            if (err) logger.warn(`GCS abandoned upload cleanup: ${err.message}`);
             finish();
         });
-    } else {
-        finish();
-    }
+    };
+
+    cleanupGcs();
 }
 
 module.exports = {

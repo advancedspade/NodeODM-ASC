@@ -106,8 +106,7 @@ app.get('/auth/bootstrap', (req, res) => {
             signedIn: googleOAuth.hasWebAuth(req),
             gcsUpload: GCS.enabled() ? {
                 enabled: true,
-                bucket: config.gcsBucket,
-                prefix: config.gcsUploadPrefix || ""
+                directUpload: true
             } : { enabled: false },
             portalStagingEnvOrigin: config.portalStagingEnvOrigin || "",
             portalStagingEnvLabel: config.portalStagingEnvLabel || "dronemaps",
@@ -126,8 +125,7 @@ app.get('/auth/bootstrap', (req, res) => {
         signedIn: true,
         gcsUpload: GCS.enabled() ? {
             enabled: true,
-            bucket: config.gcsBucket,
-            prefix: config.gcsUploadPrefix || ""
+            directUpload: true
         } : { enabled: false }
     });
 });

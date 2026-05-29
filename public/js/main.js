@@ -2062,7 +2062,7 @@ $(function() {
                 ? "No matching projects — press Enter to use \"" + query + "\" as a new title."
                 : (ndmGcsProjectsCache.length
                     ? "Type to search " + ndmGcsProjectsCache.length + " project(s)."
-                    : "No projects in bucket yet — type a new title.");
+                    : "No projects yet — type a new title.");
             list.appendChild(empty);
             ndmGcsShowSuggest();
             return;
@@ -2093,8 +2093,8 @@ $(function() {
     }
 
     function ndmGcsProjectsCacheKey(st) {
-        if (st && st.bucket) {
-            return String(st.bucket) + "|" + String(st.prefix || "");
+        if (st && st.enabled) {
+            return "gcs-enabled";
         }
         return ndmGcsCacheKeyStr || "";
     }
@@ -2215,7 +2215,7 @@ $(function() {
             });
         }
 
-        ndmGcsSetProjectStatus("Loading projects from bucket…", "loading");
+        ndmGcsSetProjectStatus("Loading projects…", "loading");
         var url = ndmApi("/gcs/projects") + ndmTokenQs();
 
         ndmGcsProjectsFetch = $.get(url, ndmGcsAjaxOpts).done(function(data) {
@@ -2225,14 +2225,14 @@ $(function() {
                 return;
             }
             var projects = (data && data.projects) ? data.projects : [];
-            if (data && data.bucket) {
-                ndmGcsCacheKeyStr = String(data.bucket) + "|" + String(data.prefix || "");
+            if (data && data.projects) {
+                ndmGcsCacheKeyStr = "gcs-enabled";
                 cacheKey = ndmGcsCacheKeyStr;
             }
             ndmGcsStoreProjectsCache(projects, cacheKey);
             ndmGcsSetProjectStatus(
                 ndmGcsProjectsCache.length
-                    ? ndmGcsProjectsCache.length + " project(s) in bucket — type to search or pick from the list."
+                    ? ndmGcsProjectsCache.length + " project(s) available — type to search or pick from the list."
                     : "No existing projects found — type a new title to create one.",
                 ""
             );
@@ -2264,8 +2264,7 @@ $(function() {
             if (!ndmGcsEnabled) {
                 hint.textContent = (st && st.reason) || "GCS uploads are not configured on this server.";
             } else {
-                hint.innerHTML = "Destination bucket: <strong>" + (st.bucket || "") + "</strong>" +
-                    (st.prefix ? " · prefix: <code>" + st.prefix + "/</code>" : "");
+                hint.textContent = "Upload processed outputs to cloud storage for your projects.";
             }
         }
         if (view) view.setAttribute("aria-disabled", ndmGcsEnabled ? "false" : "true");
@@ -2338,54 +2337,68 @@ $(function() {
         return rem + "s";
     }
 
-    function ndmGcsPollCommitProgress(uploadId, expectedTotal, gcsUriHint) {
+    function ndmGcsPollCommitProgress(uploadId, expectedTotal, sessionForComplete) {
         var def = $.Deferred();
         var started = Date.now();
         var lastLogged = 0;
         var lastDone = 0;
-        var finishScheduled = false;
+        var uiFinished = false;
+
+        function finishUi(commit) {
+            if (uiFinished) return;
+            uiFinished = true;
+            var n = (commit && commit.filesUploaded) || expectedTotal || lastDone || 0;
+            var projectLabel = sessionForComplete && (sessionForComplete.projectName || sessionForComplete.sanitizedName);
+            ndmGcsSetProgress(100, "Done — " + n + " file(s) uploaded", false);
+            ndmGcsLogLine("Upload complete.", "ok");
+            ndmGcsLogLine(projectLabel
+                ? "Complete: " + n + " file(s) added to project \"" + projectLabel + "\""
+                : "Complete: " + n + " file(s) uploaded", "ok");
+            if (sessionForComplete) {
+                ndmGcsMergeProjectIntoCache(sessionForComplete.projectName, sessionForComplete.sanitizedName);
+                ndmGcsSetProjectStatusFromCache(false);
+            }
+        }
 
         function finishSuccess(p) {
-            if (def.state() !== "pending") return;
-            def.resolve(p || {
+            finishUi(p);
+            if (def.state() === "pending") {
+                def.resolve(p || {
+                    success: true,
+                    filesUploaded: expectedTotal || lastDone
+                });
+            }
+        }
+
+        function finishWhenCopied(done, total) {
+            if (uiFinished || total <= 0 || done < total) return;
+            finishSuccess({
                 success: true,
-                filesUploaded: expectedTotal || lastDone,
-                gcsUri: gcsUriHint || ""
+                filesUploaded: done
             });
         }
 
-        function scheduleFinishWhenCopied(done, total) {
-            if (finishScheduled || total <= 0 || done < total) return;
-            finishScheduled = true;
-            ndmGcsSetProgress(99, "Step 2/2 — Complete");
-            setTimeout(function() {
-                ndmGcsLogLine("Upload complete.", "ok");
-                finishSuccess({
-                    success: true,
-                    filesUploaded: done,
-                    gcsUri: gcsUriHint || ""
-                });
-            }, 2000);
-        }
-
         function poll() {
-            if (def.state() !== "pending") return;
+            if (uiFinished && def.state() !== "pending") return;
             $.get(ndmApi("/gcs/upload/" + uploadId + "/progress") + ndmTokenQs(), ndmGcsAjaxOpts)
                 .done(function(p) {
                     if (p && p.error && !p.done && p.phase !== "complete" && !p.success) {
                         if (lastDone >= expectedTotal) {
-                            scheduleFinishWhenCopied(lastDone, expectedTotal);
+                            finishWhenCopied(lastDone, expectedTotal);
                             return;
                         }
-                        def.reject(p.error);
+                        setTimeout(poll, 2000);
                         return;
                     }
                     if (p && (p.done || p.phase === "complete" || p.success)) {
                         if (p.error) {
-                            def.reject(p.error);
+                            if (lastDone >= expectedTotal) {
+                                finishWhenCopied(lastDone, expectedTotal);
+                            } else {
+                                def.reject(p.error);
+                            }
                             return;
                         }
-                        ndmGcsSetProgress(100, "Done — " + (p.filesUploaded || expectedTotal || 0) + " file(s) in Google Cloud", false);
                         finishSuccess(p);
                         return;
                     }
@@ -2393,15 +2406,13 @@ $(function() {
                     var done = (p && p.filesCompleted) || 0;
                     if (done > lastDone) lastDone = done;
                     var copying = total > 0 && done < total;
-                    var pct = copying
-                        ? 50 + Math.round((done / total) * 48)
-                        : 99;
+                    var pct = copying ? 50 + Math.round((done / total) * 48) : 98;
                     var elapsed = ndmGcsFormatElapsed((Date.now() - started) / 1000);
                     var label = total > 0
                         ? (copying
-                            ? "Step 2/2 — Finalizing project folder: " + done + " / " + total + " (" + elapsed + ")"
-                            : "Step 2/2 — Complete (" + elapsed + ")")
-                        : "Step 2/2 — Finalizing project folder… (" + elapsed + ")";
+                            ? "Step 2/2 — Verifying: " + done + " / " + total + " (" + elapsed + ")"
+                            : "Step 2/2 — Finishing up… (" + elapsed + ")")
+                        : "Step 2/2 — Verifying upload… (" + elapsed + ")";
                     if (p && p.currentFile && copying) {
                         var short = p.currentFile;
                         if (short.length > 48) short = "…" + short.slice(-45);
@@ -2409,18 +2420,18 @@ $(function() {
                     }
                     ndmGcsSetProgress(pct, label, false);
                     if (done > 0 && (done - lastLogged >= 10 || done === total)) {
-                        ndmGcsLogLine("Organizing in GCS: " + done + "/" + total + (p.currentFile ? " — " + p.currentFile : ""), "ok");
+                        ndmGcsLogLine("Verified: " + done + "/" + total + (p.currentFile ? " — " + p.currentFile : ""), "ok");
                         lastLogged = done;
                     }
                     if (total > 0 && done >= total) {
-                        scheduleFinishWhenCopied(done, total);
+                        finishWhenCopied(done, total);
                         return;
                     }
                     setTimeout(poll, 2000);
                 })
                 .fail(function(xhr, status) {
-                    if (lastDone >= expectedTotal || finishScheduled) {
-                        scheduleFinishWhenCopied(Math.max(lastDone, expectedTotal), expectedTotal);
+                    if (lastDone >= expectedTotal) {
+                        finishWhenCopied(Math.max(lastDone, expectedTotal), expectedTotal);
                         return;
                     }
                     if (Date.now() - started > 30 * 60 * 1000) {
@@ -2865,11 +2876,7 @@ $(function() {
                 return;
             }
 
-            var uriEl = document.getElementById("gcsProjectUri");
-            if (uriEl) {
-                uriEl.hidden = false;
-                uriEl.textContent = "Target: " + (session.gcsUri || "");
-            }
+            ndmGcsUpdateProjectUriPreview();
 
             var uploadId = session.uploadId;
             var total = ndmGcsFiles.length;
@@ -2878,7 +2885,7 @@ $(function() {
             ndmGcsStageFiles(uploadId, ndmGcsFiles, function(done, tot, item, res, inFlight) {
                 var phasePct = tot > 0 ? Math.round((done / tot) * 45) : 0;
                 var label = useDirect
-                    ? "Step 1/2 — Uploading to Google Cloud: " + done + " / " + tot
+                    ? "Step 1/2 — Uploading: " + done + " / " + tot
                     : "Step 1/2 — Sending to server: " + done + " / " + tot;
                 if (inFlight && inFlight.length) {
                     var flight = inFlight[0];
@@ -2889,7 +2896,7 @@ $(function() {
                 ndmGcsSetProgress(phasePct, label);
                 if (useDirect) {
                     if (done === 1 || done === tot || done % 50 === 0) {
-                        ndmGcsLogLine("Uploaded to GCS staging: " + done + " / " + tot, "ok");
+                        ndmGcsLogLine("Uploaded to project folder: " + done + " / " + tot, "ok");
                     }
                 } else if (res && res.extracted) {
                     ndmGcsLogLine("ZIP extracted on server", "ok");
@@ -2902,10 +2909,10 @@ $(function() {
                 }
             }, useDirect).done(function() {
                 ndmGcsSetProgress(48, useDirect
-                    ? "Step 1/2 complete — finalizing project folder in GCS…"
+                    ? "Step 1/2 complete — verifying upload…"
                     : "Step 1/2 complete — starting upload to Google Cloud…");
                 ndmGcsLogLine(useDirect
-                    ? "All files in GCS staging. Moving into project folder…"
+                    ? "All files uploaded to project folder. Verifying…"
                     : "All files on server. Uploading folder structure to GCS…", "ok");
                 return ndmGcsCommitUpload(uploadId);
             }).done(function(start) {
@@ -2913,14 +2920,9 @@ $(function() {
                     return $.Deferred().reject(start.error).promise();
                 }
                 var n = (start && start.filesTotal != null) ? start.filesTotal : total;
-                ndmGcsSetProgress(50, "Step 2/2 — Finalizing project folder: 0 / " + n);
-                ndmGcsLogLine("Step 2/2 — organizing " + n + " file(s) into project folder…", "ok");
-                return ndmGcsPollCommitProgress(uploadId, n, session.gcsUri || "");
-            }).done(function(commit) {
-                ndmGcsSetProgress(100, "Done — " + (commit.filesUploaded || 0) + " file(s) in Google Cloud", false);
-                ndmGcsLogLine("Complete: " + (commit.filesUploaded || 0) + " object(s) at " + (commit.gcsUri || ""), "ok");
-                ndmGcsMergeProjectIntoCache(session.projectName, session.sanitizedName);
-                ndmGcsSetProjectStatusFromCache(false);
+                ndmGcsSetProgress(50, "Step 2/2 — Verifying: 0 / " + n);
+                ndmGcsLogLine("Step 2/2 — verifying " + n + " file(s) in project folder…", "ok");
+                return ndmGcsPollCommitProgress(uploadId, n, session);
             }).fail(function(err) {
                 if (err) ndmGcsSetError(String(err));
             }).always(function() {

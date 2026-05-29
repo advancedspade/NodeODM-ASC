@@ -312,6 +312,24 @@ module.exports = {
         });
     },
 
+    objectExists: function(objectPath, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        bucket.file(objectPath).exists((err, exists) => cb(err, !!exists));
+    },
+
+    deleteObjects: function(objectPaths, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const paths = (objectPaths || []).filter(Boolean);
+        if (!paths.length) return cb();
+        async.eachLimit(paths, 16, (p, done) => {
+            bucket.file(p).delete({ ignoreNotFound: true }, done);
+        }, cb);
+    },
+
     copyObject: function(srcPath, destPath, cb) {
         if (!bucket) {
             return cb(new Error("GCS is not initialized"));
@@ -369,13 +387,14 @@ module.exports = {
         });
     },
 
-    deletePrefixWithRetry: function(prefix, cb) {
+    deletePrefixWithRetry: function(prefix, cb, maxAttempts) {
+        const limit = maxAttempts || 5;
         const attempt = (n) => {
             module.exports.deletePrefix(prefix, err => {
                 if (!err) return cb();
-                if (n < 2) {
-                    logger.warn(`GCS staging delete retry (${n + 1}/2) for ${prefix}: ${err.message}`);
-                    return setTimeout(() => attempt(n + 1), 2000);
+                if (n < limit - 1) {
+                    logger.warn(`GCS prefix delete retry (${n + 1}/${limit}) for ${prefix}: ${err.message}`);
+                    return setTimeout(() => attempt(n + 1), 2000 * (n + 1));
                 }
                 cb(err);
             });

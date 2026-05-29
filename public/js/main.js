@@ -2370,12 +2370,11 @@ $(function() {
             }
         }
 
-        function finishWhenCopied(done, total) {
-            if (uiFinished || total <= 0 || done < total) return;
-            finishSuccess({
-                success: true,
-                filesUploaded: done
-            });
+        function finishWhenVerified(p) {
+            if (uiFinished) return;
+            if (!p || !p.success) return;
+            if (!(p.done || p.phase === "complete") && !p.filesUploaded) return;
+            finishSuccess(p);
         }
 
         function poll() {
@@ -2383,23 +2382,15 @@ $(function() {
             $.get(ndmApi("/gcs/upload/" + uploadId + "/progress") + ndmTokenQs(), ndmGcsAjaxOpts)
                 .done(function(p) {
                     if (p && p.error && !p.done && p.phase !== "complete" && !p.success) {
-                        if (lastDone >= expectedTotal) {
-                            finishWhenCopied(lastDone, expectedTotal);
-                            return;
-                        }
                         setTimeout(poll, 2000);
                         return;
                     }
-                    if (p && (p.done || p.phase === "complete" || p.success)) {
-                        if (p.error) {
-                            if (lastDone >= expectedTotal) {
-                                finishWhenCopied(lastDone, expectedTotal);
-                            } else {
-                                def.reject(p.error);
-                            }
-                            return;
-                        }
-                        finishSuccess(p);
+                    if (p && p.done && p.success && !p.error) {
+                        finishWhenVerified(p);
+                        return;
+                    }
+                    if (p && p.done && p.error) {
+                        def.reject(p.error);
                         return;
                     }
                     var total = (p && p.filesTotal) || expectedTotal || 0;
@@ -2423,17 +2414,9 @@ $(function() {
                         ndmGcsLogLine("Verified: " + done + "/" + total + (p.currentFile ? " — " + p.currentFile : ""), "ok");
                         lastLogged = done;
                     }
-                    if (total > 0 && done >= total) {
-                        finishWhenCopied(done, total);
-                        return;
-                    }
                     setTimeout(poll, 2000);
                 })
                 .fail(function(xhr, status) {
-                    if (lastDone >= expectedTotal) {
-                        finishWhenCopied(Math.max(lastDone, expectedTotal), expectedTotal);
-                        return;
-                    }
                     if (Date.now() - started > 30 * 60 * 1000) {
                         def.reject(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/progress")));
                         return;
@@ -2881,6 +2864,7 @@ $(function() {
             var uploadId = session.uploadId;
             var total = ndmGcsFiles.length;
             var useDirect = !!(session.directUpload || ndmGcsDirectUpload);
+            var gcsUploadOk = false;
 
             ndmGcsStageFiles(uploadId, ndmGcsFiles, function(done, tot, item, res, inFlight) {
                 var phasePct = tot > 0 ? Math.round((done / tot) * 45) : 0;
@@ -2923,6 +2907,8 @@ $(function() {
                 ndmGcsSetProgress(50, "Step 2/2 — Verifying: 0 / " + n);
                 ndmGcsLogLine("Step 2/2 — verifying " + n + " file(s) in project folder…", "ok");
                 return ndmGcsPollCommitProgress(uploadId, n, session);
+            }).done(function() {
+                gcsUploadOk = true;
             }).fail(function(err) {
                 if (err) ndmGcsSetError(String(err));
             }).always(function() {
@@ -2930,10 +2916,16 @@ $(function() {
                 if (wrap) wrap.classList.remove("ndm-gcs-progress--busy");
                 var bar = document.getElementById("gcsUploadProgressBar");
                 if (bar) bar.classList.remove("ndm-gcs-progress__bar--indeterminate");
-                $.ajax($.extend({
-                    url: ndmApi("/gcs/upload/" + uploadId) + ndmTokenQs(),
-                    type: "DELETE"
-                }, ndmGcsAjaxOpts));
+                if (uploadId) {
+                    var delQs = ndmTokenQs();
+                    if (!gcsUploadOk) {
+                        delQs += (delQs.indexOf("?") >= 0 ? "&" : "?") + "abandon=1";
+                    }
+                    $.ajax($.extend({
+                        url: ndmApi("/gcs/upload/" + uploadId) + delQs,
+                        type: "DELETE"
+                    }, ndmGcsAjaxOpts));
+                }
                 if (startBtn) startBtn.disabled = !ndmGcsEnabled || !ndmGcsFiles.length;
                 if (clearBtn) clearBtn.disabled = false;
             });

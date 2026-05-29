@@ -806,8 +806,6 @@ function handleProgress(req, res) {
             if (disk && disk.success) {
                 return res.json(Object.assign({ done: true, phase: "complete", success: true }, publicUploadPayload(disk)));
             }
-            out.done = true;
-            out.phase = "complete";
         }
         return res.json(out);
     }
@@ -829,6 +827,8 @@ function handleDelete(req, res) {
     const disk = readCommitStatus(uploadId);
     const committed = (session && session.commitResult && session.commitResult.success) ||
         (disk && disk.success);
+    const abandon = String(req.query.abandon || "") === "1" ||
+        String(req.query.abandon || "").toLowerCase() === "true";
     sessions.delete(uploadId);
 
     const finish = () => {
@@ -845,7 +845,7 @@ function handleDelete(req, res) {
         if (!session || !session.directUpload) {
             return finish();
         }
-        if (committed) {
+        if (committed || !abandon) {
             if (session.gcsStagingPath) {
                 return GCS.deletePrefixWithRetry(session.gcsStagingPath, delErr => {
                     if (delErr) logger.warn(`GCS legacy staging cleanup: ${delErr.message}`);

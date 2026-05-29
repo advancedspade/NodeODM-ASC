@@ -48,6 +48,53 @@ function getSession(uploadId) {
     return sessions.get(uploadId) || null;
 }
 
+function commitStatusPath(uploadId) {
+    const dir = sessionTmpDir(uploadId);
+    return dir ? path.join(dir, "commit-status.json") : null;
+}
+
+function readCommitStatus(uploadId) {
+    const p = commitStatusPath(uploadId);
+    if (!p || !fs.existsSync(p)) return null;
+    try {
+        return JSON.parse(fs.readFileSync(p, "utf8"));
+    } catch (e) {
+        return null;
+    }
+}
+
+function persistCommitStatus(uploadId, data) {
+    const p = commitStatusPath(uploadId);
+    if (!p) return;
+    try {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, JSON.stringify(Object.assign({ savedAt: Date.now() }, data)));
+    } catch (e) {
+        logger.warn(`GCS commit status write failed: ${e.message}`);
+    }
+}
+
+function assignUploadProgress(req, res, next) {
+    const uploadId = req.params.uploadId;
+    const dir = sessionTmpDir(uploadId);
+    if (!dir) {
+        return res.json({ error: "Invalid upload session id." });
+    }
+    req.gcsUploadId = uploadId;
+    req.gcsUploadDir = dir;
+    const session = getSession(uploadId);
+    if (session) {
+        req.gcsUploadSession = session;
+        return next();
+    }
+    const disk = readCommitStatus(uploadId);
+    if (disk) {
+        req.gcsUploadCommitDisk = disk;
+        return next();
+    }
+    return res.json({ error: "Upload session not found or expired." });
+}
+
 function countFilesUnder(dir) {
     if (!fs.existsSync(dir)) return 0;
     return glob.sync("**/*", { cwd: dir, nodir: true, nosort: true }).length;
@@ -569,6 +616,7 @@ function handleCommit(req, res) {
                 }
                 if (err) {
                     session.commitResult = { error: err.message };
+                    persistCommitStatus(uploadId, session.commitResult);
                 } else {
                     session.commitResult = {
                         success: true,
@@ -576,6 +624,8 @@ function handleCommit(req, res) {
                         gcsDestPath: session.gcsDestPath,
                         gcsUri: `gs://${config.gcsBucket}/${session.gcsDestPath}/`
                     };
+                    persistCommitStatus(uploadId, session.commitResult);
+                    logger.info(`GCS manual upload commit complete: ${stats.fileCount} files → ${session.gcsDestPath}`);
                 }
             };
 
@@ -609,7 +659,25 @@ function handleCommit(req, res) {
 }
 
 function handleProgress(req, res) {
+    if (req.gcsUploadCommitDisk) {
+        const disk = req.gcsUploadCommitDisk;
+        if (disk.error) {
+            return res.json({ done: true, error: disk.error, phase: "error" });
+        }
+        return res.json(Object.assign({ done: true, phase: "complete", success: true }, disk));
+    }
+
     const session = req.gcsUploadSession;
+    if (!session) {
+        const disk = readCommitStatus(req.gcsUploadId);
+        if (disk) {
+            if (disk.error) {
+                return res.json({ done: true, error: disk.error, phase: "error" });
+            }
+            return res.json(Object.assign({ done: true, phase: "complete", success: true }, disk));
+        }
+        return res.json({ error: "Upload session not found or expired." });
+    }
 
     if (session.commitResult) {
         if (session.commitResult.error) {
@@ -626,6 +694,15 @@ function handleProgress(req, res) {
         const out = Object.assign({ done: !!session.progress.done }, session.progress);
         if (session.progress.phase === "complete") {
             out.done = true;
+        }
+        if (!out.done && session.progress.filesTotal > 0 &&
+            session.progress.filesCompleted >= session.progress.filesTotal) {
+            const disk = readCommitStatus(req.gcsUploadId);
+            if (disk && disk.success) {
+                return res.json(Object.assign({ done: true, phase: "complete", success: true }, disk));
+            }
+            out.done = true;
+            out.phase = "complete";
         }
         return res.json(out);
     }
@@ -668,6 +745,7 @@ function handleDelete(req, res) {
 
 module.exports = {
     assignUpload,
+    assignUploadProgress,
     uploadMiddleware,
     uploadBatchMiddleware,
     handleStatus,

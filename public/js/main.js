@@ -2342,21 +2342,41 @@ $(function() {
         var def = $.Deferred();
         var started = Date.now();
         var lastLogged = 0;
-        var lastDone = -1;
-        var allCopiedAt = 0;
+        var lastDone = 0;
+        var finishScheduled = false;
 
         function finishSuccess(p) {
+            if (def.state() !== "pending") return;
             def.resolve(p || {
                 success: true,
-                filesUploaded: expectedTotal,
+                filesUploaded: expectedTotal || lastDone,
                 gcsUri: gcsUriHint || ""
             });
         }
 
+        function scheduleFinishWhenCopied(done, total) {
+            if (finishScheduled || total <= 0 || done < total) return;
+            finishScheduled = true;
+            ndmGcsSetProgress(99, "Step 2/2 — Complete");
+            setTimeout(function() {
+                ndmGcsLogLine("Upload complete.", "ok");
+                finishSuccess({
+                    success: true,
+                    filesUploaded: done,
+                    gcsUri: gcsUriHint || ""
+                });
+            }, 2000);
+        }
+
         function poll() {
+            if (def.state() !== "pending") return;
             $.get(ndmApi("/gcs/upload/" + uploadId + "/progress") + ndmTokenQs(), ndmGcsAjaxOpts)
                 .done(function(p) {
-                    if (p && p.error && !p.done && p.phase !== "complete") {
+                    if (p && p.error && !p.done && p.phase !== "complete" && !p.success) {
+                        if (lastDone >= expectedTotal) {
+                            scheduleFinishWhenCopied(lastDone, expectedTotal);
+                            return;
+                        }
                         def.reject(p.error);
                         return;
                     }
@@ -2365,46 +2385,42 @@ $(function() {
                             def.reject(p.error);
                             return;
                         }
+                        ndmGcsSetProgress(100, "Done — " + (p.filesUploaded || expectedTotal || 0) + " file(s) in Google Cloud", false);
                         finishSuccess(p);
                         return;
                     }
                     var total = (p && p.filesTotal) || expectedTotal || 0;
                     var done = (p && p.filesCompleted) || 0;
+                    if (done > lastDone) lastDone = done;
                     var copying = total > 0 && done < total;
                     var pct = copying
                         ? 50 + Math.round((done / total) * 48)
-                        : (total > 0 ? 99 : 55);
+                        : 99;
                     var elapsed = ndmGcsFormatElapsed((Date.now() - started) / 1000);
                     var label = total > 0
                         ? (copying
                             ? "Step 2/2 — Finalizing project folder: " + done + " / " + total + " (" + elapsed + ")"
-                            : "Step 2/2 — Finishing up… (" + elapsed + ")")
+                            : "Step 2/2 — Complete (" + elapsed + ")")
                         : "Step 2/2 — Finalizing project folder… (" + elapsed + ")";
                     if (p && p.currentFile && copying) {
                         var short = p.currentFile;
                         if (short.length > 48) short = "…" + short.slice(-45);
                         label += " — " + short;
                     }
-                    ndmGcsSetProgress(pct, label, total === 0 && done === 0);
-                    if (done > 0 && (done !== lastDone) && (done - lastLogged >= 10 || done === total)) {
+                    ndmGcsSetProgress(pct, label, false);
+                    if (done > 0 && (done - lastLogged >= 10 || done === total)) {
                         ndmGcsLogLine("Organizing in GCS: " + done + "/" + total + (p.currentFile ? " — " + p.currentFile : ""), "ok");
                         lastLogged = done;
-                        lastDone = done;
                     }
                     if (total > 0 && done >= total) {
-                        if (!allCopiedAt) allCopiedAt = Date.now();
-                        if (Date.now() - allCopiedAt > 15000) {
-                            ndmGcsLogLine("All files copied — completing upload.", "ok");
-                            finishSuccess(p);
-                            return;
-                        }
+                        scheduleFinishWhenCopied(done, total);
+                        return;
                     }
                     setTimeout(poll, 2000);
                 })
                 .fail(function(xhr, status) {
-                    if (allCopiedAt && Date.now() - allCopiedAt > 5000) {
-                        ndmGcsLogLine("Progress poll interrupted — upload likely finished. Check the bucket.", "ok");
-                        finishSuccess(null);
+                    if (lastDone >= expectedTotal || finishScheduled) {
+                        scheduleFinishWhenCopied(Math.max(lastDone, expectedTotal), expectedTotal);
                         return;
                     }
                     if (Date.now() - started > 30 * 60 * 1000) {

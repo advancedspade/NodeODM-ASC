@@ -1823,6 +1823,9 @@ $(function() {
     var ndmGcsAjaxOpts = { xhrFields: { withCredentials: true } };
     var NDM_GCS_PROJECTS_CACHE_STORAGE = "ndmGcsProjectsCacheV1";
     var NDM_GCS_PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000;
+    var NDM_GCS_WARN_FILE_COUNT = 300;
+    var NDM_GCS_MAX_INDIVIDUAL_FILES = 2500;
+    var NDM_GCS_STALL_MS = 5 * 60 * 1000;
 
     function ndmGcsSetError(msg) {
         var el = document.getElementById("gcsUploadError");
@@ -2319,13 +2322,15 @@ $(function() {
                     }
                     var total = (p && p.filesTotal) || 0;
                     var done = (p && p.filesCompleted) || 0;
-                    var pct = total > 0 ? 85 + Math.round((done / total) * 15) : 88;
+                    var pct = total > 0 ? 50 + Math.round((done / total) * 50) : 52;
                     var elapsed = ndmGcsFormatElapsed((Date.now() - started) / 1000);
                     var label = total > 0
-                        ? "Uploading to GCS: " + done + " / " + total + " files (" + elapsed + ")…"
-                        : "Uploading to GCS… (" + elapsed + ") — large folders can take several minutes";
+                        ? "Step 2/2 — Uploading to Google Cloud: " + done + " / " + total + " (" + elapsed + ")"
+                        : "Step 2/2 — Uploading to Google Cloud… (" + elapsed + ") — large folders can take several minutes";
                     if (p && p.currentFile) {
-                        label += " — " + p.currentFile;
+                        var short = p.currentFile;
+                        if (short.length > 48) short = "…" + short.slice(-45);
+                        label += " — " + short;
                     }
                     ndmGcsSetProgress(pct, label, total === 0);
                     if (done > 0 && (done - lastLogged >= 10 || done === total)) {
@@ -2343,18 +2348,24 @@ $(function() {
         return def.promise();
     }
 
-    function ndmGcsUploadOneFile(uploadId, item) {
+    function ndmGcsUploadOneFile(uploadId, item, attempt) {
         var fd = new FormData();
         fd.append("file", item.file, item.file.name);
         fd.append("relativePath", item.relativePath || item.file.name);
+        var timeoutMs = item.file.size > 50 * 1024 * 1024 ? 1800000 : 600000;
         return $.ajax($.extend({
             url: ndmApi("/gcs/upload/" + uploadId + "/file") + ndmTokenQs(),
             type: "POST",
             data: fd,
             processData: false,
             contentType: false,
-            timeout: 0
-        }, ndmGcsAjaxOpts));
+            timeout: timeoutMs
+        }, ndmGcsAjaxOpts)).then(null, function(xhr, status) {
+            if ((attempt || 0) < 2 && status !== "abort") {
+                return ndmGcsUploadOneFile(uploadId, item, (attempt || 0) + 1);
+            }
+            return $.Deferred().reject(xhr, status).promise();
+        });
     }
 
     function ndmGcsCommitUpload(uploadId) {
@@ -2370,11 +2381,20 @@ $(function() {
         var uploaded = 0;
         var idx = 0;
         var active = 0;
-        var concurrency = 4;
+        var concurrency = items.length > 500 ? 8 : 4;
         var failed = null;
+        var lastProgressAt = Date.now();
+        var stallTimer = setInterval(function() {
+            if (def.state() !== "pending") return;
+            if (Date.now() - lastProgressAt > NDM_GCS_STALL_MS) {
+                failed = "No progress for 5 minutes. For large folders (especially entwine/3d_tiles), zip the project and upload one .zip file instead.";
+                def.reject(failed);
+            }
+        }, 30000);
 
         function pump() {
             if (failed) {
+                clearInterval(stallTimer);
                 if (def.state() === "pending") def.reject(failed);
                 return;
             }
@@ -2384,30 +2404,37 @@ $(function() {
                     ndmGcsUploadOneFile(uploadId, capturedItem).done(function(res) {
                         active--;
                         uploaded++;
+                        lastProgressAt = Date.now();
                         if (onProgress) onProgress(uploaded, items.length, capturedItem, res);
                         if (res.error) {
                             failed = res.error;
+                            clearInterval(stallTimer);
                             if (def.state() === "pending") def.reject(failed);
                             return;
                         }
                         if (uploaded >= items.length && active === 0) {
+                            clearInterval(stallTimer);
                             def.resolve();
                         } else {
                             pump();
                         }
                     }).fail(function(xhr, status) {
                         active--;
+                        if (status === "abort") return;
                         failed = ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/file"));
+                        clearInterval(stallTimer);
                         if (def.state() === "pending") def.reject(failed);
                     });
                 })(items[idx++]);
             }
             if (active === 0 && uploaded >= items.length && !failed) {
+                clearInterval(stallTimer);
                 def.resolve();
             }
         }
 
         if (!items.length) {
+            clearInterval(stallTimer);
             def.resolve();
         } else {
             pump();
@@ -2424,6 +2451,23 @@ $(function() {
         if (!ndmGcsFiles.length) {
             ndmGcsSetError("Add at least one file.");
             return;
+        }
+        var fileCount = ndmGcsFiles.length;
+        if (fileCount > NDM_GCS_MAX_INDIVIDUAL_FILES) {
+            ndmGcsSetError(
+                "This selection has " + fileCount + " files. Uploading each file separately is not reliable at this scale " +
+                "(folders like entwine/ept-data contain thousands of tiny tiles). " +
+                "Zip the project folder on your computer, then upload that single .zip file here."
+            );
+            return;
+        }
+        if (fileCount > NDM_GCS_WARN_FILE_COUNT) {
+            var ok = window.confirm(
+                "This selection has " + fileCount + " files. Step 1 sends each file to the server separately and can take hours or fail.\n\n" +
+                "Recommended: zip the folder and upload one .zip file instead.\n\n" +
+                "Continue with " + fileCount + " individual file uploads anyway?"
+            );
+            if (!ok) return;
         }
         ndmGcsSetError("");
         var startBtn = document.getElementById("gcsUploadStart");
@@ -2458,23 +2502,28 @@ $(function() {
             var total = ndmGcsFiles.length;
 
             ndmGcsStageFilesParallel(uploadId, ndmGcsFiles, function(done, tot, item, res) {
-                ndmGcsSetProgress((done / tot) * 80, "Staging " + done + " / " + tot + ": " + (item.relativePath || item.file.name));
+                var phasePct = tot > 0 ? Math.round((done / tot) * 45) : 0;
+                ndmGcsSetProgress(phasePct, "Step 1/2 — Sending to server: " + done + " / " + tot);
                 if (res && res.extracted) {
-                    ndmGcsLogLine((item.relativePath || item.file.name) + " → extracted to folder (" + (res.stagedFiles || "?") + " file(s) staged)", "ok");
-                } else {
-                    ndmGcsLogLine((item.relativePath || item.file.name) + " → staged", "ok");
+                    if (done === 1 || done === tot || done % 25 === 0) {
+                        ndmGcsLogLine((item.relativePath || item.file.name) + " → ZIP extracted on server", "ok");
+                    }
+                } else if (done === 1 || done === tot || done % 25 === 0) {
+                    ndmGcsLogLine("Server received " + done + " / " + tot + " files (not in GCS yet)", "ok");
                 }
             }).done(function() {
-                ndmGcsSetProgress(82, "Starting upload to GCS…");
+                ndmGcsSetProgress(48, "Step 1/2 complete — starting upload to Google Cloud…");
+                ndmGcsLogLine("All files on server. Uploading folder structure to GCS…", "ok");
                 return ndmGcsCommitUpload(uploadId);
             }).done(function(start) {
                 if (start && start.error) {
                     return $.Deferred().reject(start.error).promise();
                 }
-                ndmGcsLogLine("Uploading " + ((start && start.filesTotal) || "?") + " staged file(s) to GCS…", "ok");
+                var n = (start && start.filesTotal) || "?";
+                ndmGcsLogLine("Step 2/2 — copying " + n + " file(s) to gs://… (this can take a while for large folders)", "ok");
                 return ndmGcsPollCommitProgress(uploadId);
             }).done(function(commit) {
-                ndmGcsSetProgress(100, "Uploaded " + (commit.filesUploaded || 0) + " file(s) to " + (commit.gcsUri || "GCS"), false);
+                ndmGcsSetProgress(100, "Done — " + (commit.filesUploaded || 0) + " file(s) in Google Cloud", false);
                 ndmGcsLogLine("Complete: " + (commit.filesUploaded || 0) + " object(s) at " + (commit.gcsUri || ""), "ok");
                 ndmGcsMergeProjectIntoCache(session.projectName, session.sanitizedName);
                 ndmGcsSetProjectStatusFromCache(false);

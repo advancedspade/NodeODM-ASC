@@ -349,7 +349,10 @@ module.exports = {
             }, PARALLEL);
 
             q.error = err => cb(err);
-            q.drain = () => cb(null, { fileCount: total });
+            q.drain = () => {
+                if (onFileDone) onFileDone(total, total, "");
+                cb(null, { fileCount: total });
+            };
             q.push(files);
         });
     },

@@ -561,6 +561,12 @@ function handleCommit(req, res) {
             };
 
             const done = (err, stats) => {
+                if (session.progress) {
+                    session.progress.filesCompleted = session.progress.filesTotal || (stats && stats.fileCount) || 0;
+                    session.progress.done = true;
+                    session.progress.phase = err ? "error" : "complete";
+                    session.progress.currentFile = "";
+                }
                 if (err) {
                     session.commitResult = { error: err.message };
                 } else {
@@ -570,10 +576,6 @@ function handleCommit(req, res) {
                         gcsDestPath: session.gcsDestPath,
                         gcsUri: `gs://${config.gcsBucket}/${session.gcsDestPath}/`
                     };
-                }
-                if (session.progress) {
-                    session.progress.done = true;
-                    session.progress.phase = err ? "error" : "complete";
                 }
             };
 
@@ -621,7 +623,11 @@ function handleProgress(req, res) {
     }
 
     if (session.progress) {
-        return res.json(Object.assign({ done: !!session.progress.done }, session.progress));
+        const out = Object.assign({ done: !!session.progress.done }, session.progress);
+        if (session.progress.phase === "complete") {
+            out.done = true;
+        }
+        return res.json(out);
     }
 
     const stagingDir = sessionStagingDir(req.gcsUploadId);

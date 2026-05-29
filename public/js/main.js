@@ -2338,35 +2338,49 @@ $(function() {
         return rem + "s";
     }
 
-    function ndmGcsPollCommitProgress(uploadId, expectedTotal) {
+    function ndmGcsPollCommitProgress(uploadId, expectedTotal, gcsUriHint) {
         var def = $.Deferred();
         var started = Date.now();
         var lastLogged = 0;
         var lastDone = -1;
+        var allCopiedAt = 0;
+
+        function finishSuccess(p) {
+            def.resolve(p || {
+                success: true,
+                filesUploaded: expectedTotal,
+                gcsUri: gcsUriHint || ""
+            });
+        }
 
         function poll() {
             $.get(ndmApi("/gcs/upload/" + uploadId + "/progress") + ndmTokenQs(), ndmGcsAjaxOpts)
                 .done(function(p) {
-                    if (p && p.error && !p.done) {
+                    if (p && p.error && !p.done && p.phase !== "complete") {
                         def.reject(p.error);
                         return;
                     }
-                    if (p && p.done) {
+                    if (p && (p.done || p.phase === "complete" || p.success)) {
                         if (p.error) {
                             def.reject(p.error);
                             return;
                         }
-                        def.resolve(p);
+                        finishSuccess(p);
                         return;
                     }
                     var total = (p && p.filesTotal) || expectedTotal || 0;
                     var done = (p && p.filesCompleted) || 0;
-                    var pct = total > 0 ? 50 + Math.round((done / total) * 50) : 55;
+                    var copying = total > 0 && done < total;
+                    var pct = copying
+                        ? 50 + Math.round((done / total) * 48)
+                        : (total > 0 ? 99 : 55);
                     var elapsed = ndmGcsFormatElapsed((Date.now() - started) / 1000);
                     var label = total > 0
-                        ? "Step 2/2 — Finalizing project folder: " + done + " / " + total + " (" + elapsed + ")"
+                        ? (copying
+                            ? "Step 2/2 — Finalizing project folder: " + done + " / " + total + " (" + elapsed + ")"
+                            : "Step 2/2 — Finishing up… (" + elapsed + ")")
                         : "Step 2/2 — Finalizing project folder… (" + elapsed + ")";
-                    if (p && p.currentFile) {
+                    if (p && p.currentFile && copying) {
                         var short = p.currentFile;
                         if (short.length > 48) short = "…" + short.slice(-45);
                         label += " — " + short;
@@ -2377,9 +2391,22 @@ $(function() {
                         lastLogged = done;
                         lastDone = done;
                     }
+                    if (total > 0 && done >= total) {
+                        if (!allCopiedAt) allCopiedAt = Date.now();
+                        if (Date.now() - allCopiedAt > 15000) {
+                            ndmGcsLogLine("All files copied — completing upload.", "ok");
+                            finishSuccess(p);
+                            return;
+                        }
+                    }
                     setTimeout(poll, 2000);
                 })
                 .fail(function(xhr, status) {
+                    if (allCopiedAt && Date.now() - allCopiedAt > 5000) {
+                        ndmGcsLogLine("Progress poll interrupted — upload likely finished. Check the bucket.", "ok");
+                        finishSuccess(null);
+                        return;
+                    }
                     if (Date.now() - started > 30 * 60 * 1000) {
                         def.reject(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/progress")));
                         return;
@@ -2872,7 +2899,7 @@ $(function() {
                 var n = (start && start.filesTotal != null) ? start.filesTotal : total;
                 ndmGcsSetProgress(50, "Step 2/2 — Finalizing project folder: 0 / " + n);
                 ndmGcsLogLine("Step 2/2 — organizing " + n + " file(s) into project folder…", "ok");
-                return ndmGcsPollCommitProgress(uploadId, n);
+                return ndmGcsPollCommitProgress(uploadId, n, session.gcsUri || "");
             }).done(function(commit) {
                 ndmGcsSetProgress(100, "Done — " + (commit.filesUploaded || 0) + " file(s) in Google Cloud", false);
                 ndmGcsLogLine("Complete: " + (commit.filesUploaded || 0) + " object(s) at " + (commit.gcsUri || ""), "ok");

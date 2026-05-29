@@ -1825,6 +1825,7 @@ $(function() {
     var NDM_GCS_PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000;
     var NDM_GCS_MAX_INDIVIDUAL_FILES = 2500;
     var NDM_GCS_STALL_MS = 5 * 60 * 1000;
+    var ndmGcsDirectUpload = false;
 
     function ndmGcsIsRemoteHost() {
         if (typeof location === "undefined") return true;
@@ -2241,6 +2242,7 @@ $(function() {
         var nameEl = document.getElementById("gcsProjectName");
         var refreshBtn = document.getElementById("gcsRefreshProjects");
         ndmGcsEnabled = !!(st && st.enabled);
+        ndmGcsDirectUpload = !!(st && st.directUpload);
         if (hint) {
             if (!ndmGcsEnabled) {
                 hint.textContent = (st && st.reason) || "GCS uploads are not configured on this server.";
@@ -2340,8 +2342,8 @@ $(function() {
                     var pct = total > 0 ? 50 + Math.round((done / total) * 50) : 52;
                     var elapsed = ndmGcsFormatElapsed((Date.now() - started) / 1000);
                     var label = total > 0
-                        ? "Step 2/2 — Uploading to Google Cloud: " + done + " / " + total + " (" + elapsed + ")"
-                        : "Step 2/2 — Uploading to Google Cloud… (" + elapsed + ") — large folders can take several minutes";
+                        ? "Step 2/2 — Finalizing project folder: " + done + " / " + total + " (" + elapsed + ")"
+                        : "Step 2/2 — Finalizing project folder… (" + elapsed + ")";
                     if (p && p.currentFile) {
                         var short = p.currentFile;
                         if (short.length > 48) short = "…" + short.slice(-45);
@@ -2361,6 +2363,164 @@ $(function() {
 
         poll();
         return def.promise();
+    }
+
+    function ndmGcsPutToGcs(signedUrl, file, contentType, onUploadProgress) {
+        var def = $.Deferred();
+        var xhr = new XMLHttpRequest();
+        xhr.open("PUT", signedUrl);
+        xhr.setRequestHeader("Content-Type", contentType || "application/octet-stream");
+        xhr.timeout = 0;
+        if (xhr.upload && onUploadProgress) {
+            xhr.upload.addEventListener("progress", function(e) {
+                if (e.lengthComputable && e.loaded > 0) onUploadProgress(e);
+            });
+        }
+        xhr.onload = function() {
+            if (xhr.status >= 200 && xhr.status < 300) def.resolve();
+            else def.reject("GCS upload failed (HTTP " + xhr.status + ")");
+        };
+        xhr.onerror = function() { def.reject("GCS upload network error"); };
+        xhr.ontimeout = function() { def.reject("GCS upload timed out"); };
+        xhr.send(file);
+        return def.promise();
+    }
+
+    function ndmGcsDirectUploadOne(uploadId, item, attempt, onUploadProgress) {
+        attempt = attempt || 0;
+        var def = $.Deferred();
+        var rel = item.relativePath || item.file.name;
+        var contentType = item.file.type || "application/octet-stream";
+
+        $.ajax($.extend({
+            url: ndmApi("/gcs/upload/" + uploadId + "/sign") + ndmTokenQs(),
+            type: "POST",
+            contentType: "application/json",
+            data: JSON.stringify({ relativePath: rel, contentType: contentType }),
+            timeout: 120000
+        }, ndmGcsAjaxOpts)).done(function(sig) {
+            if (sig && sig.error) {
+                def.reject(sig.error);
+                return;
+            }
+            var putType = (sig && sig.contentType) || contentType;
+            ndmGcsPutToGcs(sig.signedUrl, item.file, putType, onUploadProgress).done(function() {
+                $.ajax($.extend({
+                    url: ndmApi("/gcs/upload/" + uploadId + "/complete") + ndmTokenQs(),
+                    type: "POST",
+                    contentType: "application/json",
+                    data: JSON.stringify({ relativePath: sig.relativePath || rel }),
+                    timeout: 60000
+                }, ndmGcsAjaxOpts)).done(function(doneRes) {
+                    if (doneRes && doneRes.error) def.reject(doneRes.error);
+                    else def.resolve(doneRes);
+                }).fail(function(xhr, status) {
+                    def.reject(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/complete")));
+                });
+            }).fail(function(err) {
+                if (attempt < 2) {
+                    ndmGcsDirectUploadOne(uploadId, item, attempt + 1, onUploadProgress).then(def.resolve, def.reject);
+                } else {
+                    def.reject(String(err) + " (" + rel + ")");
+                }
+            });
+        }).fail(function(xhr, status) {
+            if (attempt < 2 && status !== "abort") {
+                ndmGcsDirectUploadOne(uploadId, item, attempt + 1, onUploadProgress).then(def.resolve, def.reject);
+            } else {
+                def.reject(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/sign")) +
+                    " (" + rel + ")");
+            }
+        });
+        return def.promise();
+    }
+
+    function ndmGcsStageFilesDirect(uploadId, items, onProgress) {
+        var def = $.Deferred();
+        var totalFiles = items.length;
+        var uploaded = 0;
+        var failed = null;
+        var queue = items.slice();
+        var inFlight = {};
+        var concurrency = ndmGcsIsRemoteHost() ? 8 : 12;
+        var lastProgressAt = Date.now();
+
+        function notifyProgress(res) {
+            if (onProgress) {
+                var keys = Object.keys(inFlight);
+                var flights = keys.map(function(k) { return inFlight[k]; });
+                onProgress(uploaded, totalFiles, null, res, flights);
+            }
+        }
+
+        function failOne(err) {
+            failed = err;
+            clearInterval(stallTimer);
+            if (def.state() === "pending") def.reject(failed);
+        }
+
+        function startOne(item) {
+            var key = item.relativePath || item.file.name;
+            inFlight[key] = {
+                item: item,
+                startedAt: Date.now(),
+                lastByteAt: Date.now()
+            };
+            notifyProgress(null);
+
+            ndmGcsDirectUploadOne(uploadId, item, 0, function() {
+                if (inFlight[key]) inFlight[key].lastByteAt = Date.now();
+                lastProgressAt = Date.now();
+            }).done(function(res) {
+                delete inFlight[key];
+                uploaded++;
+                lastProgressAt = Date.now();
+                notifyProgress(res);
+                pump();
+            }).fail(function(err) {
+                delete inFlight[key];
+                if (!failed) failOne(err);
+            });
+        }
+
+        function pump() {
+            if (failed || def.state() !== "pending") return;
+            while (queue.length && Object.keys(inFlight).length < concurrency) {
+                startOne(queue.shift());
+            }
+            if (!queue.length && !Object.keys(inFlight).length) {
+                clearInterval(stallTimer);
+                def.resolve();
+            }
+        }
+
+        var stallTimer = setInterval(function() {
+            if (def.state() !== "pending") return;
+            var now = Date.now();
+            var keys = Object.keys(inFlight);
+            if (keys.length) {
+                var flight = inFlight[keys[0]];
+                var lastActivity = flight.lastByteAt || flight.startedAt;
+                if (now - lastActivity < 120000) return;
+                if (now - flight.startedAt < ndmGcsFileStallBudgetMs(flight.item)) return;
+            }
+            if (now - lastProgressAt > 20 * 60 * 1000) {
+                var hint = keys.length ? " Still waiting on: " + keys[0] + "." : "";
+                failOne("Upload stalled (" + uploaded + " / " + totalFiles + " to GCS)." + hint);
+            }
+        }, 15000);
+
+        if (!totalFiles) {
+            def.resolve();
+        } else {
+            pump();
+        }
+        return def.promise();
+    }
+
+    function ndmGcsStageFiles(uploadId, items, onProgress, useDirect) {
+        if (useDirect) return ndmGcsStageFilesDirect(uploadId, items, onProgress);
+        return ndmGcsStageFilesParallel(uploadId, items, onProgress);
     }
 
     function ndmGcsUploadOneFile(uploadId, item, attempt, onUploadProgress) {
@@ -2642,10 +2802,13 @@ $(function() {
 
             var uploadId = session.uploadId;
             var total = ndmGcsFiles.length;
+            var useDirect = !!(session.directUpload || ndmGcsDirectUpload);
 
-            ndmGcsStageFilesParallel(uploadId, ndmGcsFiles, function(done, tot, item, res, inFlight) {
+            ndmGcsStageFiles(uploadId, ndmGcsFiles, function(done, tot, item, res, inFlight) {
                 var phasePct = tot > 0 ? Math.round((done / tot) * 45) : 0;
-                var label = "Step 1/2 — Sending to server: " + done + " / " + tot;
+                var label = useDirect
+                    ? "Step 1/2 — Uploading to Google Cloud: " + done + " / " + tot
+                    : "Step 1/2 — Sending to server: " + done + " / " + tot;
                 if (inFlight && inFlight.length) {
                     var flight = inFlight[0];
                     var name = flight.item.relativePath || flight.item.file.name || "";
@@ -2653,7 +2816,11 @@ $(function() {
                     label += " — " + name;
                 }
                 ndmGcsSetProgress(phasePct, label);
-                if (res && res.extracted) {
+                if (useDirect) {
+                    if (done === 1 || done === tot || done % 50 === 0) {
+                        ndmGcsLogLine("Uploaded to GCS staging: " + done + " / " + tot, "ok");
+                    }
+                } else if (res && res.extracted) {
                     ndmGcsLogLine("ZIP extracted on server", "ok");
                 } else if (res && res.batchSize) {
                     if (done === tot || done % 50 === 0 || done < 50) {
@@ -2662,16 +2829,20 @@ $(function() {
                 } else if (done === 1 || done === tot || done % 50 === 0) {
                     ndmGcsLogLine("Server received " + done + " / " + tot + " files (not in GCS yet)", "ok");
                 }
-            }).done(function() {
-                ndmGcsSetProgress(48, "Step 1/2 complete — starting upload to Google Cloud…");
-                ndmGcsLogLine("All files on server. Uploading folder structure to GCS…", "ok");
+            }, useDirect).done(function() {
+                ndmGcsSetProgress(48, useDirect
+                    ? "Step 1/2 complete — finalizing project folder in GCS…"
+                    : "Step 1/2 complete — starting upload to Google Cloud…");
+                ndmGcsLogLine(useDirect
+                    ? "All files in GCS staging. Moving into project folder…"
+                    : "All files on server. Uploading folder structure to GCS…", "ok");
                 return ndmGcsCommitUpload(uploadId);
             }).done(function(start) {
                 if (start && start.error) {
                     return $.Deferred().reject(start.error).promise();
                 }
                 var n = (start && start.filesTotal) || "?";
-                ndmGcsLogLine("Step 2/2 — copying " + n + " file(s) to gs://… (this can take a while for large folders)", "ok");
+                ndmGcsLogLine("Step 2/2 — organizing " + n + " file(s) into project folder…", "ok");
                 return ndmGcsPollCommitProgress(uploadId);
             }).done(function(commit) {
                 ndmGcsSetProgress(100, "Done — " + (commit.filesUploaded || 0) + " file(s) in Google Cloud", false);

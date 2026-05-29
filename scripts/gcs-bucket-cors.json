@@ -1,0 +1,13 @@
+[
+  {
+    "origin": [
+      "https://dronemaps.advancedspadecompany.com",
+      "https://superdrone.advancedspadecompany.com",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000"
+    ],
+    "method": ["PUT", "GET", "HEAD", "OPTIONS"],
+    "responseHeader": ["Content-Type", "Content-Length", "x-goog-resumable"],
+    "maxAgeSeconds": 3600
+  }
+]

@@ -193,6 +193,8 @@ app.post('/rtk/analyze', authCheck, rtkApi.assignPreviewDir, rtkApi.uploadImages
 app.get('/gcs/upload/status', authCheck, gcsUploadApi.handleStatus);
 app.get('/gcs/projects', authCheck, gcsUploadApi.handleListProjects);
 app.post('/gcs/upload/init', authCheck, urlEncodedBodyParser, jsonBodyParser, gcsUploadApi.handleInit);
+app.post('/gcs/upload/:uploadId/sign', authCheck, gcsUploadApi.assignUpload, jsonBodyParser, gcsUploadApi.handleSign);
+app.post('/gcs/upload/:uploadId/complete', authCheck, gcsUploadApi.assignUpload, jsonBodyParser, gcsUploadApi.handleComplete);
 app.post('/gcs/upload/:uploadId/file', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.uploadMiddleware, gcsUploadApi.handleFile);
 app.post('/gcs/upload/:uploadId/batch', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.uploadBatchMiddleware, gcsUploadApi.handleBatch);
 app.post('/gcs/upload/:uploadId/commit', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.handleCommit);

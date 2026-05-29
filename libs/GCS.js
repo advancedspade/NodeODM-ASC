@@ -259,7 +259,7 @@ module.exports = {
             const names = new Set();
             (apiResponse && apiResponse.prefixes || []).forEach(p => {
                 let name = p.slice(prefix.length).replace(/\/$/, "");
-                if (name && !name.includes("/")) names.add(name);
+                if (name && !name.includes("/") && !name.startsWith(".")) names.add(name);
             });
 
             // Fallback: infer folder names from object keys when delimiter prefixes are empty.
@@ -268,11 +268,109 @@ module.exports = {
                 if (!key.startsWith(prefix)) return;
                 const rest = key.slice(prefix.length);
                 const seg = rest.split("/")[0];
-                if (seg) names.add(seg);
+                if (seg && !seg.startsWith(".")) names.add(seg);
             });
 
             cb(null, Array.from(names).sort((a, b) => a.localeCompare(b)));
         });
+    },
+
+    getSignedUploadUrl: function(objectPath, contentType, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const file = bucket.file(objectPath);
+        file.getSignedUrl({
+            version: "v4",
+            action: "write",
+            expires: Date.now() + 60 * 60 * 1000,
+            contentType: contentType || "application/octet-stream"
+        }, (err, urls) => {
+            if (err) return cb(err);
+            cb(null, urls[0]);
+        });
+    },
+
+    listFilesUnderPrefix: function(prefix, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const normalized = String(prefix || "").replace(/\/+$/, "") + "/";
+        bucket.getFiles({ prefix: normalized, autoPaginate: true }, (err, files) => {
+            if (err) return cb(err);
+            const objects = (files || []).filter(f => {
+                const name = f.name || "";
+                return name.length > normalized.length && !name.endsWith("/");
+            });
+            cb(null, objects);
+        });
+    },
+
+    copyObject: function(srcPath, destPath, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        bucket.file(srcPath).copy(bucket.file(destPath), err => cb(err));
+    },
+
+    copyPrefix: function(srcPrefix, destPrefix, cb, onFileDone) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const srcBase = String(srcPrefix || "").replace(/\/+$/, "") + "/";
+        const destBase = String(destPrefix || "").replace(/\/+$/, "") + "/";
+        const PARALLEL = config.gcsParallelUploads || 16;
+
+        module.exports.listFilesUnderPrefix(srcBase, (err, files) => {
+            if (err) return cb(err);
+            if (!files.length) {
+                return cb(new Error("No staged objects found in GCS."));
+            }
+
+            let completed = 0;
+            const total = files.length;
+            const q = async.queue((file, done) => {
+                const rel = file.name.slice(srcBase.length);
+                const dest = destBase + rel;
+                module.exports.copyObject(file.name, dest, copyErr => {
+                    if (copyErr) return done(copyErr);
+                    completed++;
+                    if (onFileDone) onFileDone(completed, total, rel);
+                    done();
+                });
+            }, PARALLEL);
+
+            q.push(files, qErr => {
+                if (qErr) return cb(qErr);
+                cb(null, { fileCount: total });
+            });
+        });
+    },
+
+    deletePrefix: function(prefix, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const normalized = String(prefix || "").replace(/\/+$/, "") + "/";
+        bucket.getFiles({ prefix: normalized, autoPaginate: true }, (err, files) => {
+            if (err) return cb(err);
+            if (!files || !files.length) return cb();
+            async.eachLimit(files, 16, (file, done) => file.delete(done), cb);
+        });
+    },
+
+    downloadFile: function(objectPath, destPath, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        fs.mkdir(path.dirname(destPath), { recursive: true }, mkdirErr => {
+            if (mkdirErr) return cb(mkdirErr);
+            bucket.file(objectPath).download({ destination: destPath }, cb);
+        });
+    },
+
+    contentTypeForPath: function(filePath) {
+        return getContentType(filePath);
     },
 
     cleanupLocalPaths: function(srcFolder, paths, cb, onOutput) {

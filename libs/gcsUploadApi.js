@@ -156,7 +156,8 @@ function handleInit(req, res) {
             projectName: String(rawName).trim(),
             sanitizedName,
             gcsDestPath: gcsDest,
-            createdAt: Date.now()
+            createdAt: Date.now(),
+            stagedFileCount: 0
         });
 
         res.json({
@@ -245,21 +246,22 @@ function handleFile(req, res) {
 
                 ziputils.unzip(incomingPath, extractDir, unzipErr => {
                     if (unzipErr) return finish(unzipErr);
-                    const stagedFiles = countFilesUnder(stagingDir);
+                    session.stagedFileCount = countFilesUnder(stagingDir);
                     finish(null, {
                         relativePath: path.relative(stagingDir, extractDir).replace(/\\/g, "/"),
                         extracted: true,
-                        stagedFiles
+                        stagedFiles: session.stagedFileCount
                     });
                 });
             });
         } else {
             stageFileAtPath(stagingDir, relativePathRaw, incomingPath, (err, rel) => {
                 if (err) return finish(err);
+                session.stagedFileCount = (session.stagedFileCount || 0) + 1;
                 finish(null, {
                     relativePath: rel,
                     extracted: false,
-                    stagedFiles: countFilesUnder(stagingDir)
+                    stagedFiles: session.stagedFileCount
                 });
             });
         }
@@ -349,12 +351,12 @@ function handleProgress(req, res) {
     }
 
     const stagingDir = sessionStagingDir(req.gcsUploadId);
-    const staged = stagingDir ? countFilesUnder(stagingDir) : 0;
+    const staged = session.stagedFileCount || (stagingDir ? countFilesUnder(stagingDir) : 0);
     res.json({
         done: false,
-        phase: staged > 0 ? "staged" : "empty",
+        phase: staged > 0 ? "staging" : "empty",
         filesTotal: staged,
-        filesCompleted: 0
+        filesCompleted: staged
     });
 }
 

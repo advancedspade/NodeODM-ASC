@@ -43,6 +43,8 @@ env:
 #   OAUTH_GOOGLE_REDIRECT_URI (dronemaps/staging VM), OAUTH_GOOGLE_REDIRECT_URI_SUPER (super VM)
 #   PORTAL_ENV_URL, PORTAL_SUPER_ENV_URL → container PORTAL_STAGING_ENV_URL / PORTAL_SUPER_ENV_URL
 # Optional (repo or environment Variable): NODEODM_TRUST_PROXY (=1 behind HTTPS LB)
+# HTTPS load balancer: backend service timeout must allow large manual uploads (e.g. timeoutSec=3600).
+# Default GCP backend timeout (30s) will break multi‑hundred‑MB POSTs to /gcs/upload/.../file.
 
 # Required for Workload Identity Federation
 permissions:

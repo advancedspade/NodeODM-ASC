@@ -1823,9 +1823,23 @@ $(function() {
     var ndmGcsAjaxOpts = { xhrFields: { withCredentials: true } };
     var NDM_GCS_PROJECTS_CACHE_STORAGE = "ndmGcsProjectsCacheV1";
     var NDM_GCS_PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000;
-    var NDM_GCS_WARN_FILE_COUNT = 300;
     var NDM_GCS_MAX_INDIVIDUAL_FILES = 2500;
     var NDM_GCS_STALL_MS = 5 * 60 * 1000;
+
+    function ndmGcsIsRemoteHost() {
+        if (typeof location === "undefined") return true;
+        var h = location.hostname;
+        return h !== "localhost" && h !== "127.0.0.1";
+    }
+
+    function ndmGcsFileStallBudgetMs(item) {
+        var sizeMb = (item && item.file ? item.file.size : 0) / (1024 * 1024);
+        var mult = ndmGcsIsRemoteHost() ? 2 : 1;
+        if (sizeMb > 500) return 90 * 60 * 1000 * mult;
+        if (sizeMb > 100) return 45 * 60 * 1000 * mult;
+        if (sizeMb > 25) return 20 * 60 * 1000 * mult;
+        return 10 * 60 * 1000;
+    }
 
     function ndmGcsSetError(msg) {
         var el = document.getElementById("gcsUploadError");
@@ -2348,7 +2362,7 @@ $(function() {
         return def.promise();
     }
 
-    function ndmGcsUploadOneFile(uploadId, item, attempt) {
+    function ndmGcsUploadOneFile(uploadId, item, attempt, onUploadProgress) {
         attempt = attempt || 0;
         var def = $.Deferred();
         var fd = new FormData();
@@ -2362,14 +2376,23 @@ $(function() {
             data: fd,
             processData: false,
             contentType: false,
-            timeout: timeoutMs
+            timeout: timeoutMs,
+            xhr: function() {
+                var xhr = $.ajaxSettings.xhr();
+                if (xhr.upload && onUploadProgress) {
+                    xhr.upload.addEventListener("progress", function(e) {
+                        if (e.lengthComputable && e.loaded > 0) onUploadProgress(e);
+                    });
+                }
+                return xhr;
+            }
         }, ndmGcsAjaxOpts));
         jqXhr.done(function(res) {
             if (res && res.error) def.reject(res.error);
             else def.resolve(res, jqXhr);
         }).fail(function(xhr, status) {
             if (attempt < 2 && status !== "abort") {
-                ndmGcsUploadOneFile(uploadId, item, attempt + 1).then(def.resolve, def.reject);
+                ndmGcsUploadOneFile(uploadId, item, attempt + 1, onUploadProgress).then(def.resolve, def.reject);
             } else {
                 var label = item.relativePath || item.file.name;
                 def.reject(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/file")) +
@@ -2397,9 +2420,10 @@ $(function() {
         var failed = null;
         var inFlight = [];
         var lastProgressAt = Date.now();
-        var maxConcurrent = queue.length > 500 ? 6 : 4;
+        var remote = ndmGcsIsRemoteHost();
+        var maxConcurrent = remote ? (queue.length > 500 ? 3 : 2) : (queue.length > 500 ? 6 : 4);
         var largeThreshold = 25 * 1024 * 1024;
-        var maxLargeConcurrent = 2;
+        var maxLargeConcurrent = remote ? 1 : 2;
 
         function notifyProgress(item, res) {
             if (onProgress) onProgress(uploaded, queue.length, item, res, inFlight.slice());
@@ -2443,9 +2467,12 @@ $(function() {
                 active++;
                 if (isLarge) activeLarge++;
                 (function(capturedItem) {
-                    var entry = { item: capturedItem, startedAt: Date.now() };
+                    var entry = { item: capturedItem, startedAt: Date.now(), lastByteAt: Date.now() };
                     inFlight.push(entry);
-                    var promise = ndmGcsUploadOneFile(uploadId, capturedItem);
+                    var promise = ndmGcsUploadOneFile(uploadId, capturedItem, 0, function() {
+                        entry.lastByteAt = Date.now();
+                        lastProgressAt = Date.now();
+                    });
                     promise.done(function(res) {
                         finishOne(capturedItem, res);
                     }).fail(function(err) {
@@ -2470,18 +2497,30 @@ $(function() {
 
         var stallTimer = setInterval(function() {
             if (def.state() !== "pending") return;
-            var stalledMs = Date.now() - lastProgressAt;
-            var remaining = queue.length - uploaded;
-            var stallLimit = remaining <= 10 ? 3 * 60 * 1000 : NDM_GCS_STALL_MS;
+            var now = Date.now();
+            if (inFlight.length > 0) {
+                var bytesMoving = false;
+                var withinBudget = false;
+                for (var k = 0; k < inFlight.length; k++) {
+                    var flight = inFlight[k];
+                    var lastActivity = flight.lastByteAt || flight.startedAt;
+                    if (now - lastActivity < 120000) bytesMoving = true;
+                    if (now - flight.startedAt < ndmGcsFileStallBudgetMs(flight.item)) withinBudget = true;
+                }
+                if (bytesMoving || withinBudget) return;
+            }
+            var stalledMs = now - lastProgressAt;
+            var stallLimit = inFlight.length ? 15 * 60 * 1000 : NDM_GCS_STALL_MS;
             if (stalledMs > stallLimit) {
                 var names = inFlight.map(function(f) {
                     return f.item.relativePath || f.item.file.name;
                 }).slice(0, 5);
                 var hint = names.length ? " Still waiting on: " + names.join(", ") + (inFlight.length > 5 ? "…" : "") + "." : "";
+                var remoteHint = remote
+                    ? " Over HTTPS (staging), large ODM files (.tif, .mvs, .laz) upload much slower than localhost — zip the folder and upload one .zip when possible."
+                    : " Large ODM outputs (.tif, .mvs, .laz) upload slowly — zip the folder and upload one .zip instead.";
                 failOne(
-                    "No progress for " + Math.round(stallLimit / 60000) + " minutes (" +
-                    uploaded + " / " + queue.length + " sent)." + hint +
-                    " Large point-cloud tiles (.laz) upload slowly — zip the folder and upload one .zip instead."
+                    "Upload stalled (" + uploaded + " / " + queue.length + " sent)." + hint + remoteHint
                 );
             }
         }, 15000);
@@ -2517,14 +2556,6 @@ $(function() {
                 "Zip the project folder on your computer, then upload that single .zip file here."
             );
             return;
-        }
-        if (fileCount > NDM_GCS_WARN_FILE_COUNT) {
-            var ok = window.confirm(
-                "This selection has " + fileCount + " files. Step 1 sends each file to the server separately and can take hours or fail.\n\n" +
-                "Recommended: zip the folder and upload one .zip file instead.\n\n" +
-                "Continue with " + fileCount + " individual file uploads anyway?"
-            );
-            if (!ok) return;
         }
         ndmGcsSetError("");
         var startBtn = document.getElementById("gcsUploadStart");

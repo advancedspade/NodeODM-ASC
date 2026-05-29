@@ -1,6 +1,7 @@
 # Optional overlay: GCS via Application Default Credentials (no JSON key file).
 # On your host, run once:  gcloud auth application-default login
-#
+# After login (or when credentials expire), recreate the container so it picks up ADC:
+#   docker compose -f docker-compose.dev.yml -f docker-compose.gcs-adc.yml up -d --force-recreate
 # Usage:
 #   export GCS_BUCKET=nodeodm-outputs-v1
 #   docker compose -f docker-compose.dev.yml -f docker-compose.gcs-adc.yml up --build

@@ -85,7 +85,8 @@ function handleStatus(req, res) {
     if (!GCS.enabled()) {
         let reason = "GCS bucket is not configured on this node (set GCS_BUCKET or --gcs_bucket).";
         if (config.gcsBucket) {
-            reason = "GCS bucket is set but the server could not connect (check VM/service account or Application Default Credentials).";
+            reason = GCS.lastInitError() ||
+                "GCS bucket is set but the server could not connect (check VM/service account or Application Default Credentials).";
         }
         return res.json({
             enabled: false,

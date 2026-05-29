@@ -50,5 +50,6 @@ dist/
 # Local GCS / secrets (never commit)
 .env
 .env.gcs
+LOCAL_DEV.md
 secrets/
 *.json.key

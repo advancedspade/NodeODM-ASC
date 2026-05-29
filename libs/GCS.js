@@ -28,13 +28,19 @@ const rmdir = require('rimraf');
 
 let storage = null;
 let bucket = null;
+let lastInitError = null;
 
 module.exports = {
     enabled: function() {
         return storage !== null && bucket !== null;
     },
 
+    lastInitError: function() {
+        return lastInitError;
+    },
+
     initialize: function(cb) {
+        lastInitError = null;
         if (config.gcsBucket) {
             const storageConfig = {};
 
@@ -58,11 +64,13 @@ module.exports = {
                     if (err) {
                         storage = null;
                         bucket = null;
-                        cb(new Error(`Cannot connect to GCS: ${err.message}`));
+                        lastInitError = `Cannot connect to GCS: ${err.message}`;
+                        cb(new Error(lastInitError));
                     } else if (!exists) {
                         storage = null;
                         bucket = null;
-                        cb(new Error(`GCS bucket '${config.gcsBucket}' does not exist or is not accessible`));
+                        lastInitError = `GCS bucket '${config.gcsBucket}' does not exist or is not accessible`;
+                        cb(new Error(lastInitError));
                     } else {
                         logger.info(`Connected to GCS bucket: ${config.gcsBucket}`);
                         cb();
@@ -71,7 +79,8 @@ module.exports = {
             } catch (err) {
                 storage = null;
                 bucket = null;
-                cb(new Error(`Failed to initialize GCS: ${err.message}`));
+                lastInitError = `Failed to initialize GCS: ${err.message}`;
+                cb(new Error(lastInitError));
             }
         } else {
             cb();

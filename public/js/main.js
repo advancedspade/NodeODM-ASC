@@ -2140,10 +2140,10 @@ $(function() {
         if (typeof location !== "undefined") {
             var host = location.hostname;
             if (host === "localhost" || host === "127.0.0.1") {
-                local = " Local dev: set GCS_BUCKET in .env (see env.gcs.example), run " +
-                    "gcloud auth application-default login, then " +
-                    "docker compose -f docker-compose.dev.yml -f docker-compose.gcs-adc.yml up --build. " +
-                    "Staging uses the VM service account (no key file).";
+                local = " Local dev: set GCS_BUCKET in .env, run gcloud auth application-default login, then " +
+                    "docker compose -f docker-compose.dev.yml -f docker-compose.gcs-adc.yml up -d --force-recreate " +
+                    "(recreate after every gcloud login — the container only reads ADC at startup). " +
+                    "If you see invalid_rapt / reauth errors, use a service-account JSON key with docker-compose.gcs.yml instead.";
             }
         }
         return base + local;

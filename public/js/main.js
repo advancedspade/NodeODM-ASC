@@ -1820,7 +1820,11 @@ $(function() {
     var ndmGcsProjectsFetch = null;
     var ndmGcsCacheKeyStr = "";
     var ndmGcsSuggestIndex = -1;
-    var ndmGcsAjaxOpts = { xhrFields: { withCredentials: true } };
+    var ndmGcsAjaxOpts = {
+        xhrFields: { withCredentials: true },
+        cache: false,
+        headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" }
+    };
     var NDM_GCS_PROJECTS_CACHE_STORAGE = "ndmGcsProjectsCacheV1";
     var NDM_GCS_PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000;
     var NDM_GCS_MAX_INDIVIDUAL_FILES = 2500;
@@ -2372,8 +2376,19 @@ $(function() {
 
         function poll() {
             if (uiFinished && def.state() !== "pending") return;
-            $.get(ndmApi("/gcs/upload/" + uploadId + "/progress") + ndmTokenQs(), ndmGcsAjaxOpts)
-                .done(function(p) {
+            var progressUrl = ndmApi("/gcs/upload/" + uploadId + "/progress") +
+                ndmTokenQs() + (ndmTokenQs().indexOf("?") >= 0 ? "&" : "?") + "_=" + Date.now();
+            $.ajax($.extend({
+                url: progressUrl,
+                type: "GET",
+                dataType: "json",
+                timeout: 60000
+            }, ndmGcsAjaxOpts)).done(function(p) {
+                    if (!p || typeof p !== "object") {
+                        ndmGcsLogLine("Waiting for server progress update…", "ok");
+                        setTimeout(poll, 2000);
+                        return;
+                    }
                     if (p && p.error && !p.done && p.phase !== "complete" && !p.success) {
                         setTimeout(poll, 2000);
                         return;
@@ -2451,6 +2466,11 @@ $(function() {
                     setTimeout(poll, 2000);
                 })
                 .fail(function(xhr, status) {
+                    if (xhr && xhr.status === 304) {
+                        ndmGcsLogLine("Progress cache skipped (304) — retrying…", "ok");
+                        setTimeout(poll, 1000);
+                        return;
+                    }
                     if (Date.now() - started > 30 * 60 * 1000) {
                         def.reject(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/progress")));
                         return;
@@ -3021,7 +3041,9 @@ $(function() {
                     phasePct = Math.min(45, Math.round(completedShare + inFlightShare));
                 }
                 var label = useDirect
-                    ? "Step 1/2 — Uploading: " + done + " / " + tot
+                    ? (zipItems.length === 1 && tot === 1
+                        ? "Step 1/2 — Uploading archive"
+                        : "Step 1/2 — Uploading: " + done + " / " + tot)
                     : "Step 1/2 — Sending to server: " + done + " / " + tot;
                 if (inFlight && inFlight.length) {
                     var flight = inFlight[0];
@@ -3034,26 +3056,30 @@ $(function() {
                 }
                 ndmGcsSetProgress(phasePct, label);
                 if (useDirect) {
-                    if (zipItems.length === 1 && done === tot) {
+                    if (zipItems.length === 1 && done === tot && tot > 0) {
                         ndmGcsLogLine("Archive uploaded — step 2 will extract and upload folder contents", "ok");
-                    } else if (done === 1 || done === tot || done % 50 === 0) {
-                        ndmGcsLogLine("Uploaded to project folder: " + done + " / " + tot, "ok");
+                    } else if (tot > 1 && done > 0 && (done === tot || done % 50 === 0)) {
+                        ndmGcsLogLine("Uploaded: " + done + " / " + tot + " file(s)", "ok");
                     }
                 } else if (res && res.extracted) {
                     ndmGcsLogLine("ZIP extracted on server (" + (res.stagedFiles || 0) + " files) — uploading contents in step 2…", "ok");
                 } else if (res && res.batchSize) {
-                    if (done === tot || done % 50 === 0 || done < 50) {
+                    if (done > 0 && (done === tot || done % 50 === 0)) {
                         ndmGcsLogLine("Server received " + done + " / " + tot + " files (batch upload)", "ok");
                     }
-                } else if (done === 1 || done === tot || done % 50 === 0) {
-                    ndmGcsLogLine("Server received " + done + " / " + tot + " files (not in GCS yet)", "ok");
+                } else if (done > 0 && (done === tot || done % 50 === 0)) {
+                    ndmGcsLogLine("Server received " + done + " / " + tot + " files", "ok");
                 }
             }, useDirect).done(function() {
                 ndmGcsSetProgress(48, useDirect
-                    ? "Step 1/2 complete — verifying upload…"
+                    ? (zipItems.length === 1
+                        ? "Step 1/2 complete — archive received"
+                        : "Step 1/2 complete — verifying upload…")
                     : "Step 1/2 complete — starting upload to Google Cloud…");
                 ndmGcsLogLine(useDirect
-                    ? "All files uploaded to project folder. Verifying…"
+                    ? (zipItems.length === 1
+                        ? "Step 1/2 complete — archive in cloud, starting extraction…"
+                        : "Step 1/2 complete — verifying upload…")
                     : "All files on server. Uploading folder structure to GCS…", "ok");
                 return ndmGcsCommitUpload(uploadId);
             }).done(function(start) {

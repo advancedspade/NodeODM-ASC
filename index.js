@@ -188,6 +188,15 @@ app.post('/rtk/session/:sessionId/analyze', authCheck, rtkApi.assignSessionDir, 
 app.delete('/rtk/session/:sessionId', authCheck, rtkApi.handleSessionDelete);
 app.post('/rtk/analyze', authCheck, rtkApi.assignPreviewDir, rtkApi.uploadImages, rtkApi.handleAnalyze);
 
+function gcsApiNoCache(req, res, next) {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Surrogate-Control", "no-store");
+    next();
+}
+app.use("/gcs", gcsApiNoCache);
+
 app.get('/gcs/upload/status', authCheck, gcsUploadApi.handleStatus);
 app.get('/gcs/projects', authCheck, gcsUploadApi.handleListProjects);
 app.post('/gcs/upload/init', authCheck, urlEncodedBodyParser, jsonBodyParser, gcsUploadApi.handleInit);

@@ -454,59 +454,66 @@ function commitDirectGcsUpload(session, uploadId, cb, onFileDone) {
         });
         logger.info(`GCS zip commit: downloading ${zipObjectPath}`);
 
-        fs.mkdir(extractDir, { recursive: true }, mkdirErr => {
-            if (mkdirErr) return cb(mkdirErr);
+        GCS.objectExists(zipObjectPath, (existsErr, exists) => {
+            if (existsErr) return cb(existsErr);
+            if (!exists) {
+                return cb(new Error(`Archive not found in cloud storage (${zipRel}). Step 1 may not have finished uploading.`));
+            }
 
-            GCS.downloadFile(zipObjectPath, zipLocal, dlErr => {
-                if (dlErr) return cb(dlErr);
+            fs.mkdir(extractDir, { recursive: true }, mkdirErr => {
+                if (mkdirErr) return cb(mkdirErr);
 
-                patchCommitProgress(session, {
-                    subPhase: "extracting",
-                    statusMessage: "Extracting archive on server…",
-                    currentFile: zipRel,
-                    bytesCompleted: 0,
-                    bytesTotal: 0
-                });
-                logger.info(`GCS zip commit: extracting ${zipLocal}`);
-
-                ziputils.unzip(zipLocal, extractDir, unzipErr => {
-                    rimraf(zipLocal, () => {});
-                    if (unzipErr) return cb(unzipErr);
-
-                    const extractedCount = countFilesUnder(extractDir);
-                    if (extractedCount === 0) {
-                        return cb(new Error("Archive extracted but contained no files."));
-                    }
+                GCS.downloadFile(zipObjectPath, zipLocal, dlErr => {
+                    if (dlErr) return cb(dlErr);
 
                     patchCommitProgress(session, {
-                        subPhase: "uploading",
-                        statusMessage: `Uploading ${extractedCount} extracted file(s) to project folder…`,
-                        filesTotal: extractedCount,
-                        filesCompleted: 0,
-                        currentFile: ""
+                        subPhase: "extracting",
+                        statusMessage: "Extracting archive on server…",
+                        currentFile: zipRel,
+                        bytesCompleted: 0,
+                        bytesTotal: 0
                     });
-                    logger.info(`GCS zip commit: uploading ${extractedCount} files to ${destPath}`);
+                    logger.info(`GCS zip commit: extracting ${zipLocal}`);
 
-                    uploadFolderToGcs(extractDir, destPath, (upErr, stats) => {
-                        if (upErr) return cb(upErr);
-                        GCS.deleteObjects([zipObjectPath], delErr => {
-                            if (delErr) {
-                                logger.warn(`GCS zip cleanup failed for ${zipObjectPath}: ${delErr.message}`);
-                                return cb(new Error(`Archive extracted but could not remove .zip from project folder: ${delErr.message}`));
-                            }
-                            cb(null, stats);
+                    ziputils.unzip(zipLocal, extractDir, unzipErr => {
+                        rimraf(zipLocal, () => {});
+                        if (unzipErr) return cb(unzipErr);
+
+                        const extractedCount = countFilesUnder(extractDir);
+                        if (extractedCount === 0) {
+                            return cb(new Error("Archive extracted but contained no files."));
+                        }
+
+                        patchCommitProgress(session, {
+                            subPhase: "uploading",
+                            statusMessage: `Uploading ${extractedCount} extracted file(s) to project folder…`,
+                            filesTotal: extractedCount,
+                            filesCompleted: 0,
+                            currentFile: ""
                         });
-                    }, null, onFileDone);
-                });
-            }, (received, total) => {
-                patchCommitProgress(session, {
-                    subPhase: "downloading_zip",
-                    statusMessage: total > 0
-                        ? `Downloading archive… ${Math.round((received / total) * 100)}%`
-                        : "Downloading archive from cloud storage…",
-                    bytesCompleted: received,
-                    bytesTotal: total,
-                    currentFile: zipRel
+                        logger.info(`GCS zip commit: uploading ${extractedCount} files to ${destPath}`);
+
+                        uploadFolderToGcs(extractDir, destPath, (upErr, stats) => {
+                            if (upErr) return cb(upErr);
+                            GCS.deleteObjects([zipObjectPath], delErr => {
+                                if (delErr) {
+                                    logger.warn(`GCS zip cleanup failed for ${zipObjectPath}: ${delErr.message}`);
+                                    return cb(new Error(`Archive extracted but could not remove .zip from project folder: ${delErr.message}`));
+                                }
+                                cb(null, stats);
+                            });
+                        }, null, onFileDone);
+                    });
+                }, (received, total) => {
+                    patchCommitProgress(session, {
+                        subPhase: "downloading_zip",
+                        statusMessage: total > 0
+                            ? `Downloading archive… ${Math.round((received / total) * 100)}%`
+                            : "Downloading archive from cloud storage…",
+                        bytesCompleted: received,
+                        bytesTotal: total,
+                        currentFile: zipRel
+                    });
                 });
             });
         });

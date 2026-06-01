@@ -2254,35 +2254,26 @@ $(function() {
     }
 
     function ndmGcsApplyStatus(st) {
-        var hint = document.getElementById("ndmGcsUploadHint");
         var view = document.getElementById("ndmViewUploads");
         var nameEl = document.getElementById("gcsProjectName");
         var refreshBtn = document.getElementById("gcsRefreshProjects");
         ndmGcsEnabled = !!(st && st.enabled);
         ndmGcsDirectUpload = !!(st && st.directUpload);
-        if (hint) {
-            if (!ndmGcsEnabled) {
-                hint.textContent = (st && st.reason) || "GCS uploads are not configured on this server.";
-            } else {
-                hint.textContent = "Upload processed outputs to cloud storage for your projects.";
-            }
-        }
         if (view) view.setAttribute("aria-disabled", ndmGcsEnabled ? "false" : "true");
         if (nameEl) {
             nameEl.disabled = false;
             nameEl.placeholder = ndmGcsEnabled
                 ? "Search or type project title…"
-                : "Connect GCS to search existing projects (see note below)";
+                : "Cloud storage unavailable on this server";
         }
         if (refreshBtn) refreshBtn.disabled = !ndmGcsEnabled;
         if (!ndmGcsEnabled) {
             ndmGcsHideSuggest();
             ndmGcsClearProjectsCache();
-            if (hint) {
-                hint.innerHTML = ndmGcsSetupHintHtml(st);
-            }
-            ndmGcsSetProjectStatus("Project search requires GCS. Upload button stays disabled until connected.", "error");
+            ndmGcsSetError(ndmGcsSetupHintHtml(st));
+            ndmGcsSetProjectStatus("Uploads unavailable until cloud storage is connected on this server.", "error");
         } else {
+            ndmGcsSetError("");
             ndmGcsCacheKeyStr = ndmGcsProjectsCacheKey(st);
             ndmGcsLoadProjects(false);
         }

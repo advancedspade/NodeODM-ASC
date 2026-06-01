@@ -2334,6 +2334,8 @@ $(function() {
         var lastLogged = 0;
         var lastDone = 0;
         var uiFinished = false;
+        var lastStatusMsg = "";
+        var lastHeartbeat = 0;
 
         function finishUi(commit) {
             if (uiFinished) return;
@@ -2386,24 +2388,65 @@ $(function() {
                     }
                     var total = (p && p.filesTotal) || expectedTotal || 0;
                     var done = (p && p.filesCompleted) || 0;
+                    var subPhase = (p && p.subPhase) || "";
+                    var statusMsg = (p && p.statusMessage) || "";
                     if (done > lastDone) lastDone = done;
-                    var copying = total > 0 && done < total;
-                    var pct = copying ? 50 + Math.round((done / total) * 48) : 98;
-                    var elapsed = ndmGcsFormatElapsed((Date.now() - started) / 1000);
-                    var label = total > 0
-                        ? (copying
-                            ? "Step 2/2 — Verifying: " + done + " / " + total + " (" + elapsed + ")"
-                            : "Step 2/2 — Finishing up… (" + elapsed + ")")
-                        : "Step 2/2 — Verifying upload… (" + elapsed + ")";
-                    if (p && p.currentFile && copying) {
-                        var short = p.currentFile;
-                        if (short.length > 48) short = "…" + short.slice(-45);
-                        label += " — " + short;
+
+                    if (statusMsg && statusMsg !== lastStatusMsg) {
+                        ndmGcsLogLine(statusMsg, "ok");
+                        lastStatusMsg = statusMsg;
                     }
-                    ndmGcsSetProgress(pct, label, false);
-                    if (done > 0 && (done - lastLogged >= 10 || done === total)) {
-                        ndmGcsLogLine("Verified: " + done + "/" + total + (p.currentFile ? " — " + p.currentFile : ""), "ok");
+
+                    var elapsed = ndmGcsFormatElapsed((Date.now() - started) / 1000);
+                    var pct = 50;
+                    var label = "Step 2/2 — Processing… (" + elapsed + ")";
+                    var indeterminate = false;
+
+                    if (subPhase === "downloading_zip") {
+                        var bDone = (p && p.bytesCompleted) || 0;
+                        var bTotal = (p && p.bytesTotal) || 0;
+                        if (bTotal > 0) {
+                            pct = 50 + Math.round((bDone / bTotal) * 8);
+                            label = "Step 2/2 — Downloading archive: " + ndmGcsFormatBytes(bDone) +
+                                " / " + ndmGcsFormatBytes(bTotal) + " (" + elapsed + ")";
+                        } else {
+                            pct = 52;
+                            label = "Step 2/2 — Downloading archive… (" + elapsed + ")";
+                            indeterminate = true;
+                        }
+                    } else if (subPhase === "extracting") {
+                        pct = 58;
+                        label = "Step 2/2 — Extracting archive on server… (" + elapsed + ")";
+                        indeterminate = true;
+                    } else if (subPhase === "preparing") {
+                        pct = 51;
+                        label = "Step 2/2 — Preparing archive… (" + elapsed + ")";
+                        indeterminate = true;
+                    } else if (total > 0) {
+                        var uploading = done < total;
+                        pct = uploading ? 50 + Math.round((done / total) * 48) : 98;
+                        label = uploading
+                            ? "Step 2/2 — Uploading: " + done + " / " + total + " (" + elapsed + ")"
+                            : "Step 2/2 — Finishing up… (" + elapsed + ")";
+                        if (p && p.currentFile && uploading) {
+                            var short = p.currentFile;
+                            if (short.length > 48) short = "…" + short.slice(-45);
+                            label += " — " + short;
+                        }
+                    } else {
+                        label = "Step 2/2 — " + (statusMsg || "Working…") + " (" + elapsed + ")";
+                        indeterminate = true;
+                    }
+
+                    ndmGcsSetProgress(pct, label, indeterminate);
+
+                    if (total > 0 && done > 0 && (done - lastLogged >= 10 || done === total)) {
+                        ndmGcsLogLine("Uploaded: " + done + "/" + total +
+                            (p.currentFile ? " — " + p.currentFile : ""), "ok");
                         lastLogged = done;
+                    } else if (Date.now() - lastHeartbeat > 15000) {
+                        ndmGcsLogLine(label, "ok");
+                        lastHeartbeat = Date.now();
                     }
                     setTimeout(poll, 2000);
                 })
@@ -2991,11 +3034,13 @@ $(function() {
                 }
                 ndmGcsSetProgress(phasePct, label);
                 if (useDirect) {
-                    if (done === 1 || done === tot || done % 50 === 0) {
+                    if (zipItems.length === 1 && done === tot) {
+                        ndmGcsLogLine("Archive uploaded — step 2 will extract and upload folder contents", "ok");
+                    } else if (done === 1 || done === tot || done % 50 === 0) {
                         ndmGcsLogLine("Uploaded to project folder: " + done + " / " + tot, "ok");
                     }
                 } else if (res && res.extracted) {
-                    ndmGcsLogLine("ZIP extracted on server", "ok");
+                    ndmGcsLogLine("ZIP extracted on server (" + (res.stagedFiles || 0) + " files) — uploading contents in step 2…", "ok");
                 } else if (res && res.batchSize) {
                     if (done === tot || done % 50 === 0 || done < 50) {
                         ndmGcsLogLine("Server received " + done + " / " + tot + " files (batch upload)", "ok");
@@ -3018,11 +3063,11 @@ $(function() {
                 var n = (start && start.filesTotal != null) ? start.filesTotal : total;
                 var isZip = zipItems.length === 1;
                 ndmGcsSetProgress(50, isZip
-                    ? "Step 2/2 — Extracting archive and uploading contents…"
-                    : "Step 2/2 — Verifying: 0 / " + n);
+                    ? "Step 2/2 — Preparing archive…"
+                    : "Step 2/2 — Processing: 0 / " + n);
                 ndmGcsLogLine(isZip
-                    ? "Step 2/2 — extracting .zip and uploading contents to project folder…"
-                    : "Step 2/2 — verifying " + n + " file(s) in project folder…", "ok");
+                    ? "Step 2/2 — archive received; download, extract, and upload will run on the server…"
+                    : "Step 2/2 — processing " + n + " file(s)…", "ok");
                 return ndmGcsPollCommitProgress(uploadId, n, session);
             }).done(function() {
                 gcsUploadOk = true;

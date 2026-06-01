@@ -102,7 +102,7 @@ module.exports = {
             return cb(new Error("GCS is not initialized"));
         }
 
-        const PARALLEL_UPLOADS = config.gcsParallelUploads || 16;
+        const PARALLEL_UPLOADS = config.gcsParallelUploads || 32;
         const MAX_RETRIES = 5;
 
         let uploadList = [];
@@ -343,7 +343,7 @@ module.exports = {
         }
         const srcBase = String(srcPrefix || "").replace(/\/+$/, "") + "/";
         const destBase = String(destPrefix || "").replace(/\/+$/, "") + "/";
-        const PARALLEL = config.gcsParallelUploads || 16;
+        const PARALLEL = config.gcsParallelUploads || 32;
 
         module.exports.listFilesUnderPrefix(srcBase, (err, files) => {
             if (err) return cb(err);
@@ -402,13 +402,28 @@ module.exports = {
         attempt(0);
     },
 
-    downloadFile: function(objectPath, destPath, cb) {
+    downloadFile: function(objectPath, destPath, cb, onProgress) {
         if (!bucket) {
             return cb(new Error("GCS is not initialized"));
         }
         fs.mkdir(path.dirname(destPath), { recursive: true }, mkdirErr => {
             if (mkdirErr) return cb(mkdirErr);
-            bucket.file(objectPath).download({ destination: destPath }, cb);
+            const file = bucket.file(objectPath);
+            file.getMetadata((metaErr, metadata) => {
+                if (metaErr) return cb(metaErr);
+                const total = metadata && metadata.size ? parseInt(metadata.size, 10) : 0;
+                const writeStream = fs.createWriteStream(destPath);
+                let received = 0;
+                writeStream.on("error", cb);
+                writeStream.on("finish", () => cb());
+                file.createReadStream()
+                    .on("error", cb)
+                    .on("data", chunk => {
+                        received += chunk.length;
+                        if (onProgress) onProgress(received, total);
+                    })
+                    .pipe(writeStream);
+            });
         });
     },
 

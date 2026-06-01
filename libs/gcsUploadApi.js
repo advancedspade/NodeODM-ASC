@@ -417,6 +417,11 @@ function cleanupAbandonedDirectUpload(session, cb) {
     ], cb);
 }
 
+function patchCommitProgress(session, patch) {
+    if (!session || !session.progress) return;
+    Object.assign(session.progress, patch);
+}
+
 function commitDirectGcsUpload(session, uploadId, cb, onFileDone) {
     const destPath = session.gcsDestPath;
     const tmpDir = sessionTmpDir(uploadId);
@@ -440,15 +445,47 @@ function commitDirectGcsUpload(session, uploadId, cb, onFileDone) {
         const zipLocal = path.join(tmpDir, "upload.zip");
         const extractDir = localStaging;
 
+        patchCommitProgress(session, {
+            subPhase: "downloading_zip",
+            statusMessage: "Downloading archive from cloud storage…",
+            currentFile: zipRel,
+            bytesCompleted: 0,
+            bytesTotal: 0
+        });
+        logger.info(`GCS zip commit: downloading ${zipObjectPath}`);
+
         fs.mkdir(extractDir, { recursive: true }, mkdirErr => {
             if (mkdirErr) return cb(mkdirErr);
 
             GCS.downloadFile(zipObjectPath, zipLocal, dlErr => {
                 if (dlErr) return cb(dlErr);
 
+                patchCommitProgress(session, {
+                    subPhase: "extracting",
+                    statusMessage: "Extracting archive on server…",
+                    currentFile: zipRel,
+                    bytesCompleted: 0,
+                    bytesTotal: 0
+                });
+                logger.info(`GCS zip commit: extracting ${zipLocal}`);
+
                 ziputils.unzip(zipLocal, extractDir, unzipErr => {
                     rimraf(zipLocal, () => {});
                     if (unzipErr) return cb(unzipErr);
+
+                    const extractedCount = countFilesUnder(extractDir);
+                    if (extractedCount === 0) {
+                        return cb(new Error("Archive extracted but contained no files."));
+                    }
+
+                    patchCommitProgress(session, {
+                        subPhase: "uploading",
+                        statusMessage: `Uploading ${extractedCount} extracted file(s) to project folder…`,
+                        filesTotal: extractedCount,
+                        filesCompleted: 0,
+                        currentFile: ""
+                    });
+                    logger.info(`GCS zip commit: uploading ${extractedCount} files to ${destPath}`);
 
                     uploadFolderToGcs(extractDir, destPath, (upErr, stats) => {
                         if (upErr) return cb(upErr);
@@ -460,6 +497,16 @@ function commitDirectGcsUpload(session, uploadId, cb, onFileDone) {
                             cb(null, stats);
                         });
                     }, null, onFileDone);
+                });
+            }, (received, total) => {
+                patchCommitProgress(session, {
+                    subPhase: "downloading_zip",
+                    statusMessage: total > 0
+                        ? `Downloading archive… ${Math.round((received / total) * 100)}%`
+                        : "Downloading archive from cloud storage…",
+                    bytesCompleted: received,
+                    bytesTotal: total,
+                    currentFile: zipRel
                 });
             });
         });
@@ -493,15 +540,34 @@ function commitFromGcsStaging(session, uploadId, cb, onFileDone) {
             const zipLocal = path.join(tmpDir, "upload.zip");
             const extractDir = localStaging;
 
+            patchCommitProgress(session, {
+                subPhase: "downloading_zip",
+                statusMessage: "Downloading archive from staging…",
+                currentFile: path.basename(zipObject.name)
+            });
+
             fs.mkdir(extractDir, { recursive: true }, mkdirErr => {
                 if (mkdirErr) return cb(mkdirErr);
 
                 GCS.downloadFile(zipObject.name, zipLocal, dlErr => {
                     if (dlErr) return cb(dlErr);
 
+                    patchCommitProgress(session, {
+                        subPhase: "extracting",
+                        statusMessage: "Extracting archive on server…"
+                    });
+
                     ziputils.unzip(zipLocal, extractDir, unzipErr => {
                         rimraf(zipLocal, () => {});
                         if (unzipErr) return cb(unzipErr);
+
+                        const extractedCount = countFilesUnder(extractDir);
+                        patchCommitProgress(session, {
+                            subPhase: "uploading",
+                            statusMessage: `Uploading ${extractedCount} extracted file(s)…`,
+                            filesTotal: extractedCount,
+                            filesCompleted: 0
+                        });
 
                         uploadFolderToGcs(extractDir, destPath, (upErr, stats) => {
                             if (upErr) return cb(upErr);
@@ -512,6 +578,15 @@ function commitFromGcsStaging(session, uploadId, cb, onFileDone) {
                                 cb(null, stats);
                             });
                         }, null, onFileDone);
+                    });
+                }, (received, total) => {
+                    patchCommitProgress(session, {
+                        subPhase: "downloading_zip",
+                        statusMessage: total > 0
+                            ? `Downloading archive… ${Math.round((received / total) * 100)}%`
+                            : "Downloading archive from staging…",
+                        bytesCompleted: received,
+                        bytesTotal: total
                     });
                 });
             });
@@ -564,22 +639,14 @@ function handleFile(req, res) {
         if (mkdirErr) return finish(mkdirErr);
 
         if (isZip) {
-            const extractDir = path.join(stagingDir, sanitizeRelativePath(
-                path.basename(originalName, path.extname(originalName)),
-                "extracted"
-            ));
-            fs.mkdir(extractDir, { recursive: true }, err => {
-                if (err) return finish(err);
-
-                ziputils.unzip(incomingPath, extractDir, unzipErr => {
-                    if (unzipErr) return finish(unzipErr);
-                    session.stagedFileCount = countFilesUnder(stagingDir);
-                    session.localExtracted = true;
-                    finish(null, {
-                        relativePath: path.relative(stagingDir, extractDir).replace(/\\/g, "/"),
-                        extracted: true,
-                        stagedFiles: session.stagedFileCount
-                    });
+            ziputils.unzip(incomingPath, stagingDir, unzipErr => {
+                if (unzipErr) return finish(unzipErr);
+                session.stagedFileCount = countFilesUnder(stagingDir);
+                session.localExtracted = true;
+                finish(null, {
+                    relativePath: "",
+                    extracted: true,
+                    stagedFiles: session.stagedFileCount
                 });
             });
         } else {
@@ -686,12 +753,19 @@ function handleCommit(req, res) {
         });
     }
 
-    const finishStart = (fileCount) => {
+    const finishStart = (fileCount, opts) => {
+        const zipCommit = !!(opts && opts.zipCommit);
         session.progress = {
             phase: "committing",
-            filesTotal: fileCount,
+            subPhase: zipCommit ? "preparing" : "uploading",
+            statusMessage: (opts && opts.statusMessage) ||
+                (zipCommit ? "Preparing archive…" : "Processing upload…"),
+            filesTotal: fileCount || 0,
             filesCompleted: 0,
+            bytesCompleted: 0,
+            bytesTotal: 0,
             currentFile: "",
+            zipCommit,
             done: false,
             startedAt: Date.now()
         };
@@ -737,6 +811,13 @@ function handleCommit(req, res) {
                 const localStaging = sessionStagingDir(uploadId);
                 const localCount = localStaging ? countFilesUnder(localStaging) : 0;
                 if (localCount > 0) {
+                    patchCommitProgress(session, {
+                        subPhase: "uploading",
+                        statusMessage: `Uploading ${localCount} extracted file(s) to project folder…`,
+                        filesTotal: localCount,
+                        filesCompleted: 0
+                    });
+                    logger.info(`GCS commit: uploading ${localCount} local staged files to ${session.gcsDestPath}`);
                     uploadFolderToGcs(localStaging, session.gcsDestPath, done, onFileDone);
                     return;
                 }
@@ -755,10 +836,18 @@ function handleCommit(req, res) {
     };
 
     if (session.directUpload) {
+        const relPaths = session.stagedRelativePaths ? Array.from(session.stagedRelativePaths) : [];
+        const zipOnly = relPaths.length === 1 && ZIP_EXT.test(relPaths[0]) && !session.localExtracted;
         const staged = session.stagedFileCount ||
             (session.stagedRelativePaths && session.stagedRelativePaths.size) || 0;
-        if (!staged) {
+        if (!staged && !zipOnly) {
             return res.json({ error: "No files staged for upload." });
+        }
+        if (zipOnly) {
+            return finishStart(0, {
+                zipCommit: true,
+                statusMessage: "Archive uploaded — preparing extraction…"
+            });
         }
         return finishStart(staged);
     }

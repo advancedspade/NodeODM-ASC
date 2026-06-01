@@ -30,6 +30,7 @@
       "Range",
       "ETag",
       "Last-Modified",
+      "Location",
       "x-goog-resumable"
     ],
     "maxAgeSeconds": 3600

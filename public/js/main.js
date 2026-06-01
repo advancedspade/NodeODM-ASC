@@ -2420,10 +2420,18 @@ $(function() {
         return def.promise();
     }
 
+    function ndmGcsFormatBytes(n) {
+        if (!n || n < 1024) return (n || 0) + " B";
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+        if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + " MB";
+        return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+    }
+
     function ndmGcsPutToGcs(uploadUrl, file, contentType, onUploadProgress) {
         var def = $.Deferred();
-        var total = file.size;
-        var chunkSize = 8 * 1024 * 1024;
+        var sessionUrl = uploadUrl;
+        var total = file.size || 0;
+        var chunkSize = 32 * 1024 * 1024;
         var ct = contentType || "application/octet-stream";
 
         function notifyProgress(loaded) {
@@ -2433,67 +2441,79 @@ $(function() {
         }
 
         function reject(msg) {
+            ndmGcsLogLine(msg, "err");
             if (def.state() === "pending") def.reject(msg);
         }
 
-        function resolve() {
+        function resolveDone() {
+            notifyProgress(total);
             if (def.state() === "pending") def.resolve();
         }
 
-        function putBytes(start, endInclusive, body, isFinal) {
+        function nextOffsetFrom308(xhr, endInclusive) {
+            var rangeHdr = xhr.getResponseHeader("Range");
+            if (rangeHdr) {
+                var m = rangeHdr.match(/bytes=0-(\d+)/);
+                if (m) return parseInt(m[1], 10) + 1;
+            }
+            return endInclusive + 1;
+        }
+
+        function putChunk(offset) {
+            if (offset >= total) {
+                resolveDone();
+                return;
+            }
+            var end = Math.min(offset + chunkSize, total) - 1;
+            var body = total === 0 ? new Blob([]) : file.slice(offset, end + 1);
             var xhr = new XMLHttpRequest();
-            xhr.open("PUT", uploadUrl);
+            xhr.open("PUT", sessionUrl);
             xhr.setRequestHeader("Content-Type", ct);
             if (total === 0) {
                 xhr.setRequestHeader("Content-Range", "bytes */0");
             } else {
-                xhr.setRequestHeader("Content-Range", "bytes " + start + "-" + endInclusive + "/" + total);
+                xhr.setRequestHeader("Content-Range", "bytes " + offset + "-" + end + "/" + total);
             }
             xhr.timeout = 0;
             if (xhr.upload && onUploadProgress) {
                 xhr.upload.addEventListener("progress", function(e) {
-                    if (e.lengthComputable) notifyProgress(start + e.loaded);
+                    if (e.lengthComputable) notifyProgress(offset + e.loaded);
                 });
             }
             xhr.onload = function() {
+                var loc = xhr.getResponseHeader("Location");
+                if (loc) sessionUrl = loc;
+
                 if (xhr.status === 200 || xhr.status === 201) {
-                    notifyProgress(total);
-                    resolve();
+                    resolveDone();
                     return;
                 }
-                if (xhr.status === 308 && !isFinal) {
-                    var next = endInclusive + 1;
-                    var rangeHdr = xhr.getResponseHeader("Range");
-                    if (rangeHdr) {
-                        var m = rangeHdr.match(/bytes=0-(\d+)/);
-                        if (m) next = parseInt(m[1], 10) + 1;
+                if (xhr.status === 308) {
+                    var next = nextOffsetFrom308(xhr, end);
+                    if (next >= total) {
+                        resolveDone();
+                        return;
                     }
-                    uploadFromOffset(next);
+                    if (next <= offset) {
+                        reject("GCS upload stalled (HTTP 308 at byte " + offset + " of " + total + ")");
+                        return;
+                    }
+                    notifyProgress(next);
+                    putChunk(next);
                     return;
                 }
-                reject("GCS upload failed (HTTP " + xhr.status + ")");
+                reject("GCS upload failed (HTTP " + xhr.status + " at byte " + offset + " of " + total + ")");
             };
-            xhr.onerror = function() { reject("GCS upload network error"); };
-            xhr.ontimeout = function() { reject("GCS upload timed out"); };
+            xhr.onerror = function() {
+                reject("GCS upload network error at byte " + offset + " of " + total);
+            };
+            xhr.ontimeout = function() {
+                reject("GCS upload timed out at byte " + offset + " of " + total);
+            };
             xhr.send(body);
         }
 
-        function uploadFromOffset(offset) {
-            if (total === 0) {
-                putBytes(0, 0, new Blob([]), true);
-                return;
-            }
-            if (offset >= total) {
-                notifyProgress(total);
-                resolve();
-                return;
-            }
-            var end = Math.min(offset + chunkSize, total) - 1;
-            var isFinal = end >= total - 1;
-            putBytes(offset, end, file.slice(offset, end + 1), isFinal);
-        }
-
-        uploadFromOffset(0);
+        putChunk(0);
         return def.promise();
     }
 
@@ -2517,6 +2537,8 @@ $(function() {
                 return;
             }
             var putType = (sig && sig.contentType) || contentType;
+            ndmGcsLogLine("Uploading to cloud: " + (rel.length > 64 ? "…" + rel.slice(-61) : rel) +
+                " (" + ndmGcsFormatBytes(item.file.size) + ")", "ok");
             ndmGcsPutToGcs(sig.signedUrl, item.file, putType, onUploadProgress).done(function() {
                 $.ajax($.extend({
                     url: ndmApi("/gcs/upload/" + uploadId + "/complete") + ndmTokenQs(),
@@ -2583,14 +2605,20 @@ $(function() {
             inFlight[key] = {
                 item: item,
                 startedAt: Date.now(),
-                lastByteAt: Date.now()
+                lastByteAt: Date.now(),
+                bytesLoaded: 0,
+                bytesTotal: item.file.size || 0
             };
             notifyProgress(null);
 
             var uploadFn = ndmGcsShouldUploadZipViaServer(item) ? ndmGcsUploadOneFile : ndmGcsDirectUploadOne;
-            uploadFn(uploadId, item, 0, function() {
-                if (inFlight[key]) inFlight[key].lastByteAt = Date.now();
+            uploadFn(uploadId, item, 0, function(e) {
+                if (inFlight[key]) {
+                    inFlight[key].lastByteAt = Date.now();
+                    if (e && e.lengthComputable) inFlight[key].bytesLoaded = e.loaded;
+                }
                 lastProgressAt = Date.now();
+                notifyProgress(null);
             }).done(function(res) {
                 delete inFlight[key];
                 uploaded++;
@@ -2932,7 +2960,23 @@ $(function() {
             var gcsUploadOk = false;
 
             ndmGcsStageFiles(uploadId, ndmGcsFiles, function(done, tot, item, res, inFlight) {
-                var phasePct = tot > 0 ? Math.round((done / tot) * 45) : 0;
+                var phasePct = 0;
+                if (tot > 0) {
+                    var completedShare = (done / tot) * 45;
+                    var inFlightShare = 0;
+                    if (useDirect && inFlight && inFlight.length) {
+                        var sumLoaded = 0;
+                        var sumTotal = 0;
+                        inFlight.forEach(function(flight) {
+                            sumLoaded += flight.bytesLoaded || 0;
+                            sumTotal += (flight.bytesTotal || (flight.item && flight.item.file && flight.item.file.size) || 0);
+                        });
+                        if (sumTotal > 0) {
+                            inFlightShare = (sumLoaded / sumTotal) * (45 / tot);
+                        }
+                    }
+                    phasePct = Math.min(45, Math.round(completedShare + inFlightShare));
+                }
                 var label = useDirect
                     ? "Step 1/2 — Uploading: " + done + " / " + tot
                     : "Step 1/2 — Sending to server: " + done + " / " + tot;
@@ -2941,6 +2985,9 @@ $(function() {
                     var name = flight.item.relativePath || flight.item.file.name || "";
                     if (name.length > 48) name = "…" + name.slice(-45);
                     label += " — " + name;
+                    if (flight.bytesTotal > 0 && flight.bytesLoaded >= 0) {
+                        label += " (" + ndmGcsFormatBytes(flight.bytesLoaded) + " / " + ndmGcsFormatBytes(flight.bytesTotal) + ")";
+                    }
                 }
                 ndmGcsSetProgress(phasePct, label);
                 if (useDirect) {

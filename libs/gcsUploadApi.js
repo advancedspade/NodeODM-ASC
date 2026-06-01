@@ -574,6 +574,7 @@ function handleFile(req, res) {
                 ziputils.unzip(incomingPath, extractDir, unzipErr => {
                     if (unzipErr) return finish(unzipErr);
                     session.stagedFileCount = countFilesUnder(stagingDir);
+                    session.localExtracted = true;
                     finish(null, {
                         relativePath: path.relative(stagingDir, extractDir).replace(/\\/g, "/"),
                         extracted: true,
@@ -733,6 +734,12 @@ function handleCommit(req, res) {
             };
 
             if (session.directUpload) {
+                const localStaging = sessionStagingDir(uploadId);
+                const localCount = localStaging ? countFilesUnder(localStaging) : 0;
+                if (localCount > 0) {
+                    uploadFolderToGcs(localStaging, session.gcsDestPath, done, onFileDone);
+                    return;
+                }
                 GCS.listFilesUnderPrefix(session.gcsStagingPath, (listErr, stagingObjects) => {
                     if (listErr) return done(listErr);
                     if (stagingObjects && stagingObjects.length) {

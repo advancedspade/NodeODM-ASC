@@ -2420,24 +2420,80 @@ $(function() {
         return def.promise();
     }
 
-    function ndmGcsPutToGcs(signedUrl, file, contentType, onUploadProgress) {
+    function ndmGcsPutToGcs(uploadUrl, file, contentType, onUploadProgress) {
         var def = $.Deferred();
-        var xhr = new XMLHttpRequest();
-        xhr.open("PUT", signedUrl);
-        xhr.setRequestHeader("Content-Type", contentType || "application/octet-stream");
-        xhr.timeout = 0;
-        if (xhr.upload && onUploadProgress) {
-            xhr.upload.addEventListener("progress", function(e) {
-                if (e.lengthComputable && e.loaded > 0) onUploadProgress(e);
-            });
+        var total = file.size;
+        var chunkSize = 8 * 1024 * 1024;
+        var ct = contentType || "application/octet-stream";
+
+        function notifyProgress(loaded) {
+            if (onUploadProgress) {
+                onUploadProgress({ lengthComputable: true, loaded: loaded, total: total });
+            }
         }
-        xhr.onload = function() {
-            if (xhr.status >= 200 && xhr.status < 300) def.resolve();
-            else def.reject("GCS upload failed (HTTP " + xhr.status + ")");
-        };
-        xhr.onerror = function() { def.reject("GCS upload network error"); };
-        xhr.ontimeout = function() { def.reject("GCS upload timed out"); };
-        xhr.send(file);
+
+        function reject(msg) {
+            if (def.state() === "pending") def.reject(msg);
+        }
+
+        function resolve() {
+            if (def.state() === "pending") def.resolve();
+        }
+
+        function putBytes(start, endInclusive, body, isFinal) {
+            var xhr = new XMLHttpRequest();
+            xhr.open("PUT", uploadUrl);
+            xhr.setRequestHeader("Content-Type", ct);
+            if (total === 0) {
+                xhr.setRequestHeader("Content-Range", "bytes */0");
+            } else {
+                xhr.setRequestHeader("Content-Range", "bytes " + start + "-" + endInclusive + "/" + total);
+            }
+            xhr.timeout = 0;
+            if (xhr.upload && onUploadProgress) {
+                xhr.upload.addEventListener("progress", function(e) {
+                    if (e.lengthComputable) notifyProgress(start + e.loaded);
+                });
+            }
+            xhr.onload = function() {
+                if (xhr.status === 200 || xhr.status === 201) {
+                    notifyProgress(total);
+                    resolve();
+                    return;
+                }
+                if (xhr.status === 308 && !isFinal) {
+                    var next = endInclusive + 1;
+                    var rangeHdr = xhr.getResponseHeader("Range");
+                    if (rangeHdr) {
+                        var m = rangeHdr.match(/bytes=0-(\d+)/);
+                        if (m) next = parseInt(m[1], 10) + 1;
+                    }
+                    uploadFromOffset(next);
+                    return;
+                }
+                reject("GCS upload failed (HTTP " + xhr.status + ")");
+            };
+            xhr.onerror = function() { reject("GCS upload network error"); };
+            xhr.ontimeout = function() { reject("GCS upload timed out"); };
+            xhr.send(body);
+        }
+
+        function uploadFromOffset(offset) {
+            if (total === 0) {
+                putBytes(0, 0, new Blob([]), true);
+                return;
+            }
+            if (offset >= total) {
+                notifyProgress(total);
+                resolve();
+                return;
+            }
+            var end = Math.min(offset + chunkSize, total) - 1;
+            var isFinal = end >= total - 1;
+            putBytes(offset, end, file.slice(offset, end + 1), isFinal);
+        }
+
+        uploadFromOffset(0);
         return def.promise();
     }
 
@@ -2445,7 +2501,9 @@ $(function() {
         attempt = attempt || 0;
         var def = $.Deferred();
         var rel = item.relativePath || item.file.name;
-        var contentType = item.file.type || "application/octet-stream";
+        var contentType = ndmGcsIsZipItem(item)
+            ? "application/zip"
+            : (item.file.type || "application/octet-stream");
 
         $.ajax($.extend({
             url: ndmApi("/gcs/upload/" + uploadId + "/sign") + ndmTokenQs(),
@@ -2490,6 +2548,12 @@ $(function() {
         return def.promise();
     }
 
+    function ndmGcsShouldUploadZipViaServer(item) {
+        if (!ndmGcsIsZipItem(item)) return false;
+        if (ndmGcsIsRemoteHost() && item.file.size > 90 * 1024 * 1024) return false;
+        return true;
+    }
+
     function ndmGcsStageFilesDirect(uploadId, items, onProgress) {
         var def = $.Deferred();
         var totalFiles = items.length;
@@ -2523,7 +2587,8 @@ $(function() {
             };
             notifyProgress(null);
 
-            ndmGcsDirectUploadOne(uploadId, item, 0, function() {
+            var uploadFn = ndmGcsShouldUploadZipViaServer(item) ? ndmGcsUploadOneFile : ndmGcsDirectUploadOne;
+            uploadFn(uploadId, item, 0, function() {
                 if (inFlight[key]) inFlight[key].lastByteAt = Date.now();
                 lastProgressAt = Date.now();
             }).done(function(res) {
@@ -2819,6 +2884,15 @@ $(function() {
             return;
         }
         var fileCount = ndmGcsFiles.length;
+        var zipItems = ndmGcsFiles.filter(ndmGcsIsZipItem);
+        if (zipItems.length > 1) {
+            ndmGcsSetError("Upload one .zip file at a time.");
+            return;
+        }
+        if (zipItems.length === 1 && fileCount > 1) {
+            ndmGcsSetError("When uploading a .zip, add only that archive — not other files at the same time.");
+            return;
+        }
         if (fileCount > NDM_GCS_MAX_INDIVIDUAL_FILES) {
             ndmGcsSetError(
                 "This selection has " + fileCount + " files. Uploading each file separately is not reliable at this scale " +
@@ -2895,8 +2969,13 @@ $(function() {
                     return $.Deferred().reject(start.error).promise();
                 }
                 var n = (start && start.filesTotal != null) ? start.filesTotal : total;
-                ndmGcsSetProgress(50, "Step 2/2 — Verifying: 0 / " + n);
-                ndmGcsLogLine("Step 2/2 — verifying " + n + " file(s) in project folder…", "ok");
+                var isZip = zipItems.length === 1;
+                ndmGcsSetProgress(50, isZip
+                    ? "Step 2/2 — Extracting archive and uploading contents…"
+                    : "Step 2/2 — Verifying: 0 / " + n);
+                ndmGcsLogLine(isZip
+                    ? "Step 2/2 — extracting .zip and uploading contents to project folder…"
+                    : "Step 2/2 — verifying " + n + " file(s) in project folder…", "ok");
                 return ndmGcsPollCommitProgress(uploadId, n, session);
             }).done(function() {
                 gcsUploadOk = true;

@@ -2201,6 +2201,38 @@ fieldset.preset-fieldset legend {
     word-break: break-all;
 }
 
+.ndm-gcs-elapsed {
+    margin: 0.5rem 0 0;
+    font-size: 0.875rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.ndm-gcs-live-status {
+    margin: 0.35rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--text);
+    min-height: 1.25em;
+}
+
+.ndm-gcs-live-status::before {
+    content: "● ";
+    color: var(--accent, #2a7ae4);
+    animation: ndm-gcs-live-pulse 1.2s ease-in-out infinite;
+}
+
+.ndm-gcs-progress--done .ndm-gcs-live-status::before {
+    content: "✓ ";
+    color: #2e7d32;
+    animation: none;
+}
+
+@keyframes ndm-gcs-live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+}
+
 .ndm-gcs-progress {
     margin-top: 1.25rem;
 }

@@ -1831,6 +1831,8 @@ $(function() {
     var NDM_GCS_STALL_MS = 5 * 60 * 1000;
     var NDM_GCS_FILE_LIST_PREVIEW = 30;
     var ndmGcsDirectUpload = false;
+    var ndmGcsUploadStartedAt = 0;
+    var ndmGcsUploadElapsedTimer = null;
 
     function ndmGcsIsRemoteHost() {
         if (typeof location === "undefined") return true;
@@ -2303,22 +2305,32 @@ $(function() {
         log.scrollTop = log.scrollHeight;
     }
 
-    function ndmGcsSetProgress(pct, label, indeterminate) {
+    function ndmGcsSetLiveStatus(text) {
+        var el = document.getElementById("gcsUploadLiveStatus");
+        if (el) el.textContent = text || "";
+    }
+
+    function ndmGcsSetProgress(pct, label, indeterminate, indeterminateAt) {
         var wrap = document.getElementById("gcsUploadProgress");
         var bar = document.getElementById("gcsUploadProgressBar");
         var lbl = document.getElementById("gcsUploadProgressLabel");
         if (wrap) {
             wrap.hidden = false;
             wrap.classList.toggle("ndm-gcs-progress--busy", !!indeterminate);
+            wrap.classList.toggle("ndm-gcs-progress--done", !indeterminate && pct >= 100);
         }
         if (bar) {
             bar.classList.toggle("ndm-gcs-progress__bar--indeterminate", !!indeterminate);
             if (!indeterminate) {
-                bar.style.width = pct + "%";
+                bar.style.marginLeft = "0";
+                bar.style.width = Math.min(100, Math.max(0, pct)) + "%";
                 bar.textContent = Math.round(pct) + "%";
             } else {
-                bar.style.width = "35%";
-                bar.textContent = "…";
+                var span = 12;
+                var anchor = typeof indeterminateAt === "number" ? indeterminateAt : pct;
+                bar.style.width = span + "%";
+                bar.style.marginLeft = Math.max(0, Math.min(100 - span, anchor - span / 2)) + "%";
+                bar.textContent = "···";
             }
         }
         if (lbl) lbl.textContent = label || "";
@@ -2326,27 +2338,97 @@ $(function() {
 
     function ndmGcsFormatElapsed(seconds) {
         var s = Math.max(0, Math.floor(seconds || 0));
-        var mins = Math.floor(s / 60);
+        var hrs = Math.floor(s / 3600);
+        var mins = Math.floor((s % 3600) / 60);
         var rem = s % 60;
+        if (hrs > 0) return hrs + "h " + mins + "m " + rem + "s";
         if (mins > 0) return mins + "m " + rem + "s";
         return rem + "s";
     }
 
+    function ndmGcsGetUploadElapsed() {
+        if (!ndmGcsUploadStartedAt) return "0s";
+        return ndmGcsFormatElapsed((Date.now() - ndmGcsUploadStartedAt) / 1000);
+    }
+
+    function ndmGcsUpdateElapsedDisplay(finalLabel) {
+        var el = document.getElementById("gcsUploadElapsed");
+        if (!el) return;
+        if (finalLabel) {
+            el.textContent = finalLabel;
+            return;
+        }
+        if (!ndmGcsUploadStartedAt) {
+            el.textContent = "";
+            return;
+        }
+        el.textContent = "Elapsed: " + ndmGcsGetUploadElapsed();
+    }
+
+    function ndmGcsStartUploadTimer() {
+        ndmGcsStopUploadTimer();
+        ndmGcsUploadStartedAt = Date.now();
+        var elapsedEl = document.getElementById("gcsUploadElapsed");
+        if (elapsedEl) elapsedEl.hidden = false;
+        ndmGcsUpdateElapsedDisplay();
+        ndmGcsUploadElapsedTimer = setInterval(ndmGcsUpdateElapsedDisplay, 1000);
+    }
+
+    function ndmGcsStopUploadTimer(finalLabel) {
+        if (ndmGcsUploadElapsedTimer) {
+            clearInterval(ndmGcsUploadElapsedTimer);
+            ndmGcsUploadElapsedTimer = null;
+        }
+        if (finalLabel) {
+            ndmGcsUpdateElapsedDisplay(finalLabel);
+        } else if (!ndmGcsUploadStartedAt) {
+            var el = document.getElementById("gcsUploadElapsed");
+            if (el) {
+                el.textContent = "";
+                el.hidden = true;
+            }
+        }
+        ndmGcsUploadStartedAt = 0;
+    }
+
     function ndmGcsPollCommitProgress(uploadId, expectedTotal, sessionForComplete) {
         var def = $.Deferred();
-        var started = Date.now();
         var lastLogged = 0;
         var lastDone = 0;
         var uiFinished = false;
         var lastStatusMsg = "";
-        var lastHeartbeat = 0;
+        var pollCount = 0;
+
+        /** Step 2 spans 40–100% on the overall bar (step 1 uses 0–40%). */
+        function step2OverallPct(subPhase, p, done, total) {
+            if (subPhase === "preparing") return { pct: 41, indeterminate: true };
+            if (subPhase === "downloading_zip") {
+                var bDone = (p && p.bytesCompleted) || 0;
+                var bTotal = (p && p.bytesTotal) || 0;
+                if (bTotal > 0) {
+                    return { pct: 40 + Math.round((bDone / bTotal) * 15), indeterminate: false };
+                }
+                return { pct: 42, indeterminate: true };
+            }
+            if (subPhase === "extracting") {
+                return { pct: 58, indeterminate: true };
+            }
+            if (total > 0) {
+                if (done >= total) return { pct: 99, indeterminate: false };
+                return { pct: 62 + Math.round((done / total) * 36), indeterminate: false };
+            }
+            return { pct: 45, indeterminate: true };
+        }
 
         function finishUi(commit) {
             if (uiFinished) return;
             uiFinished = true;
             var n = (commit && commit.filesUploaded) || expectedTotal || lastDone || 0;
             var projectLabel = sessionForComplete && (sessionForComplete.projectName || sessionForComplete.sanitizedName);
-            ndmGcsSetProgress(100, "Done — " + n + " file(s) uploaded", false);
+            var totalTime = ndmGcsGetUploadElapsed();
+            ndmGcsStopUploadTimer("Total time: " + totalTime);
+            ndmGcsSetProgress(100, "Done — " + n + " file(s) uploaded (" + totalTime + ")", false);
+            ndmGcsSetLiveStatus("Complete — " + n + " file(s) uploaded · " + totalTime);
             ndmGcsLogLine("Upload complete.", "ok");
             ndmGcsLogLine(projectLabel
                 ? "Complete: " + n + " file(s) added to project \"" + projectLabel + "\""
@@ -2384,8 +2466,9 @@ $(function() {
                 dataType: "json",
                 timeout: 60000
             }, ndmGcsAjaxOpts)).done(function(p) {
+                    pollCount++;
                     if (!p || typeof p !== "object") {
-                        ndmGcsLogLine("Waiting for server progress update…", "ok");
+                        ndmGcsSetLiveStatus("Waiting for server (poll #" + pollCount + ")…");
                         setTimeout(poll, 2000);
                         return;
                     }
@@ -2412,56 +2495,57 @@ $(function() {
                         lastStatusMsg = statusMsg;
                     }
 
-                    var elapsed = ndmGcsFormatElapsed((Date.now() - started) / 1000);
-                    var pct = 50;
+                    var elapsed = ndmGcsGetUploadElapsed();
+                    var prog = step2OverallPct(subPhase, p, done, total);
+                    var pct = prog.pct;
+                    var indeterminate = prog.indeterminate;
                     var label = "Step 2/2 — Processing… (" + elapsed + ")";
-                    var indeterminate = false;
+                    var live = "Working · poll #" + pollCount + " · " + elapsed + " elapsed";
 
                     if (subPhase === "downloading_zip") {
                         var bDone = (p && p.bytesCompleted) || 0;
                         var bTotal = (p && p.bytesTotal) || 0;
                         if (bTotal > 0) {
-                            pct = 50 + Math.round((bDone / bTotal) * 8);
-                            label = "Step 2/2 — Downloading archive: " + ndmGcsFormatBytes(bDone) +
-                                " / " + ndmGcsFormatBytes(bTotal) + " (" + elapsed + ")";
+                            var dlPct = Math.round((bDone / bTotal) * 100);
+                            label = "Step 2/2 — Downloading archive: " + dlPct + "% (" + elapsed + ")";
+                            live = "Downloading archive · " + ndmGcsFormatBytes(bDone) + " / " +
+                                ndmGcsFormatBytes(bTotal) + " · " + elapsed;
                         } else {
-                            pct = 52;
-                            label = "Step 2/2 — Downloading archive… (" + elapsed + ")";
-                            indeterminate = true;
+                            label = "Step 2/2 — Downloading archive from cloud… (" + elapsed + ")";
+                            live = "Downloading archive from cloud storage · " + elapsed;
                         }
                     } else if (subPhase === "extracting") {
-                        pct = 58;
                         label = "Step 2/2 — Extracting archive on server… (" + elapsed + ")";
-                        indeterminate = true;
+                        live = "Extracting archive on server (this can take several minutes) · " + elapsed;
                     } else if (subPhase === "preparing") {
-                        pct = 51;
                         label = "Step 2/2 — Preparing archive… (" + elapsed + ")";
-                        indeterminate = true;
+                        live = "Preparing archive on server · " + elapsed;
                     } else if (total > 0) {
                         var uploading = done < total;
-                        pct = uploading ? 50 + Math.round((done / total) * 48) : 98;
                         label = uploading
-                            ? "Step 2/2 — Uploading: " + done + " / " + total + " (" + elapsed + ")"
+                            ? "Step 2/2 — Uploading extracted files: " + done + " / " + total + " (" + elapsed + ")"
                             : "Step 2/2 — Finishing up… (" + elapsed + ")";
+                        live = uploading
+                            ? "Uploading extracted files · " + done + " / " + total + " · " + elapsed
+                            : "Finishing · " + elapsed;
                         if (p && p.currentFile && uploading) {
                             var short = p.currentFile;
                             if (short.length > 48) short = "…" + short.slice(-45);
                             label += " — " + short;
+                            live += " · " + short;
                         }
-                    } else {
-                        label = "Step 2/2 — " + (statusMsg || "Working…") + " (" + elapsed + ")";
-                        indeterminate = true;
+                    } else if (statusMsg) {
+                        label = "Step 2/2 — " + statusMsg + " (" + elapsed + ")";
+                        live = statusMsg + " · " + elapsed;
                     }
 
-                    ndmGcsSetProgress(pct, label, indeterminate);
+                    ndmGcsSetProgress(pct, label, indeterminate, pct);
+                    ndmGcsSetLiveStatus(live);
 
                     if (total > 0 && done > 0 && (done - lastLogged >= 10 || done === total)) {
                         ndmGcsLogLine("Uploaded: " + done + "/" + total +
                             (p.currentFile ? " — " + p.currentFile : ""), "ok");
                         lastLogged = done;
-                    } else if (Date.now() - lastHeartbeat > 15000) {
-                        ndmGcsLogLine(label, "ok");
-                        lastHeartbeat = Date.now();
                     }
                     setTimeout(poll, 2000);
                 })
@@ -3000,7 +3084,9 @@ $(function() {
 
         var log = document.getElementById("gcsUploadLog");
         if (log) log.innerHTML = "";
+        ndmGcsStartUploadTimer();
         ndmGcsSetProgress(0, "Starting upload session…");
+        ndmGcsSetLiveStatus("Starting upload session…");
 
         $.ajax($.extend({
             url: ndmApi("/gcs/upload/init") + ndmTokenQs(),
@@ -3009,6 +3095,7 @@ $(function() {
             data: JSON.stringify({ projectName: projectName })
         }, ndmGcsAjaxOpts)).done(function(session) {
             if (session.error) {
+                ndmGcsStopUploadTimer();
                 ndmGcsSetError(session.error);
                 if (startBtn) startBtn.disabled = false;
                 if (clearBtn) clearBtn.disabled = false;
@@ -3025,7 +3112,7 @@ $(function() {
             ndmGcsStageFiles(uploadId, ndmGcsFiles, function(done, tot, item, res, inFlight) {
                 var phasePct = 0;
                 if (tot > 0) {
-                    var completedShare = (done / tot) * 45;
+                    var completedShare = (done / tot) * 40;
                     var inFlightShare = 0;
                     if (useDirect && inFlight && inFlight.length) {
                         var sumLoaded = 0;
@@ -3035,16 +3122,18 @@ $(function() {
                             sumTotal += (flight.bytesTotal || (flight.item && flight.item.file && flight.item.file.size) || 0);
                         });
                         if (sumTotal > 0) {
-                            inFlightShare = (sumLoaded / sumTotal) * (45 / tot);
+                            inFlightShare = (sumLoaded / sumTotal) * (40 / tot);
                         }
                     }
-                    phasePct = Math.min(45, Math.round(completedShare + inFlightShare));
+                    phasePct = Math.min(40, Math.round(completedShare + inFlightShare));
                 }
                 var label = useDirect
                     ? (zipItems.length === 1 && tot === 1
                         ? "Step 1/2 — Uploading archive"
                         : "Step 1/2 — Uploading: " + done + " / " + tot)
                     : "Step 1/2 — Sending to server: " + done + " / " + tot;
+                var elapsed = ndmGcsGetUploadElapsed();
+                label += " (" + elapsed + ")";
                 if (inFlight && inFlight.length) {
                     var flight = inFlight[0];
                     var name = flight.item.relativePath || flight.item.file.name || "";
@@ -3055,6 +3144,17 @@ $(function() {
                     }
                 }
                 ndmGcsSetProgress(phasePct, label);
+                if (inFlight && inFlight.length) {
+                    var liveFlight = inFlight[0];
+                    if (liveFlight.bytesTotal > 0) {
+                        ndmGcsSetLiveStatus("Step 1 · uploading · " + ndmGcsFormatBytes(liveFlight.bytesLoaded) +
+                            " / " + ndmGcsFormatBytes(liveFlight.bytesTotal) + " · " + elapsed);
+                    } else {
+                        ndmGcsSetLiveStatus("Step 1 · " + done + " / " + tot + " file(s) · " + elapsed);
+                    }
+                } else {
+                    ndmGcsSetLiveStatus("Step 1 · " + done + " / " + tot + " file(s) · " + elapsed);
+                }
                 if (useDirect) {
                     if (zipItems.length === 1 && done === tot && tot > 0) {
                         ndmGcsLogLine("Archive uploaded — step 2 will extract and upload folder contents", "ok");
@@ -3071,11 +3171,13 @@ $(function() {
                     ndmGcsLogLine("Server received " + done + " / " + tot + " files", "ok");
                 }
             }, useDirect).done(function() {
-                ndmGcsSetProgress(48, useDirect
+                var elapsed = ndmGcsGetUploadElapsed();
+                ndmGcsSetProgress(40, useDirect
                     ? (zipItems.length === 1
-                        ? "Step 1/2 complete — archive received"
-                        : "Step 1/2 complete — verifying upload…")
-                    : "Step 1/2 complete — starting upload to Google Cloud…");
+                        ? "Step 1/2 complete — archive received (" + elapsed + ")"
+                        : "Step 1/2 complete — starting step 2… (" + elapsed + ")")
+                    : "Step 1/2 complete — starting upload to Google Cloud… (" + elapsed + ")");
+                ndmGcsSetLiveStatus("Step 1 complete — starting step 2 on server… · " + elapsed);
                 ndmGcsLogLine(useDirect
                     ? (zipItems.length === 1
                         ? "Step 1/2 complete — archive in cloud, starting extraction…"
@@ -3088,9 +3190,13 @@ $(function() {
                 }
                 var n = (start && start.filesTotal != null) ? start.filesTotal : total;
                 var isZip = zipItems.length === 1;
-                ndmGcsSetProgress(50, isZip
-                    ? "Step 2/2 — Preparing archive…"
-                    : "Step 2/2 — Processing: 0 / " + n);
+                var elapsed = ndmGcsGetUploadElapsed();
+                ndmGcsSetProgress(41, isZip
+                    ? "Step 2/2 — Preparing archive… (" + elapsed + ")"
+                    : "Step 2/2 — Processing… (" + elapsed + ")", true, 41);
+                ndmGcsSetLiveStatus(isZip
+                    ? "Step 2 started — server will download, extract, and upload contents… · " + elapsed
+                    : "Step 2 started — processing on server… · " + elapsed);
                 ndmGcsLogLine(isZip
                     ? "Step 2/2 — archive received; download, extract, and upload will run on the server…"
                     : "Step 2/2 — processing " + n + " file(s)…", "ok");
@@ -3100,6 +3206,9 @@ $(function() {
             }).fail(function(err) {
                 if (err) ndmGcsSetError(String(err));
             }).always(function() {
+                if (!gcsUploadOk) {
+                    ndmGcsStopUploadTimer();
+                }
                 var wrap = document.getElementById("gcsUploadProgress");
                 if (wrap) wrap.classList.remove("ndm-gcs-progress--busy");
                 var bar = document.getElementById("gcsUploadProgressBar");
@@ -3118,6 +3227,7 @@ $(function() {
                 if (clearBtn) clearBtn.disabled = false;
             });
         }).fail(function(xhr, status) {
+            ndmGcsStopUploadTimer();
             ndmGcsSetError(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/init")));
             if (startBtn) startBtn.disabled = false;
             if (clearBtn) clearBtn.disabled = false;

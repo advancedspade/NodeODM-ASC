@@ -319,6 +319,16 @@ module.exports = {
         bucket.file(objectPath).exists((err, exists) => cb(err, !!exists));
     },
 
+    objectMetadata: function(objectPath, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        bucket.file(objectPath).getMetadata((err, metadata) => {
+            if (err) return cb(err);
+            cb(null, metadata);
+        });
+    },
+
     deleteObjects: function(objectPaths, cb) {
         if (!bucket) {
             return cb(new Error("GCS is not initialized"));

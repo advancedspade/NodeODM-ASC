@@ -346,24 +346,65 @@ function handleSign(req, res) {
     });
 }
 
+function verifyUploadedObject(session, relativePath, expectedBytes, cb) {
+    const rel = sanitizeRelativePath(relativePath);
+    const objectPath = gcsObjectPathForRelative(session, rel);
+    GCS.objectMetadata(objectPath, (err, metadata) => {
+        if (err) {
+            const code = err.code || (err.response && err.response.statusCode);
+            if (code === 404 || code === "404") {
+                return cb(new Error(`File not found in cloud storage after upload: ${rel}`));
+            }
+            return cb(err);
+        }
+        const size = metadata && metadata.size != null ? parseInt(metadata.size, 10) : 0;
+        const expected = parseInt(expectedBytes, 10) || 0;
+        if (expected > 0 && size !== expected) {
+            return cb(new Error(
+                `Upload incomplete for ${rel}: ${size} bytes in storage, expected ${expected}. ` +
+                "Retry the upload (do not refresh until step 1 finishes)."
+            ));
+        }
+        cb(null, { relativePath: rel, size });
+    });
+}
+
 function handleComplete(req, res) {
     const session = req.gcsUploadSession;
     const body = req.body || {};
     let paths = [];
+    let expectedByPath = {};
 
     if (Array.isArray(body.relativePaths) && body.relativePaths.length) {
         paths = body.relativePaths;
+        if (Array.isArray(body.expectedBytes) && body.expectedBytes.length === paths.length) {
+            paths.forEach((p, i) => { expectedByPath[p] = body.expectedBytes[i]; });
+        }
     } else if (body.relativePath) {
         paths = [body.relativePath];
+        if (body.expectedBytes != null) {
+            expectedByPath[body.relativePath] = body.expectedBytes;
+        }
     } else {
         return res.json({ error: "relativePath or relativePaths[] is required." });
     }
 
-    const staged = paths.map(p => markStaged(session, p));
-    res.json({
-        success: true,
-        stagedFiles: session.stagedFileCount,
-        relativePaths: staged
+    async.eachSeries(paths, (relPath, next) => {
+        verifyUploadedObject(session, relPath, expectedByPath[relPath], (verifyErr, info) => {
+            if (verifyErr) return next(verifyErr);
+            markStaged(session, info.relativePath || relPath);
+            next();
+        });
+    }, err => {
+        if (err) {
+            logger.warn(`GCS upload complete verification failed: ${err.message}`);
+            return res.json({ error: err.message });
+        }
+        res.json({
+            success: true,
+            stagedFiles: session.stagedFileCount,
+            relativePaths: paths.map(p => sanitizeRelativePath(p))
+        });
     });
 }
 
@@ -800,6 +841,10 @@ function handleCommit(req, res) {
                     session.progress.currentFile = "";
                 }
                 if (err) {
+                    if (session.progress) {
+                        session.progress.statusMessage = err.message;
+                        session.progress.subPhase = "error";
+                    }
                     session.commitResult = { error: err.message };
                     persistCommitStatus(uploadId, session.commitResult);
                 } else {
@@ -815,6 +860,12 @@ function handleCommit(req, res) {
             };
 
             if (session.directUpload) {
+                if (session.progress && session.progress.zipCommit) {
+                    logger.info(`GCS zip commit: starting for upload ${uploadId}`);
+                    commitDirectGcsUpload(session, uploadId, done, onFileDone);
+                    return;
+                }
+
                 const localStaging = sessionStagingDir(uploadId);
                 const localCount = localStaging ? countFilesUnder(localStaging) : 0;
                 if (localCount > 0) {

@@ -1381,7 +1381,11 @@ $(function() {
         var url = ndmApi("/task/" + self.uuid + "/output");
             $.get(url, { token: token })
                 .done(function(output) {
-                    localStorage.setItem(self.uuid + '_output', JSON.stringify(output));
+                    try {
+                        localStorage.setItem(self.uuid + '_output', JSON.stringify(output));
+                    } catch (e) {
+                        console.warn("Cannot cache output for " + self.uuid + ": " + e.message);
+                    }
                 })
                 .fail(function() {
                     console.warn("Cannot copy output for " + self.uuid);
@@ -2472,7 +2476,12 @@ $(function() {
                         setTimeout(poll, 2000);
                         return;
                     }
-                    if (p && p.error && !p.done && p.phase !== "complete" && !p.success) {
+                    if (p && p.error && !p.done) {
+                        if (p.phase === "error") {
+                            def.reject(p.error);
+                            return;
+                        }
+                        ndmGcsSetLiveStatus("Server error: " + p.error + " · poll #" + pollCount);
                         setTimeout(poll, 2000);
                         return;
                     }
@@ -2520,6 +2529,9 @@ $(function() {
                     } else if (subPhase === "preparing") {
                         label = "Step 2/2 — Preparing archive… (" + elapsed + ")";
                         live = "Preparing archive on server · " + elapsed;
+                        if (pollCount > 30) {
+                            live += " · if this persists, the archive may be missing or incomplete in storage";
+                        }
                     } else if (total > 0) {
                         var uploading = done < total;
                         label = uploading
@@ -2628,9 +2640,6 @@ $(function() {
                 });
             }
             xhr.onload = function() {
-                var loc = xhr.getResponseHeader("Location");
-                if (loc) sessionUrl = loc;
-
                 if (xhr.status === 200 || xhr.status === 201) {
                     resolveDone();
                     return;
@@ -2691,7 +2700,10 @@ $(function() {
                     url: ndmApi("/gcs/upload/" + uploadId + "/complete") + ndmTokenQs(),
                     type: "POST",
                     contentType: "application/json",
-                    data: JSON.stringify({ relativePath: sig.relativePath || rel }),
+                    data: JSON.stringify({
+                        relativePath: sig.relativePath || rel,
+                        expectedBytes: item.file.size || 0
+                    }),
                     timeout: 60000
                 }, ndmGcsAjaxOpts)).done(function(doneRes) {
                     if (doneRes && doneRes.error) def.reject(doneRes.error);

@@ -53,6 +53,99 @@ function commitStatusPath(uploadId) {
     return dir ? path.join(dir, "commit-status.json") : null;
 }
 
+function sessionMetaPath(uploadId) {
+    const dir = sessionTmpDir(uploadId);
+    return dir ? path.join(dir, "session.json") : null;
+}
+
+function progressStatusPath(uploadId) {
+    const dir = sessionTmpDir(uploadId);
+    return dir ? path.join(dir, "commit-progress.json") : null;
+}
+
+function serializeSession(session) {
+    return {
+        uploadId: session.uploadId,
+        projectName: session.projectName,
+        sanitizedName: session.sanitizedName,
+        gcsDestPath: session.gcsDestPath,
+        gcsStagingPath: session.gcsStagingPath,
+        createdAt: session.createdAt,
+        stagedFileCount: session.stagedFileCount || 0,
+        stagedRelativePaths: session.stagedRelativePaths
+            ? Array.from(session.stagedRelativePaths) : [],
+        directUpload: !!session.directUpload,
+        localExtracted: !!session.localExtracted,
+        zipOnlyUpload: !!session.zipOnlyUpload,
+        progress: session.progress || null,
+        commitResult: session.commitResult || null
+    };
+}
+
+function persistSession(uploadId, session) {
+    const p = sessionMetaPath(uploadId);
+    if (!p || !session) return;
+    try {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, JSON.stringify(Object.assign({ savedAt: Date.now() }, serializeSession(session))));
+    } catch (e) {
+        logger.warn(`GCS session persist failed: ${e.message}`);
+    }
+}
+
+function loadSessionFromDisk(uploadId) {
+    const p = sessionMetaPath(uploadId);
+    if (!p || !fs.existsSync(p)) return null;
+    try {
+        const data = JSON.parse(fs.readFileSync(p, "utf8"));
+        const session = {
+            uploadId: data.uploadId || uploadId,
+            projectName: data.projectName,
+            sanitizedName: data.sanitizedName,
+            gcsDestPath: data.gcsDestPath,
+            gcsStagingPath: data.gcsStagingPath,
+            createdAt: data.createdAt,
+            stagedFileCount: data.stagedFileCount || 0,
+            stagedRelativePaths: new Set(data.stagedRelativePaths || []),
+            directUpload: !!data.directUpload,
+            localExtracted: !!data.localExtracted,
+            zipOnlyUpload: !!data.zipOnlyUpload,
+            progress: data.progress || null,
+            commitResult: data.commitResult || null
+        };
+        sessions.set(uploadId, session);
+        return session;
+    } catch (e) {
+        logger.warn(`GCS session load failed for ${uploadId}: ${e.message}`);
+        return null;
+    }
+}
+
+function getOrLoadSession(uploadId) {
+    return getSession(uploadId) || loadSessionFromDisk(uploadId);
+}
+
+function persistCommitProgress(uploadId, progress) {
+    const p = progressStatusPath(uploadId);
+    if (!p || !progress) return;
+    try {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, JSON.stringify(Object.assign({ savedAt: Date.now() }, progress)));
+    } catch (e) {
+        logger.warn(`GCS commit progress write failed: ${e.message}`);
+    }
+}
+
+function readCommitProgress(uploadId) {
+    const p = progressStatusPath(uploadId);
+    if (!p || !fs.existsSync(p)) return null;
+    try {
+        return JSON.parse(fs.readFileSync(p, "utf8"));
+    } catch (e) {
+        return null;
+    }
+}
+
 function readCommitStatus(uploadId) {
     const p = commitStatusPath(uploadId);
     if (!p || !fs.existsSync(p)) return null;
@@ -82,14 +175,23 @@ function assignUploadProgress(req, res, next) {
     }
     req.gcsUploadId = uploadId;
     req.gcsUploadDir = dir;
-    const session = getSession(uploadId);
+    const session = getOrLoadSession(uploadId);
     if (session) {
         req.gcsUploadSession = session;
+        return next();
+    }
+    const progressDisk = readCommitProgress(uploadId);
+    if (progressDisk) {
+        req.gcsCommitProgressDisk = progressDisk;
         return next();
     }
     const disk = readCommitStatus(uploadId);
     if (disk) {
         req.gcsUploadCommitDisk = disk;
+        return next();
+    }
+    if (fs.existsSync(dir)) {
+        req.gcsUploadWaiting = true;
         return next();
     }
     return res.json({ error: "Upload session not found or expired." });
@@ -113,7 +215,7 @@ function sanitizeRelativePath(raw, fallbackName) {
 function assignUpload(req, res, next) {
     const uploadId = req.params.uploadId;
     const dir = sessionTmpDir(uploadId);
-    const session = getSession(uploadId);
+    const session = getOrLoadSession(uploadId);
     if (!dir || !session) {
         return res.json({ error: "Upload session not found or expired." });
     }
@@ -224,7 +326,8 @@ function handleInit(req, res) {
     fs.mkdir(tmpDir, { recursive: true }, err => {
         if (err) return res.json({ error: err.message });
 
-        sessions.set(uploadId, {
+        const session = {
+            uploadId,
             projectName: String(rawName).trim(),
             sanitizedName,
             gcsDestPath: gcsDest,
@@ -233,7 +336,9 @@ function handleInit(req, res) {
             stagedFileCount: 0,
             stagedRelativePaths: new Set(),
             directUpload: true
-        });
+        };
+        sessions.set(uploadId, session);
+        persistSession(uploadId, session);
 
         res.json({
             uploadId,
@@ -304,6 +409,7 @@ function markStaged(session, relativePath) {
         session.stagedRelativePaths.add(rel);
         session.stagedFileCount = session.stagedRelativePaths.size;
     }
+    if (session.uploadId) persistSession(session.uploadId, session);
     return rel;
 }
 
@@ -403,6 +509,7 @@ function handleComplete(req, res) {
         if (paths.length === 1 && ZIP_EXT.test(sanitizeRelativePath(paths[0]))) {
             session.zipOnlyUpload = true;
         }
+        if (session.uploadId) persistSession(session.uploadId, session);
         res.json({
             success: true,
             stagedFiles: session.stagedFileCount,
@@ -503,6 +610,11 @@ function cleanupAbandonedDirectUpload(session, cb) {
 function patchCommitProgress(session, patch) {
     if (!session || !session.progress) return;
     Object.assign(session.progress, patch);
+    const uploadId = session.uploadId;
+    if (uploadId) {
+        persistCommitProgress(uploadId, session.progress);
+        persistSession(uploadId, session);
+    }
 }
 
 function commitDirectGcsUpload(session, uploadId, cb, onFileDone) {
@@ -876,6 +988,8 @@ function handleCommit(req, res) {
         };
         session.commitResult = null;
 
+        persistSession(uploadId, session);
+
         res.json({
             success: true,
             committing: true,
@@ -904,6 +1018,7 @@ function handleCommit(req, res) {
                     }
                     session.commitResult = { error: err.message };
                     persistCommitStatus(uploadId, session.commitResult);
+                    persistSession(uploadId, session);
                 } else {
                     session.commitResult = {
                         success: true,
@@ -912,6 +1027,7 @@ function handleCommit(req, res) {
                         gcsUri: `gs://${config.gcsBucket}/${session.gcsDestPath}/`
                     };
                     persistCommitStatus(uploadId, session.commitResult);
+                    persistSession(uploadId, session);
                     logger.info(`GCS manual upload commit complete: ${stats.fileCount} files → ${session.gcsDestPath}`);
                 }
             };
@@ -983,6 +1099,25 @@ function handleProgress(req, res) {
         return res.json(Object.assign({ done: true, phase: "complete", success: true }, publicUploadPayload(disk)));
     }
 
+    if (req.gcsCommitProgressDisk) {
+        const disk = req.gcsCommitProgressDisk;
+        const out = Object.assign({ done: !!disk.done }, disk);
+        if (disk.phase === "complete" || disk.done) {
+            out.done = true;
+        }
+        return res.json(out);
+    }
+
+    if (req.gcsUploadWaiting) {
+        return res.json({
+            done: false,
+            phase: "waiting",
+            statusMessage: "Reconnecting to upload session on server…",
+            filesTotal: 0,
+            filesCompleted: 0
+        });
+    }
+
     const session = req.gcsUploadSession;
     if (!session) {
         const disk = readCommitStatus(req.gcsUploadId);
@@ -1032,7 +1167,7 @@ function handleProgress(req, res) {
 function handleDelete(req, res) {
     const uploadId = req.params.uploadId;
     const dir = sessionTmpDir(uploadId);
-    const session = getSession(uploadId);
+    const session = getOrLoadSession(uploadId);
     const disk = readCommitStatus(uploadId);
     const committed = (session && session.commitResult && session.commitResult.success) ||
         (disk && disk.success);

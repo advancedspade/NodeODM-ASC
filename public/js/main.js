@@ -2479,9 +2479,19 @@ $(function() {
                         setTimeout(poll, 2000);
                         return;
                     }
+                    if (p && p.phase === "waiting") {
+                        ndmGcsSetLiveStatus((p.statusMessage || "Reconnecting to server session…") +
+                            " · poll #" + pollCount);
+                        setTimeout(poll, 2000);
+                        return;
+                    }
                     if (p && p.error && !p.done) {
                         if (p.phase === "error") {
                             def.reject(p.error);
+                            return;
+                        }
+                        if (/not found or expired/i.test(String(p.error)) && pollCount > 45) {
+                            def.reject(p.error + " — upload session was lost (server restart or deploy). Please retry.");
                             return;
                         }
                         ndmGcsSetLiveStatus("Server error: " + p.error + " · poll #" + pollCount);

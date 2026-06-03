@@ -2395,7 +2395,7 @@ $(function() {
         ndmGcsUploadStartedAt = 0;
     }
 
-    function ndmGcsPollCommitProgress(uploadId, expectedTotal, sessionForComplete) {
+    function ndmGcsPollCommitProgress(uploadId, expectedTotal, sessionForComplete, isZipUpload) {
         var def = $.Deferred();
         var lastLogged = 0;
         var lastDone = 0;
@@ -2417,8 +2417,11 @@ $(function() {
             if (subPhase === "extracting") {
                 return { pct: 58, indeterminate: true };
             }
+            if (p && p.done) {
+                return { pct: 100, indeterminate: false };
+            }
             if (total > 0) {
-                if (done >= total) return { pct: 99, indeterminate: false };
+                if (done >= total) return { pct: 98, indeterminate: true };
                 return { pct: 62 + Math.round((done / total) * 36), indeterminate: false };
             }
             return { pct: 45, indeterminate: true };
@@ -2456,7 +2459,7 @@ $(function() {
         function finishWhenVerified(p) {
             if (uiFinished) return;
             if (!p || !p.success) return;
-            if (!(p.done || p.phase === "complete") && !p.filesUploaded) return;
+            if (!p.done && p.phase !== "complete") return;
             finishSuccess(p);
         }
 
@@ -2536,10 +2539,13 @@ $(function() {
                         var uploading = done < total;
                         label = uploading
                             ? "Step 2/2 — Uploading extracted files: " + done + " / " + total + " (" + elapsed + ")"
-                            : "Step 2/2 — Finishing up… (" + elapsed + ")";
+                            : "Step 2/2 — Finalizing… (" + elapsed + ")";
                         live = uploading
                             ? "Uploading extracted files · " + done + " / " + total + " · " + elapsed
-                            : "Finishing · " + elapsed;
+                            : "Finalizing upload · " + elapsed;
+                        if (isZipUpload && total === 1 && pollCount > 5) {
+                            live += " · expected hundreds+ of files after extract — server may not have extracted the .zip";
+                        }
                         if (p && p.currentFile && uploading) {
                             var short = p.currentFile;
                             if (short.length > 48) short = "…" + short.slice(-45);
@@ -2555,9 +2561,11 @@ $(function() {
                     ndmGcsSetLiveStatus(live);
 
                     if (total > 0 && done > 0 && (done - lastLogged >= 10 || done === total)) {
-                        ndmGcsLogLine("Uploaded: " + done + "/" + total +
-                            (p.currentFile ? " — " + p.currentFile : ""), "ok");
-                        lastLogged = done;
+                        if (!(isZipUpload && total <= 1 && done <= 1)) {
+                            ndmGcsLogLine("Uploaded: " + done + "/" + total +
+                                (p.currentFile ? " — " + p.currentFile : ""), "ok");
+                            lastLogged = done;
+                        }
                     }
                     setTimeout(poll, 2000);
                 })
@@ -3212,7 +3220,7 @@ $(function() {
                 ndmGcsLogLine(isZip
                     ? "Step 2/2 — archive received; download, extract, and upload will run on the server…"
                     : "Step 2/2 — processing " + n + " file(s)…", "ok");
-                return ndmGcsPollCommitProgress(uploadId, n, session);
+                return ndmGcsPollCommitProgress(uploadId, isZip ? null : n, session, isZip);
             }).done(function() {
                 gcsUploadOk = true;
             }).fail(function(err) {

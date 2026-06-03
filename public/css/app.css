@@ -566,11 +566,19 @@ body {
     margin-top: 1rem;
     padding: 0.75rem 1rem;
     border-radius: 10px;
-    border: 1px solid rgba(224, 122, 122, 0.45);
-    background: rgba(224, 122, 122, 0.12);
-    color: #f0c4c4;
+    border: 1px solid rgba(239, 68, 68, 0.55);
+    background: rgba(239, 68, 68, 0.14);
+    color: #fecaca;
     font-size: 0.9rem;
     cursor: pointer;
+}
+
+.error-block .ndm-gcs-error-label {
+    color: #ef4444;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-right: 0.35rem;
 }
 
 .mode-switch {
@@ -2094,7 +2102,8 @@ fieldset.preset-fieldset legend {
 }
 
 .ndm-gcs-project-status--error {
-    color: #ff8a8a;
+    color: #ef4444;
+    font-weight: 600;
 }
 
 .ndm-gcs-project-suggest {
@@ -2222,10 +2231,35 @@ fieldset.preset-fieldset legend {
     animation: ndm-gcs-live-pulse 1.2s ease-in-out infinite;
 }
 
+.ndm-gcs-live-status--error {
+    color: #ef4444;
+    font-weight: 600;
+}
+
+.ndm-gcs-live-status--error::before {
+    content: "✕ ";
+    color: #ef4444;
+    animation: none;
+}
+
+.ndm-gcs-progress-label--error {
+    color: #ef4444;
+    font-weight: 600;
+}
+
+.ndm-gcs-progress--error .ndm-progress__bar {
+    background: #b91c1c;
+}
+
 .ndm-gcs-progress--done .ndm-gcs-live-status::before {
     content: "✓ ";
     color: #2e7d32;
     animation: none;
+}
+
+.ndm-gcs-progress--done .ndm-gcs-live-status--error::before {
+    content: "✕ ";
+    color: #ef4444;
 }
 
 @keyframes ndm-gcs-live-pulse {
@@ -2283,7 +2317,15 @@ fieldset.preset-fieldset legend {
 }
 
 .ndm-gcs-log li.ndm-gcs-log--err {
-    color: #ff8a8a;
+    color: #ef4444;
+    font-weight: 600;
+}
+
+.ndm-gcs-log li.ndm-gcs-log--err::before {
+    content: "Error: ";
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
 }
 
 @media (max-width: 720px) {

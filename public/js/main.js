@@ -1857,8 +1857,15 @@ $(function() {
         var el = document.getElementById("gcsUploadError");
         if (!el) return;
         if (msg) {
-            el.textContent = msg;
+            el.textContent = "";
+            var label = document.createElement("strong");
+            label.className = "ndm-gcs-error-label";
+            label.textContent = "Error:";
+            el.appendChild(label);
+            el.appendChild(document.createTextNode(" " + String(msg)));
             el.hidden = false;
+            ndmGcsSetLiveStatus(String(msg), "error");
+            ndmGcsSetProgress(0, "Error — " + String(msg), false, 0, "", true);
         } else {
             el.textContent = "";
             el.hidden = true;
@@ -2309,20 +2316,23 @@ $(function() {
         log.scrollTop = log.scrollHeight;
     }
 
-    function ndmGcsSetLiveStatus(text) {
+    function ndmGcsSetLiveStatus(text, kind) {
         var el = document.getElementById("gcsUploadLiveStatus");
-        if (el) el.textContent = text || "";
+        if (!el) return;
+        el.textContent = text || "";
+        el.classList.toggle("ndm-gcs-live-status--error", kind === "error");
     }
 
-    function ndmGcsSetProgress(pct, label, indeterminate, indeterminateAt, indeterminateMode) {
+    function ndmGcsSetProgress(pct, label, indeterminate, indeterminateAt, indeterminateMode, isError) {
         var wrap = document.getElementById("gcsUploadProgress");
         var bar = document.getElementById("gcsUploadProgressBar");
         var lbl = document.getElementById("gcsUploadProgressLabel");
         var mode = indeterminateMode || (indeterminate ? "slide" : "");
         if (wrap) {
             wrap.hidden = false;
-            wrap.classList.toggle("ndm-gcs-progress--busy", !!indeterminate);
-            wrap.classList.toggle("ndm-gcs-progress--done", !indeterminate && pct >= 100);
+            wrap.classList.toggle("ndm-gcs-progress--busy", !!indeterminate && !isError);
+            wrap.classList.toggle("ndm-gcs-progress--done", !indeterminate && pct >= 100 && !isError);
+            wrap.classList.toggle("ndm-gcs-progress--error", !!isError);
         }
         if (bar) {
             bar.classList.toggle("ndm-gcs-progress__bar--indeterminate", !!indeterminate && mode === "slide");
@@ -2345,7 +2355,10 @@ $(function() {
                 bar.textContent = "···";
             }
         }
-        if (lbl) lbl.textContent = label || "";
+        if (lbl) {
+            lbl.textContent = label || "";
+            lbl.classList.toggle("ndm-gcs-progress-label--error", !!isError);
+        }
     }
 
     function ndmGcsFormatElapsed(seconds) {
@@ -2509,14 +2522,27 @@ $(function() {
                     }
                     if (p && p.error && !p.done) {
                         if (p.phase === "error") {
+                            ndmGcsSetLiveStatus(p.error, "error");
+                            ndmGcsLogLine(p.error, "err");
                             def.reject(p.error);
                             return;
                         }
-                        if (/not found or expired/i.test(String(p.error)) && pollCount > 45) {
-                            def.reject(p.error + " — upload session was lost (server restart or deploy). Please retry.");
+                        if (/not found or expired/i.test(String(p.error))) {
+                            if (pollCount === 5 || pollCount % 15 === 0) {
+                                ndmGcsCommitUpload(uploadId);
+                            }
+                            if (pollCount > 45) {
+                                def.reject(p.error +
+                                    " — session folder was lost (deploy during upload?). Zip may still be in the bucket; retry upload.");
+                                return;
+                            }
+                            ndmGcsSetLiveStatus("Reconnecting to server session… (poll #" + pollCount +
+                                ") — do not close this tab");
+                            setTimeout(poll, 2000);
                             return;
                         }
-                        ndmGcsSetLiveStatus("Server error: " + p.error + " · poll #" + pollCount);
+                        ndmGcsSetLiveStatus(p.error + " · poll #" + pollCount, "error");
+                        ndmGcsLogLine(p.error + " · poll #" + pollCount, "err");
                         setTimeout(poll, 2000);
                         return;
                     }
@@ -2525,6 +2551,8 @@ $(function() {
                         return;
                     }
                     if (p && p.done && p.error) {
+                        ndmGcsSetLiveStatus(p.error, "error");
+                        ndmGcsLogLine(p.error, "err");
                         def.reject(p.error);
                         return;
                     }
@@ -2535,7 +2563,7 @@ $(function() {
                     if (done > lastDone) lastDone = done;
 
                     if (statusMsg && statusMsg !== lastStatusMsg) {
-                        ndmGcsLogLine(statusMsg, "ok");
+                        ndmGcsLogLine(statusMsg, subPhase === "error" ? "err" : "ok");
                         lastStatusMsg = statusMsg;
                     }
 
@@ -2581,6 +2609,9 @@ $(function() {
                         if (pollCount > 30) {
                             live += " · if this persists, the archive may be missing or incomplete in storage";
                         }
+                    } else if (subPhase === "error") {
+                        label = "Step 2/2 — Error (" + elapsed + ")";
+                        live = statusMsg || p.error || "Upload failed on server";
                     } else if (total > 0) {
                         var uploading = done < total;
                         label = uploading
@@ -2603,8 +2634,9 @@ $(function() {
                         live = statusMsg + " · " + elapsed;
                     }
 
-                    ndmGcsSetProgress(pct, label, indeterminate, pct, indMode);
-                    ndmGcsSetLiveStatus(live);
+                    var isErr = subPhase === "error";
+                    ndmGcsSetProgress(pct, label, indeterminate && !isErr, pct, indMode, isErr);
+                    ndmGcsSetLiveStatus(live, isErr ? "error" : undefined);
 
                     if (total > 0 && done > 0 && (done - lastLogged >= 10 || done === total)) {
                         if (!(isZipUpload && total <= 1 && done <= 1)) {
@@ -3143,6 +3175,7 @@ $(function() {
             return;
         }
         ndmGcsSetError("");
+        ndmGcsSetLiveStatus("");
         var startBtn = document.getElementById("gcsUploadStart");
         var clearBtn = document.getElementById("gcsUploadClear");
         if (startBtn) startBtn.disabled = true;

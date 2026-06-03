@@ -2314,21 +2314,29 @@ $(function() {
         if (el) el.textContent = text || "";
     }
 
-    function ndmGcsSetProgress(pct, label, indeterminate, indeterminateAt) {
+    function ndmGcsSetProgress(pct, label, indeterminate, indeterminateAt, indeterminateMode) {
         var wrap = document.getElementById("gcsUploadProgress");
         var bar = document.getElementById("gcsUploadProgressBar");
         var lbl = document.getElementById("gcsUploadProgressLabel");
+        var mode = indeterminateMode || (indeterminate ? "slide" : "");
         if (wrap) {
             wrap.hidden = false;
             wrap.classList.toggle("ndm-gcs-progress--busy", !!indeterminate);
             wrap.classList.toggle("ndm-gcs-progress--done", !indeterminate && pct >= 100);
         }
         if (bar) {
-            bar.classList.toggle("ndm-gcs-progress__bar--indeterminate", !!indeterminate);
+            bar.classList.toggle("ndm-gcs-progress__bar--indeterminate", !!indeterminate && mode === "slide");
+            bar.classList.toggle("ndm-gcs-progress__bar--pulse", !!indeterminate && mode === "pulse");
             if (!indeterminate) {
                 bar.style.marginLeft = "0";
                 bar.style.width = Math.min(100, Math.max(0, pct)) + "%";
                 bar.textContent = Math.round(pct) + "%";
+            } else if (mode === "pulse") {
+                bar.style.marginLeft = "0";
+                var pulseW = Math.max(8, Math.min(24, pct));
+                bar.style.width = pulseW + "%";
+                bar.style.marginLeft = Math.max(0, Math.min(100 - pulseW, pct - pulseW / 2)) + "%";
+                bar.textContent = "···";
             } else {
                 var span = 12;
                 var anchor = typeof indeterminateAt === "number" ? indeterminateAt : pct;
@@ -2399,32 +2407,46 @@ $(function() {
         var def = $.Deferred();
         var lastLogged = 0;
         var lastDone = 0;
+        var lastDownloadLogged = 0;
+        var lastDownloadBytes = -1;
+        var lastDownloadByteAt = 0;
         var uiFinished = false;
         var lastStatusMsg = "";
         var pollCount = 0;
 
         /** Step 2 spans 40–100% on the overall bar (step 1 uses 0–40%). */
         function step2OverallPct(subPhase, p, done, total) {
-            if (subPhase === "preparing") return { pct: 41, indeterminate: true };
+            if (subPhase === "preparing") {
+                return { pct: 41, indeterminate: true, mode: "pulse" };
+            }
             if (subPhase === "downloading_zip") {
                 var bDone = (p && p.bytesCompleted) || 0;
                 var bTotal = (p && p.bytesTotal) || 0;
                 if (bTotal > 0) {
-                    return { pct: 40 + Math.round((bDone / bTotal) * 15), indeterminate: false };
+                    return {
+                        pct: 40 + Math.round((bDone / bTotal) * 15),
+                        indeterminate: false,
+                        mode: ""
+                    };
                 }
-                return { pct: 42, indeterminate: true };
+                return { pct: 41, indeterminate: true, mode: "pulse" };
             }
             if (subPhase === "extracting") {
-                return { pct: 58, indeterminate: true };
+                return { pct: 58, indeterminate: true, mode: "pulse" };
             }
             if (p && p.done) {
-                return { pct: 100, indeterminate: false };
+                return { pct: 100, indeterminate: false, mode: "" };
             }
             if (total > 0) {
-                if (done >= total) return { pct: 98, indeterminate: true };
-                return { pct: 62 + Math.round((done / total) * 36), indeterminate: false };
+                if (done >= total) return { pct: 98, indeterminate: true, mode: "pulse" };
+                return { pct: 62 + Math.round((done / total) * 36), indeterminate: false, mode: "" };
             }
-            return { pct: 45, indeterminate: true };
+            return { pct: 45, indeterminate: true, mode: "pulse" };
+        }
+
+        function pollDelayMs(subPhase) {
+            if (subPhase === "downloading_zip" || subPhase === "uploading") return 1000;
+            return 2000;
         }
 
         function finishUi(commit) {
@@ -2521,6 +2543,7 @@ $(function() {
                     var prog = step2OverallPct(subPhase, p, done, total);
                     var pct = prog.pct;
                     var indeterminate = prog.indeterminate;
+                    var indMode = prog.mode || "slide";
                     var label = "Step 2/2 — Processing… (" + elapsed + ")";
                     var live = "Working · poll #" + pollCount + " · " + elapsed + " elapsed";
 
@@ -2529,19 +2552,32 @@ $(function() {
                         var bTotal = (p && p.bytesTotal) || 0;
                         if (bTotal > 0) {
                             var dlPct = Math.round((bDone / bTotal) * 100);
-                            label = "Step 2/2 — Downloading archive: " + dlPct + "% (" + elapsed + ")";
-                            live = "Downloading archive · " + ndmGcsFormatBytes(bDone) + " / " +
+                            label = "Step 2/2 — Server downloading archive: " + dlPct + "% (" + elapsed + ")";
+                            live = "VM ← GCS download · " + ndmGcsFormatBytes(bDone) + " / " +
                                 ndmGcsFormatBytes(bTotal) + " · " + elapsed;
+                            if (bDone > lastDownloadBytes) {
+                                lastDownloadBytes = bDone;
+                                lastDownloadByteAt = Date.now();
+                            } else if (lastDownloadByteAt && Date.now() - lastDownloadByteAt > 20000 && bDone === 0) {
+                                live += " · connecting to storage (large cross-project download can take 1–2 min to start)";
+                            } else if (lastDownloadByteAt && Date.now() - lastDownloadByteAt > 45000 && bDone > 0) {
+                                live += " · still downloading (large archives can take several minutes)";
+                            }
+                            if (bTotal > 0 && (dlPct - lastDownloadLogged >= 10 || (dlPct >= 99 && lastDownloadLogged < 99))) {
+                                ndmGcsLogLine("Download: " + dlPct + "% · " + ndmGcsFormatBytes(bDone) +
+                                    " / " + ndmGcsFormatBytes(bTotal), "ok");
+                                lastDownloadLogged = dlPct;
+                            }
                         } else {
-                            label = "Step 2/2 — Downloading archive from cloud… (" + elapsed + ")";
-                            live = "Downloading archive from cloud storage · " + elapsed;
+                            label = "Step 2/2 — Connecting to download archive… (" + elapsed + ")";
+                            live = "Preparing download from cloud storage to server · " + elapsed;
                         }
                     } else if (subPhase === "extracting") {
                         label = "Step 2/2 — Extracting archive on server… (" + elapsed + ")";
-                        live = "Extracting archive on server (this can take several minutes) · " + elapsed;
+                        live = "Unzipping on server (large archives can take 2–5 min) · " + elapsed;
                     } else if (subPhase === "preparing") {
                         label = "Step 2/2 — Preparing archive… (" + elapsed + ")";
-                        live = "Preparing archive on server · " + elapsed;
+                        live = "Starting archive processing on server · " + elapsed;
                         if (pollCount > 30) {
                             live += " · if this persists, the archive may be missing or incomplete in storage";
                         }
@@ -2567,7 +2603,7 @@ $(function() {
                         live = statusMsg + " · " + elapsed;
                     }
 
-                    ndmGcsSetProgress(pct, label, indeterminate, pct);
+                    ndmGcsSetProgress(pct, label, indeterminate, pct, indMode);
                     ndmGcsSetLiveStatus(live);
 
                     if (total > 0 && done > 0 && (done - lastLogged >= 10 || done === total)) {
@@ -2577,7 +2613,7 @@ $(function() {
                             lastLogged = done;
                         }
                     }
-                    setTimeout(poll, 2000);
+                    setTimeout(poll, pollDelayMs(subPhase));
                 })
                 .fail(function(xhr, status) {
                     if (xhr && xhr.status === 304) {
@@ -2585,7 +2621,7 @@ $(function() {
                         setTimeout(poll, 1000);
                         return;
                     }
-                    if (Date.now() - started > 30 * 60 * 1000) {
+                    if (ndmGcsUploadStartedAt && Date.now() - ndmGcsUploadStartedAt > 30 * 60 * 1000) {
                         def.reject(ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/upload/" + uploadId + "/progress")));
                         return;
                     }

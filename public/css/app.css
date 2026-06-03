@@ -2247,6 +2247,16 @@ fieldset.preset-fieldset legend {
     animation: ndm-gcs-progress-slide 1.4s ease-in-out infinite;
 }
 
+.ndm-gcs-progress__bar--pulse {
+    position: relative;
+    animation: ndm-gcs-progress-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes ndm-gcs-progress-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+}
+
 @keyframes ndm-gcs-progress-slide {
     0% { margin-left: 0; }
     50% { margin-left: 65%; }

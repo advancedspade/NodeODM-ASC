@@ -422,39 +422,39 @@ module.exports = {
             file.getMetadata((metaErr, metadata) => {
                 if (metaErr) return cb(metaErr);
                 const total = metadata && metadata.size ? parseInt(metadata.size, 10) : 0;
-                let progressTimer = null;
+                let received = 0;
                 let finished = false;
 
                 const finish = (err) => {
                     if (finished) return;
                     finished = true;
-                    if (progressTimer) clearInterval(progressTimer);
                     cb(err);
                 };
 
-                if (onProgress) {
-                    onProgress(0, total);
-                    progressTimer = setInterval(() => {
-                        if (finished || !fs.existsSync(destPath)) return;
-                        try {
-                            const partial = fs.statSync(destPath).size;
-                            onProgress(Math.min(partial, total || partial), total);
-                        } catch (e) {
-                            /* ignore stat errors during download */
-                        }
-                    }, 1000);
-                }
+                if (onProgress) onProgress(0, total);
 
-                logger.info(`GCS download started: ${objectPath} (${total} bytes)`);
-                file.download({ destination: destPath, validation: false }, (dlErr) => {
-                    if (dlErr) {
-                        logger.warn(`GCS download failed: ${objectPath}: ${dlErr.message}`);
-                        return finish(dlErr);
-                    }
-                    if (onProgress) onProgress(total, total);
-                    logger.info(`GCS download complete: ${objectPath}`);
+                const writeStream = fs.createWriteStream(destPath);
+                const readStream = file.createReadStream();
+
+                readStream.on("data", chunk => {
+                    received += chunk.length;
+                    if (onProgress) onProgress(received, total || received);
+                });
+
+                readStream.on("error", err => {
+                    writeStream.destroy();
+                    finish(err);
+                });
+
+                writeStream.on("error", err => finish(err));
+                writeStream.on("finish", () => {
+                    if (onProgress) onProgress(total || received, total || received);
+                    logger.info(`GCS download complete: ${objectPath} (${received} bytes)`);
                     finish();
                 });
+
+                readStream.pipe(writeStream);
+                logger.info(`GCS download started: ${objectPath} (${total} bytes)`);
             });
         });
     },

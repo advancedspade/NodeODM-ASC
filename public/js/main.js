@@ -1837,6 +1837,63 @@ $(function() {
     var ndmGcsDirectUpload = false;
     var ndmGcsUploadStartedAt = 0;
     var ndmGcsUploadElapsedTimer = null;
+    var NDM_GCS_UPLOAD_CTX_KEY = "ndmGcsUploadCtxV1";
+
+    function ndmGcsPersistUploadContext(uploadId, patch) {
+        if (!uploadId || typeof sessionStorage === "undefined") return;
+        try {
+            var raw = sessionStorage.getItem(NDM_GCS_UPLOAD_CTX_KEY);
+            var all = raw ? JSON.parse(raw) : {};
+            all[uploadId] = Object.assign({}, all[uploadId] || {}, patch, { uploadId: uploadId });
+            sessionStorage.setItem(NDM_GCS_UPLOAD_CTX_KEY, JSON.stringify(all));
+        } catch (e) { /* quota or private mode */ }
+    }
+
+    function ndmGcsLoadUploadContext(uploadId) {
+        if (!uploadId || typeof sessionStorage === "undefined") return null;
+        try {
+            var raw = sessionStorage.getItem(NDM_GCS_UPLOAD_CTX_KEY);
+            var all = raw ? JSON.parse(raw) : {};
+            return all[uploadId] || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function ndmGcsClearUploadContext(uploadId) {
+        if (!uploadId || typeof sessionStorage === "undefined") return;
+        try {
+            var raw = sessionStorage.getItem(NDM_GCS_UPLOAD_CTX_KEY);
+            var all = raw ? JSON.parse(raw) : {};
+            delete all[uploadId];
+            sessionStorage.setItem(NDM_GCS_UPLOAD_CTX_KEY, JSON.stringify(all));
+        } catch (e) { /* ignore */ }
+    }
+
+    function ndmGcsRecoverUploadSession(uploadId) {
+        var ctx = ndmGcsLoadUploadContext(uploadId);
+        if (!ctx || !ctx.projectName || !ctx.relativePaths || !ctx.relativePaths.length) {
+            return $.Deferred().reject("no recovery context").promise();
+        }
+        return $.ajax($.extend({
+            url: ndmApi("/gcs/upload/" + uploadId + "/recover") + ndmTokenQs(),
+            type: "POST",
+            contentType: "application/json",
+            data: JSON.stringify({
+                projectName: ctx.projectName,
+                sanitizedName: ctx.sanitizedName,
+                relativePaths: ctx.relativePaths
+            }),
+            dataType: "json",
+            timeout: 120000
+        }, ndmGcsAjaxOpts));
+    }
+
+    function ndmGcsTryRecoverAndCommit(uploadId) {
+        return ndmGcsRecoverUploadSession(uploadId).always(function() {
+            ndmGcsCommitUpload(uploadId);
+        });
+    }
 
     function ndmGcsIsRemoteHost() {
         if (typeof location === "undefined") return true;
@@ -2429,7 +2486,7 @@ $(function() {
 
         /** Step 2 spans 40–100% on the overall bar (step 1 uses 0–40%). */
         function step2OverallPct(subPhase, p, done, total) {
-            if (subPhase === "preparing") {
+            if (subPhase === "preparing" || subPhase === "starting") {
                 return { pct: 41, indeterminate: true, mode: "pulse" };
             }
             if (subPhase === "downloading_zip") {
@@ -2458,8 +2515,16 @@ $(function() {
         }
 
         function pollDelayMs(subPhase) {
-            if (subPhase === "downloading_zip" || subPhase === "uploading") return 1000;
+            if (subPhase === "downloading_zip" || subPhase === "uploading" || subPhase === "starting") return 1000;
             return 2000;
+        }
+
+        function showReconnecting(pollNum, detail) {
+            var elapsed = ndmGcsGetUploadElapsed();
+            var label = "Step 2/2 — Reconnecting to server… (poll #" + pollNum + ", " + elapsed + ")";
+            ndmGcsSetProgress(41, label, true, 41, "pulse");
+            ndmGcsSetLiveStatus((detail || "Reconnecting to server session…") +
+                " (poll #" + pollNum + ") — do not close this tab");
         }
 
         function finishUi(commit) {
@@ -2515,8 +2580,10 @@ $(function() {
                         return;
                     }
                     if (p && p.phase === "waiting") {
-                        ndmGcsSetLiveStatus((p.statusMessage || "Reconnecting to server session…") +
-                            " · poll #" + pollCount);
+                        showReconnecting(pollCount, p.statusMessage || "Reconnecting to server session…");
+                        if (pollCount === 3 || pollCount % 10 === 0) {
+                            ndmGcsTryRecoverAndCommit(uploadId);
+                        }
                         setTimeout(poll, 2000);
                         return;
                     }
@@ -2528,16 +2595,15 @@ $(function() {
                             return;
                         }
                         if (/not found or expired/i.test(String(p.error))) {
-                            if (pollCount === 5 || pollCount % 15 === 0) {
-                                ndmGcsCommitUpload(uploadId);
+                            if (pollCount === 3 || pollCount % 10 === 0) {
+                                ndmGcsTryRecoverAndCommit(uploadId);
                             }
-                            if (pollCount > 45) {
+                            if (pollCount > 60) {
                                 def.reject(p.error +
                                     " — session folder was lost (deploy during upload?). Zip may still be in the bucket; retry upload.");
                                 return;
                             }
-                            ndmGcsSetLiveStatus("Reconnecting to server session… (poll #" + pollCount +
-                                ") — do not close this tab");
+                            showReconnecting(pollCount, "Reconnecting to server session…");
                             setTimeout(poll, 2000);
                             return;
                         }
@@ -2603,9 +2669,11 @@ $(function() {
                     } else if (subPhase === "extracting") {
                         label = "Step 2/2 — Extracting archive on server… (" + elapsed + ")";
                         live = "Unzipping on server (large archives can take 2–5 min) · " + elapsed;
-                    } else if (subPhase === "preparing") {
-                        label = "Step 2/2 — Preparing archive… (" + elapsed + ")";
-                        live = "Starting archive processing on server · " + elapsed;
+                    } else if (subPhase === "preparing" || subPhase === "starting") {
+                        label = subPhase === "starting"
+                            ? "Step 2/2 — Starting archive processing… (" + elapsed + ")"
+                            : "Step 2/2 — Preparing archive… (" + elapsed + ")";
+                        live = (statusMsg || "Starting archive processing on server") + " · " + elapsed;
                         if (pollCount > 30) {
                             live += " · if this persists, the archive may be missing or incomplete in storage";
                         }
@@ -3208,6 +3276,14 @@ $(function() {
             var useDirect = !!(session.directUpload || ndmGcsDirectUpload);
             var gcsUploadOk = false;
 
+            ndmGcsPersistUploadContext(uploadId, {
+                projectName: projectName,
+                sanitizedName: session.sanitizedName,
+                relativePaths: ndmGcsFiles.map(function(item) {
+                    return item.relativePath || item.file.name;
+                })
+            });
+
             ndmGcsStageFiles(uploadId, ndmGcsFiles, function(done, tot, item, res, inFlight) {
                 var phasePct = 0;
                 if (tot > 0) {
@@ -3302,6 +3378,7 @@ $(function() {
                 return ndmGcsPollCommitProgress(uploadId, isZip ? null : n, session, isZip);
             }).done(function() {
                 gcsUploadOk = true;
+                ndmGcsClearUploadContext(uploadId);
             }).fail(function(err) {
                 if (err) ndmGcsSetError(String(err));
             }).always(function() {

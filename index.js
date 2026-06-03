@@ -205,6 +205,7 @@ app.post('/gcs/upload/:uploadId/complete', authCheck, gcsUploadApi.assignUpload,
 app.post('/gcs/upload/:uploadId/file', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.uploadMiddleware, gcsUploadApi.handleFile);
 app.post('/gcs/upload/:uploadId/batch', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.uploadBatchMiddleware, gcsUploadApi.handleBatch);
 app.post('/gcs/upload/:uploadId/commit', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.handleCommit);
+app.post('/gcs/upload/:uploadId/recover', authCheck, jsonBodyParser, gcsUploadApi.handleRecover);
 app.get('/gcs/upload/:uploadId/progress', authCheck, gcsUploadApi.assignUploadProgress, gcsUploadApi.handleProgress);
 app.delete('/gcs/upload/:uploadId', authCheck, gcsUploadApi.handleDelete);
 

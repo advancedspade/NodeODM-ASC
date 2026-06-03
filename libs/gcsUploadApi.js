@@ -25,6 +25,8 @@ const { sanitizeProjectName, gcsDestPathForProject } = require("./gcsProjectName
 const UPLOAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-7][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ZIP_EXT = /\.zip$/i;
 const MAX_SIGN_BATCH = 50;
+/** Restart step 2 if still on preparing/starting after this long (stale lock or missed start). */
+const COMMIT_STALL_MS = 90000;
 
 const sessions = new Map();
 /** Upload IDs with an active commit job on this process (not persisted). */
@@ -103,30 +105,58 @@ function persistSession(uploadId, session) {
     }
 }
 
+function sessionFromSnapshotData(data, uploadId) {
+    if (!data || typeof data !== "object") return null;
+    return {
+        uploadId: data.uploadId || uploadId,
+        projectName: data.projectName,
+        sanitizedName: data.sanitizedName,
+        gcsDestPath: data.gcsDestPath,
+        gcsStagingPath: data.gcsStagingPath,
+        createdAt: data.createdAt || Date.now(),
+        stagedFileCount: data.stagedFileCount || 0,
+        stagedRelativePaths: new Set(data.stagedRelativePaths || []),
+        directUpload: data.directUpload !== false,
+        localExtracted: !!data.localExtracted,
+        zipOnlyUpload: !!data.zipOnlyUpload,
+        progress: data.progress || null,
+        commitResult: data.commitResult || null
+    };
+}
+
 function loadSessionFromDisk(uploadId) {
     const p = sessionMetaPath(uploadId);
-    if (!p || !fs.existsSync(p)) return null;
+    if (p && fs.existsSync(p)) {
+        try {
+            const data = JSON.parse(fs.readFileSync(p, "utf8"));
+            const session = sessionFromSnapshotData(data, uploadId);
+            if (session) {
+                sessions.set(uploadId, session);
+                return session;
+            }
+        } catch (e) {
+            logger.warn(`GCS session load failed for ${uploadId}: ${e.message}`);
+        }
+    }
+    return recoverSessionFromProgress(uploadId);
+}
+
+function recoverSessionFromProgress(uploadId) {
+    const progress = readCommitProgress(uploadId);
+    if (!progress || !progress.sessionSnapshot) return null;
     try {
-        const data = JSON.parse(fs.readFileSync(p, "utf8"));
-        const session = {
-            uploadId: data.uploadId || uploadId,
-            projectName: data.projectName,
-            sanitizedName: data.sanitizedName,
-            gcsDestPath: data.gcsDestPath,
-            gcsStagingPath: data.gcsStagingPath,
-            createdAt: data.createdAt,
-            stagedFileCount: data.stagedFileCount || 0,
-            stagedRelativePaths: new Set(data.stagedRelativePaths || []),
-            directUpload: !!data.directUpload,
-            localExtracted: !!data.localExtracted,
-            zipOnlyUpload: !!data.zipOnlyUpload,
-            progress: data.progress || null,
-            commitResult: data.commitResult || null
-        };
+        const session = sessionFromSnapshotData(progress.sessionSnapshot, uploadId);
+        if (!session) return null;
+        const progressCopy = Object.assign({}, progress);
+        delete progressCopy.sessionSnapshot;
+        delete progressCopy.savedAt;
+        if (progressCopy.phase) session.progress = progressCopy;
         sessions.set(uploadId, session);
+        persistSession(uploadId, session);
+        logger.info(`GCS session recovered from progress snapshot: ${uploadId}`);
         return session;
     } catch (e) {
-        logger.warn(`GCS session load failed for ${uploadId}: ${e.message}`);
+        logger.warn(`GCS session recover failed for ${uploadId}: ${e.message}`);
         return null;
     }
 }
@@ -185,7 +215,10 @@ function assignUploadProgress(req, res, next) {
     }
     req.gcsUploadId = uploadId;
     req.gcsUploadDir = dir;
-    const session = getOrLoadSession(uploadId);
+    let session = getOrLoadSession(uploadId);
+    if (!session) {
+        session = recoverSessionFromProgress(uploadId);
+    }
     if (session) {
         req.gcsUploadSession = session;
         return next();
@@ -225,8 +258,14 @@ function sanitizeRelativePath(raw, fallbackName) {
 function assignUpload(req, res, next) {
     const uploadId = req.params.uploadId;
     const dir = sessionTmpDir(uploadId);
-    const session = getOrLoadSession(uploadId);
-    if (!dir || !session) {
+    if (!dir) {
+        return res.json({ error: "Invalid upload session id." });
+    }
+    let session = getOrLoadSession(uploadId);
+    if (!session) {
+        session = recoverSessionFromProgress(uploadId);
+    }
+    if (!session) {
         return res.json({ error: "Upload session not found or expired." });
     }
     req.gcsUploadId = uploadId;
@@ -623,7 +662,9 @@ function patchCommitProgress(session, patch) {
     Object.assign(session.progress, patch);
     const uploadId = session.uploadId;
     if (uploadId) {
-        persistCommitProgress(uploadId, session.progress);
+        persistCommitProgress(uploadId, Object.assign({}, session.progress, {
+            sessionSnapshot: serializeSession(session)
+        }));
         persistSession(uploadId, session);
     }
 }
@@ -984,6 +1025,11 @@ function startCommitWork(session, uploadId) {
 
     const stagingDir = sessionStagingDir(uploadId);
 
+    patchCommitProgress(session, {
+        subPhase: "starting",
+        statusMessage: "Starting archive processing on server…"
+    });
+
     setImmediate(() => {
         const onFileDone = (completed, total, name) => {
             if (!session.progress) return;
@@ -1021,48 +1067,74 @@ function startCommitWork(session, uploadId) {
             }
         };
 
-        if (session.directUpload) {
-            if (isZipOnlyUpload(session)) {
-                logger.info(`GCS zip commit: starting for upload ${uploadId}`);
-                commitDirectGcsUpload(session, uploadId, done, onFileDone);
-                return;
-            }
-
-            const localStaging = sessionStagingDir(uploadId);
-            const localCount = localStaging ? countFilesUnder(localStaging) : 0;
-            if (localCount > 0) {
-                patchCommitProgress(session, {
-                    subPhase: "uploading",
-                    statusMessage: `Uploading ${localCount} extracted file(s) to project folder…`,
-                    filesTotal: localCount,
-                    filesCompleted: 0
-                });
-                logger.info(`GCS commit: uploading ${localCount} local staged files to ${session.gcsDestPath}`);
-                uploadFolderToGcs(localStaging, session.gcsDestPath, done, onFileDone);
-                return;
-            }
-            GCS.listFilesUnderPrefix(session.gcsStagingPath, (listErr, stagingObjects) => {
-                if (listErr) return done(listErr);
-                if (stagingObjects && stagingObjects.length) {
-                    commitFromGcsStaging(session, uploadId, done, onFileDone);
-                } else {
+        try {
+            if (session.directUpload) {
+                if (isZipOnlyUpload(session)) {
+                    logger.info(`GCS zip commit: starting for upload ${uploadId}`);
                     commitDirectGcsUpload(session, uploadId, done, onFileDone);
+                    return;
                 }
-            });
-        } else if (stagingDir) {
-            uploadFolderToGcs(stagingDir, session.gcsDestPath, done, onFileDone);
-        } else {
-            done(new Error("Invalid upload session staging path."));
+
+                const localStaging = sessionStagingDir(uploadId);
+                const localCount = localStaging ? countFilesUnder(localStaging) : 0;
+                if (localCount > 0) {
+                    patchCommitProgress(session, {
+                        subPhase: "uploading",
+                        statusMessage: `Uploading ${localCount} extracted file(s) to project folder…`,
+                        filesTotal: localCount,
+                        filesCompleted: 0
+                    });
+                    logger.info(`GCS commit: uploading ${localCount} local staged files to ${session.gcsDestPath}`);
+                    uploadFolderToGcs(localStaging, session.gcsDestPath, done, onFileDone);
+                    return;
+                }
+                GCS.listFilesUnderPrefix(session.gcsStagingPath, (listErr, stagingObjects) => {
+                    if (listErr) return done(listErr);
+                    if (stagingObjects && stagingObjects.length) {
+                        commitFromGcsStaging(session, uploadId, done, onFileDone);
+                    } else {
+                        commitDirectGcsUpload(session, uploadId, done, onFileDone);
+                    }
+                });
+            } else if (stagingDir) {
+                uploadFolderToGcs(stagingDir, session.gcsDestPath, done, onFileDone);
+            } else {
+                done(new Error("Invalid upload session staging path."));
+            }
+        } catch (e) {
+            activeCommits.delete(uploadId);
+            done(e);
         }
     });
     return true;
 }
 
+function commitProgressAgeMs(session) {
+    if (!session || !session.progress) return 0;
+    const started = session.progress.startedAt || 0;
+    return started ? Math.max(0, Date.now() - started) : 0;
+}
+
+function isCommitStalled(session) {
+    if (!session || !session.progress || session.progress.done) return false;
+    if (session.progress.phase !== "committing") return false;
+    const sub = session.progress.subPhase || "";
+    if (sub !== "preparing" && sub !== "starting") return false;
+    return commitProgressAgeMs(session) >= COMMIT_STALL_MS;
+}
+
 function resumeCommitIfNeeded(session, uploadId) {
     if (!session || !session.progress) return;
     if (session.progress.done || session.progress.phase !== "committing") return;
-    if (activeCommits.has(uploadId)) return;
-    logger.info(`GCS commit resume: ${uploadId} (subPhase=${session.progress.subPhase || "?"})`);
+
+    const stalled = isCommitStalled(session);
+    if (activeCommits.has(uploadId)) {
+        if (!stalled) return;
+        logger.warn(`GCS commit stale lock cleared: ${uploadId} (subPhase=${session.progress.subPhase || "?"})`);
+        activeCommits.delete(uploadId);
+    }
+
+    logger.info(`GCS commit resume: ${uploadId} (subPhase=${session.progress.subPhase || "?"}, age=${Math.round(commitProgressAgeMs(session) / 1000)}s)`);
     startCommitWork(session, uploadId);
 }
 
@@ -1076,7 +1148,7 @@ function handleCommit(req, res) {
     }
 
     if (session.progress && session.progress.phase === "committing" && !session.progress.done) {
-        if (activeCommits.has(uploadId)) {
+        if (activeCommits.has(uploadId) && !isCommitStalled(session)) {
             return res.json({
                 success: true,
                 committing: true,
@@ -1146,6 +1218,71 @@ function handleCommit(req, res) {
     finishStart(fileCount);
 }
 
+function handleRecover(req, res) {
+    if (!GCS.enabled()) {
+        return res.json({ error: "GCS uploads are not available on this server." });
+    }
+
+    const uploadId = req.params.uploadId;
+    if (!UPLOAD_ID_RE.test(String(uploadId || ""))) {
+        return res.json({ error: "Invalid upload session id." });
+    }
+
+    const existing = getOrLoadSession(uploadId);
+    if (existing) {
+        return res.json({ success: true, recovered: false, uploadId });
+    }
+
+    const body = req.body || {};
+    const rawName = body.projectName || body.sanitizedName || "";
+    const sanitizedName = sanitizeProjectName(rawName);
+    let relativePaths = [];
+    if (Array.isArray(body.relativePaths) && body.relativePaths.length) {
+        relativePaths = body.relativePaths.map(p => sanitizeRelativePath(p));
+    } else if (body.relativePath) {
+        relativePaths = [sanitizeRelativePath(body.relativePath)];
+    }
+    if (!sanitizedName || !relativePaths.length) {
+        return res.json({
+            error: "Recovery requires projectName and relativePath(s) from step 1."
+        });
+    }
+
+    const tmpDir = sessionTmpDir(uploadId);
+    fs.mkdir(tmpDir, { recursive: true }, mkdirErr => {
+        if (mkdirErr) return res.json({ error: mkdirErr.message });
+
+        const session = {
+            uploadId,
+            projectName: String(rawName).trim() || sanitizedName,
+            sanitizedName,
+            gcsDestPath: gcsDestPathForProject(sanitizedName, config.gcsUploadPrefix),
+            gcsStagingPath: gcsSessionStagingPath(uploadId),
+            createdAt: Date.now(),
+            stagedFileCount: relativePaths.length,
+            stagedRelativePaths: new Set(relativePaths),
+            directUpload: true,
+            zipOnlyUpload: relativePaths.length === 1 && ZIP_EXT.test(relativePaths[0])
+        };
+
+        async.eachSeries(relativePaths, (relPath, next) => {
+            verifyUploadedObject(session, relPath, 0, verifyErr => {
+                if (verifyErr) return next(verifyErr);
+                next();
+            });
+        }, err => {
+            if (err) {
+                logger.warn(`GCS upload recover failed for ${uploadId}: ${err.message}`);
+                return res.json({ error: err.message });
+            }
+            sessions.set(uploadId, session);
+            persistSession(uploadId, session);
+            logger.info(`GCS upload session recovered from client snapshot: ${uploadId}`);
+            res.json({ success: true, recovered: true, uploadId });
+        });
+    });
+}
+
 function handleProgress(req, res) {
     if (req.gcsUploadCommitDisk) {
         const disk = req.gcsUploadCommitDisk;
@@ -1156,8 +1293,18 @@ function handleProgress(req, res) {
     }
 
     if (req.gcsCommitProgressDisk) {
+        let recovered = recoverSessionFromProgress(req.gcsUploadId);
+        if (recovered && recovered.progress) {
+            resumeCommitIfNeeded(recovered, req.gcsUploadId);
+            const out = Object.assign({ done: !!recovered.progress.done }, recovered.progress);
+            if (recovered.progress.phase === "complete" || recovered.progress.done) {
+                out.done = true;
+            }
+            return res.json(out);
+        }
         const disk = req.gcsCommitProgressDisk;
         const out = Object.assign({ done: !!disk.done }, disk);
+        delete out.sessionSnapshot;
         if (disk.phase === "complete" || disk.done) {
             out.done = true;
         }
@@ -1277,6 +1424,7 @@ module.exports = {
     handleFile,
     handleBatch,
     handleCommit,
+    handleRecover,
     handleProgress,
     handleDelete
 };

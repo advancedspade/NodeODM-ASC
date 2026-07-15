@@ -37,5 +37,7 @@
 	"gcsKeyPath": "",
 	"gcsParallelUploads": 16,
 	"gcsUploadPaths": ".",
-	"gcsCleanupAfterUpload": false
+	"gcsCleanupAfterUpload": false,
+
+	"rtkAnalysis": true
 }

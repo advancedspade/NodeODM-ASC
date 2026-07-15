@@ -42,7 +42,9 @@ env:
 #   OAUTH_GOOGLE_CLIENT_ID, OAUTH_GOOGLE_CLIENT_SECRET
 #   OAUTH_GOOGLE_REDIRECT_URI (dronemaps/staging VM), OAUTH_GOOGLE_REDIRECT_URI_SUPER (super VM)
 #   PORTAL_ENV_URL, PORTAL_SUPER_ENV_URL → container PORTAL_STAGING_ENV_URL / PORTAL_SUPER_ENV_URL
-# Optional (repo or environment Variable): NODEODM_TRUST_PROXY (=1 behind HTTPS LB)
+# Optional (repo or environment Variable): NODEODM_TRUST_PROXY (=1 when HTTPS terminates in front of the container)
+# Large manual uploads: if HTTPS is proxied (LB, nginx, Cloudflare, etc.), that proxy may need a long request timeout.
+# NodeODM itself is just Express on :3000 inside Docker — there is no separate "backend service" in this repo.
 
 # Required for Workload Identity Federation
 permissions:

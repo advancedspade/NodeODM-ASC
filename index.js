@@ -47,6 +47,12 @@ const { applyUiDefaultsToOptions, OPTION_UI_DEFAULTS } = require('./libs/odmUiDe
 const auth = require('./libs/auth/factory').fromConfig(config);
 const authCheck = auth.getMiddleware();
 const taskNew = require('./libs/taskNew');
+const rtkApi = require('./libs/rtkApi');
+const gcsUploadApi = require('./libs/gcsUploadApi');
+
+const formDataParser = multer().none();
+const urlEncodedBodyParser = bodyParser.urlencoded({ extended: false });
+const jsonBodyParser = bodyParser.json();
 
 let taskManager;
 let server;
@@ -98,6 +104,10 @@ app.get('/auth/bootstrap', (req, res) => {
         const payload = {
             oauth: true,
             signedIn: googleOAuth.hasWebAuth(req),
+            gcsUpload: GCS.enabled() ? {
+                enabled: true,
+                directUpload: true
+            } : { enabled: false },
             portalStagingEnvOrigin: config.portalStagingEnvOrigin || "",
             portalStagingEnvLabel: config.portalStagingEnvLabel || "dronemaps",
             portalStagingEnvTagline: config.portalStagingEnvTagline || "",
@@ -110,7 +120,14 @@ app.get('/auth/bootstrap', (req, res) => {
         };
         return res.json(payload);
     }
-    res.json({ oauth: false, signedIn: true });
+    res.json({
+        oauth: false,
+        signedIn: true,
+        gcsUpload: GCS.enabled() ? {
+            enabled: true,
+            directUpload: true
+        } : { enabled: false }
+    });
 });
 app.get('/', (req, res) => {
     if (config.oauthEnabled && googleOAuth && !googleOAuth.hasWebAuth(req)) {
@@ -164,6 +181,34 @@ app.get('/task/list', authCheck, (req, res) => {
     res.json(tasks);
 });
 
+app.get('/rtk/status', authCheck, rtkApi.handleStatus);
+app.post('/rtk/session', authCheck, rtkApi.handleSessionCreate);
+app.post('/rtk/session/:sessionId/upload', authCheck, rtkApi.assignSessionDir, rtkApi.uploadSessionImage, rtkApi.handleSessionUpload);
+app.post('/rtk/session/:sessionId/analyze', authCheck, rtkApi.assignSessionDir, rtkApi.handleSessionAnalyze);
+app.delete('/rtk/session/:sessionId', authCheck, rtkApi.handleSessionDelete);
+app.post('/rtk/analyze', authCheck, rtkApi.assignPreviewDir, rtkApi.uploadImages, rtkApi.handleAnalyze);
+
+function gcsApiNoCache(req, res, next) {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.setHeader("Surrogate-Control", "no-store");
+    next();
+}
+app.use("/gcs", gcsApiNoCache);
+
+app.get('/gcs/upload/status', authCheck, gcsUploadApi.handleStatus);
+app.get('/gcs/projects', authCheck, gcsUploadApi.handleListProjects);
+app.post('/gcs/upload/init', authCheck, urlEncodedBodyParser, jsonBodyParser, gcsUploadApi.handleInit);
+app.post('/gcs/upload/:uploadId/sign', authCheck, gcsUploadApi.assignUpload, jsonBodyParser, gcsUploadApi.handleSign);
+app.post('/gcs/upload/:uploadId/complete', authCheck, gcsUploadApi.assignUpload, jsonBodyParser, gcsUploadApi.handleComplete);
+app.post('/gcs/upload/:uploadId/file', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.uploadMiddleware, gcsUploadApi.handleFile);
+app.post('/gcs/upload/:uploadId/batch', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.uploadBatchMiddleware, gcsUploadApi.handleBatch);
+app.post('/gcs/upload/:uploadId/commit', authCheck, gcsUploadApi.assignUpload, gcsUploadApi.handleCommit);
+app.post('/gcs/upload/:uploadId/recover', authCheck, jsonBodyParser, gcsUploadApi.handleRecover);
+app.get('/gcs/upload/:uploadId/progress', authCheck, gcsUploadApi.assignUploadProgress, gcsUploadApi.handleProgress);
+app.delete('/gcs/upload/:uploadId', authCheck, gcsUploadApi.handleDelete);
+
 const devStaticNoCache = process.env.NODEODM_DEV_STATIC_NO_CACHE === '1';
 app.use(express.static(publicDir, {
     etag: !devStaticNoCache,
@@ -179,10 +224,6 @@ app.use(express.static(publicDir, {
     }
 }));
 app.use('/swagger.json', express.static('docs/swagger.json'));
-
-const formDataParser = multer().none();
-const urlEncodedBodyParser = bodyParser.urlencoded({extended: false});
-const jsonBodyParser = bodyParser.json();
 
 /** @swagger
  *  /task/new/init:
@@ -1026,7 +1067,13 @@ let commands = [
     cb => odmInfo.initialize(cb),
     cb => auth.initialize(cb),
     cb => S3.initialize(cb),
-    cb => GCS.initialize(cb),
+    cb => GCS.initialize(err => {
+        if (err) {
+            logger.warn(`GCS upload disabled: ${err.message}`);
+            return cb();
+        }
+        cb();
+    }),
     cb => { 
         TaskManager.initialize(cb);
         taskManager = TaskManager.singleton();

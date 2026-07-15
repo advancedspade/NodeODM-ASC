@@ -1,0 +1,38 @@
+[
+  {
+    "origin": ["*"],
+    "method": ["GET", "HEAD", "OPTIONS"],
+    "responseHeader": [
+      "Content-Type",
+      "Content-Length",
+      "Content-Range",
+      "Accept-Ranges",
+      "Range",
+      "ETag",
+      "Last-Modified",
+      "Cache-Control"
+    ],
+    "maxAgeSeconds": 3600
+  },
+  {
+    "origin": [
+      "https://dronemaps.advancedspadecompany.com",
+      "https://superdrone.advancedspadecompany.com",
+      "http://localhost:3000",
+      "http://127.0.0.1:3000"
+    ],
+    "method": ["PUT", "GET", "HEAD", "OPTIONS"],
+    "responseHeader": [
+      "Content-Type",
+      "Content-Length",
+      "Content-Range",
+      "Accept-Ranges",
+      "Range",
+      "ETag",
+      "Last-Modified",
+      "Location",
+      "x-goog-resumable"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]

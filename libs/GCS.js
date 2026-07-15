@@ -28,13 +28,19 @@ const rmdir = require('rimraf');
 
 let storage = null;
 let bucket = null;
+let lastInitError = null;
 
 module.exports = {
     enabled: function() {
         return storage !== null && bucket !== null;
     },
 
+    lastInitError: function() {
+        return lastInitError;
+    },
+
     initialize: function(cb) {
+        lastInitError = null;
         if (config.gcsBucket) {
             const storageConfig = {};
 
@@ -56,16 +62,25 @@ module.exports = {
                 // Test connection by checking if bucket exists
                 bucket.exists((err, exists) => {
                     if (err) {
-                        cb(new Error(`Cannot connect to GCS: ${err.message}`));
+                        storage = null;
+                        bucket = null;
+                        lastInitError = `Cannot connect to GCS: ${err.message}`;
+                        cb(new Error(lastInitError));
                     } else if (!exists) {
-                        cb(new Error(`GCS bucket '${config.gcsBucket}' does not exist or is not accessible`));
+                        storage = null;
+                        bucket = null;
+                        lastInitError = `GCS bucket '${config.gcsBucket}' does not exist or is not accessible`;
+                        cb(new Error(lastInitError));
                     } else {
                         logger.info(`Connected to GCS bucket: ${config.gcsBucket}`);
                         cb();
                     }
                 });
             } catch (err) {
-                cb(new Error(`Failed to initialize GCS: ${err.message}`));
+                storage = null;
+                bucket = null;
+                lastInitError = `Failed to initialize GCS: ${err.message}`;
+                cb(new Error(lastInitError));
             }
         } else {
             cb();
@@ -80,13 +95,14 @@ module.exports = {
      * @param {String[]} paths - List of paths relative to srcFolder to upload
      * @param {Function} cb - Callback function
      * @param {Function} onOutput - Optional callback for progress output
+     * @param {Function} onFileDone - Optional callback(completed, total, filename) after each file
      */
-    uploadPaths: function(srcFolder, bucketName, dstFolder, paths, cb, onOutput) {
+    uploadPaths: function(srcFolder, bucketName, dstFolder, paths, cb, onOutput, onFileDone) {
         if (!storage || !bucket) {
             return cb(new Error("GCS is not initialized"));
         }
 
-        const PARALLEL_UPLOADS = config.gcsParallelUploads || 16;
+        const PARALLEL_UPLOADS = config.gcsParallelUploads || 32;
         const MAX_RETRIES = 5;
 
         let uploadList = [];
@@ -189,6 +205,9 @@ module.exports = {
                     if (onOutput) {
                         onOutput(`[${progress}%] Uploaded ${filename} (${fileSizeMB} MB in ${elapsed}s)`);
                     }
+                    if (onFileDone) {
+                        onFileDone(completedUploads, totalFiles, file.relativePath || filename);
+                    }
 
                     done();
                 });
@@ -222,6 +241,228 @@ module.exports = {
      * @param {Function} cb - Callback
      * @param {Function} onOutput - Optional output callback
      */
+    /**
+     * List project folder names under gcsUploadPrefix (top-level "directories" in the bucket).
+     */
+    listProjects: function(cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+
+        const prefix = config.gcsUploadPrefix
+            ? String(config.gcsUploadPrefix).replace(/\/$/, "") + "/"
+            : "";
+
+        bucket.getFiles({ prefix, delimiter: "/", autoPaginate: false, maxResults: 5000 }, (err, files, nextQuery, apiResponse) => {
+            if (err) return cb(err);
+
+            const names = new Set();
+            (apiResponse && apiResponse.prefixes || []).forEach(p => {
+                let name = p.slice(prefix.length).replace(/\/$/, "");
+                if (name && !name.includes("/") && !name.startsWith(".")) names.add(name);
+            });
+
+            // Fallback: infer folder names from object keys when delimiter prefixes are empty.
+            (files || []).forEach(file => {
+                const key = file.name || "";
+                if (!key.startsWith(prefix)) return;
+                const rest = key.slice(prefix.length);
+                const seg = rest.split("/")[0];
+                if (seg && !seg.startsWith(".")) names.add(seg);
+            });
+
+            cb(null, Array.from(names).sort((a, b) => a.localeCompare(b)));
+        });
+    },
+
+    /**
+     * Resumable upload session URL (uses VM/service-account OAuth — no signBlob IAM needed).
+     * Browser PUTs the file body to the returned URL.
+     */
+    getResumableUploadUrl: function(objectPath, contentType, origin, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const file = bucket.file(objectPath);
+        const opts = {
+            metadata: {
+                contentType: contentType || "application/octet-stream"
+            }
+        };
+        if (origin) opts.origin = origin;
+
+        file.createResumableUpload(opts, (err, uri) => {
+            if (err) return cb(err);
+            cb(null, uri);
+        });
+    },
+
+    listFilesUnderPrefix: function(prefix, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const normalized = String(prefix || "").replace(/\/+$/, "") + "/";
+        bucket.getFiles({ prefix: normalized, autoPaginate: true }, (err, files) => {
+            if (err) return cb(err);
+            const objects = (files || []).filter(f => {
+                const name = f.name || "";
+                return name.length > normalized.length && !name.endsWith("/");
+            });
+            cb(null, objects);
+        });
+    },
+
+    objectExists: function(objectPath, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        bucket.file(objectPath).exists((err, exists) => cb(err, !!exists));
+    },
+
+    objectMetadata: function(objectPath, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        bucket.file(objectPath).getMetadata((err, metadata) => {
+            if (err) return cb(err);
+            cb(null, metadata);
+        });
+    },
+
+    deleteObjects: function(objectPaths, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const paths = (objectPaths || []).filter(Boolean);
+        if (!paths.length) return cb();
+        async.eachLimit(paths, 16, (p, done) => {
+            bucket.file(p).delete({ ignoreNotFound: true }, done);
+        }, cb);
+    },
+
+    copyObject: function(srcPath, destPath, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        bucket.file(srcPath).copy(bucket.file(destPath), err => cb(err));
+    },
+
+    copyPrefix: function(srcPrefix, destPrefix, cb, onFileDone) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const srcBase = String(srcPrefix || "").replace(/\/+$/, "") + "/";
+        const destBase = String(destPrefix || "").replace(/\/+$/, "") + "/";
+        const PARALLEL = config.gcsParallelUploads || 32;
+
+        module.exports.listFilesUnderPrefix(srcBase, (err, files) => {
+            if (err) return cb(err);
+            if (!files.length) {
+                return cb(new Error("No staged objects found in GCS."));
+            }
+
+            let completed = 0;
+            const total = files.length;
+            if (onFileDone) onFileDone(0, total, "starting…");
+
+            const q = async.queue((file, done) => {
+                const rel = file.name.slice(srcBase.length);
+                const dest = destBase + rel;
+                module.exports.copyObject(file.name, dest, copyErr => {
+                    if (copyErr) return done(copyErr);
+                    completed++;
+                    if (onFileDone) onFileDone(completed, total, rel);
+                    done();
+                });
+            }, PARALLEL);
+
+            q.error = err => cb(err);
+            q.drain = () => {
+                if (onFileDone) onFileDone(total, total, "");
+                cb(null, { fileCount: total });
+            };
+            q.push(files);
+        });
+    },
+
+    deletePrefix: function(prefix, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const normalized = String(prefix || "").replace(/\/+$/, "") + "/";
+        bucket.getFiles({ prefix: normalized, autoPaginate: true }, (err, files) => {
+            if (err) return cb(err);
+            if (!files || !files.length) return cb();
+            async.eachLimit(files, 16, (file, done) => file.delete(done), cb);
+        });
+    },
+
+    deletePrefixWithRetry: function(prefix, cb, maxAttempts) {
+        const limit = maxAttempts || 5;
+        const attempt = (n) => {
+            module.exports.deletePrefix(prefix, err => {
+                if (!err) return cb();
+                if (n < limit - 1) {
+                    logger.warn(`GCS prefix delete retry (${n + 1}/${limit}) for ${prefix}: ${err.message}`);
+                    return setTimeout(() => attempt(n + 1), 2000 * (n + 1));
+                }
+                cb(err);
+            });
+        };
+        attempt(0);
+    },
+
+    downloadFile: function(objectPath, destPath, cb, onProgress) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        fs.mkdir(path.dirname(destPath), { recursive: true }, mkdirErr => {
+            if (mkdirErr) return cb(mkdirErr);
+            const file = bucket.file(objectPath);
+            file.getMetadata((metaErr, metadata) => {
+                if (metaErr) return cb(metaErr);
+                const total = metadata && metadata.size ? parseInt(metadata.size, 10) : 0;
+                let received = 0;
+                let finished = false;
+
+                const finish = (err) => {
+                    if (finished) return;
+                    finished = true;
+                    cb(err);
+                };
+
+                if (onProgress) onProgress(0, total);
+
+                const writeStream = fs.createWriteStream(destPath);
+                const readStream = file.createReadStream();
+
+                readStream.on("data", chunk => {
+                    received += chunk.length;
+                    if (onProgress) onProgress(received, total || received);
+                });
+
+                readStream.on("error", err => {
+                    writeStream.destroy();
+                    finish(err);
+                });
+
+                writeStream.on("error", err => finish(err));
+                writeStream.on("finish", () => {
+                    if (onProgress) onProgress(total || received, total || received);
+                    logger.info(`GCS download complete: ${objectPath} (${received} bytes)`);
+                    finish();
+                });
+
+                readStream.pipe(writeStream);
+                logger.info(`GCS download started: ${objectPath} (${total} bytes)`);
+            });
+        });
+    },
+
+    contentTypeForPath: function(filePath) {
+        return getContentType(filePath);
+    },
+
     cleanupLocalPaths: function(srcFolder, paths, cb, onOutput) {
         if (onOutput) onOutput("Cleaning up local files after GCS upload...");
         logger.info(`Starting cleanup of ${paths.length} paths in ${srcFolder}`);

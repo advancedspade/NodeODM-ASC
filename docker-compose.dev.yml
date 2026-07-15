@@ -2,9 +2,12 @@
 # Usage:
 #   docker compose -f docker-compose.dev.yml up --build
 #
-# With GCS uploads (bucket + SA key on host):
-#   export GCS_BUCKET=... GCS_SA_KEY_FILE=/path/to/key.json
-#   docker compose -f docker-compose.dev.yml -f docker-compose.gcs.yml up --build
+# With GCS uploads (manual Uploads page + task output sync):
+#   Add GCS_BUCKET (+ GCS_UPLOAD_PREFIX) to .env — see env.gcs.example.
+#   Auth (pick one for local Docker):
+#     • gcloud ADC:  docker compose -f docker-compose.dev.yml -f docker-compose.gcs-adc.yml up
+#     • JSON key:    docker compose -f docker-compose.dev.yml -f docker-compose.gcs.yml up
+#   On GCE (staging), only --gcs_bucket is passed; the VM service account handles auth.
 #
 # Hot reload expectations:
 # - There is no in-browser HMR (no webpack live reload). Edits under public/ are served
@@ -22,10 +25,18 @@ services:
     env_file:
       - .env
     environment:
-      # Allow session cookie on http://localhost when the base image sets NODE_ENV=production
-      OAUTH_COOKIE_SECURE: "0"
       # Express static uses ETag by default — browsers often keep old CSS/JS without this.
       NODEODM_DEV_STATIC_NO_CACHE: "1"
+      # Disable Google OAuth locally (.env would otherwise enable it and redirect to /login.html)
+      OAUTH_GOOGLE_CLIENT_ID: ""
+      OAUTH_GOOGLE_CLIENT_SECRET: ""
+      OAUTH_GOOGLE_REDIRECT_URI: ""
+      SESSION_SECRET: ""
+      # Optional — set in .env to enable GCS (requires gcs compose file for SA key mount)
+      GCS_BUCKET: ${GCS_BUCKET:-}
+      GCS_PROJECT_ID: ${GCS_PROJECT_ID:-}
+      GCS_UPLOAD_PREFIX: ${GCS_UPLOAD_PREFIX:-outputs}
+      GCS_KEY_PATH: ${GCS_KEY_PATH:-}
     ports:
       - "3000:3000"
     entrypoint: ["/usr/bin/nodemon", "--legacy-watch"]

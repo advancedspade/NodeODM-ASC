@@ -27,6 +27,50 @@ let odmOptions = null;
 let odmVersion = null;
 let engine = null;
 
+function parseMemoryLimitToGB(raw) {
+    if (!raw) return null;
+    const s = String(raw).trim().toLowerCase();
+    const m = s.match(/^(\d+(?:\.\d+)?)\s*([gmk])?b?$/);
+    if (!m) return null;
+    const n = parseFloat(m[1]);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const unit = m[2] || "g";
+    if (unit === "m") return n / 1024;
+    if (unit === "k") return n / (1024 * 1024);
+    return n;
+}
+
+/** RAM visible to this process (respect Docker/Podman cgroup limits when set). */
+function getVisibleMemoryGB() {
+    const fs = require("fs");
+    const nodeOs = require("os");
+    let totalGB = nodeOs.totalmem() / (1024 * 1024 * 1024);
+
+    const cgroupPaths = [
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes"
+    ];
+    for (let i = 0; i < cgroupPaths.length; i++) {
+        try {
+            if (!fs.existsSync(cgroupPaths[i])) continue;
+            const raw = fs.readFileSync(cgroupPaths[i], "utf8").trim();
+            if (raw === "max") continue;
+            const bytes = parseInt(raw, 10);
+            if (Number.isFinite(bytes) && bytes > 0) {
+                const limitGB = bytes / (1024 * 1024 * 1024);
+                if (limitGB > 0 && limitGB < totalGB) totalGB = limitGB;
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    const configured = parseMemoryLimitToGB(config.dockerMemoryLimit);
+    if (configured && configured > 0 && configured < totalGB) {
+        totalGB = configured;
+    }
+
+    return totalGB;
+}
+
 module.exports = {
     initialize: function(done){
         async.parallel([
@@ -412,13 +456,9 @@ module.exports = {
             // So max-concurrency auto-calc sees the same resolution as later defaults
             applyDefaultIfMissing("orthophoto-resolution");
 
-            // max-concurrency: OPTION_UI_DEFAULTS may show "8" in /options for UX, but applying that
-            // literally on small Docker limits causes OOM (137). When the client omits the key (see
-            // main.js getUserOptions), we derive threads from RAM. Values are always capped to safeConcurrencyCap.
+            const totalMemoryGB = getVisibleMemoryGB();
             const orthophotoResolution = result.find(r => r.name === 'orthophoto-resolution');
             const resolution = orthophotoResolution ? parseFloat(orthophotoResolution.value) : 5.0;
-            const os = require('os');
-            const totalMemoryGB = os.totalmem() / (1024 * 1024 * 1024);
             const memoryPerThreadGB = resolution <= 0.2 ? 3.0 : 1.5;
             const systemReserveGB = resolution <= 0.2 ? 4.5 : 2.5;
             const availableMemoryGB = Math.max(0.5, totalMemoryGB - systemReserveGB);

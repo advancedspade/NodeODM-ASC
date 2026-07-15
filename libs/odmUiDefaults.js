@@ -11,10 +11,12 @@
  * feature-type: requested "dpsift" is not an ODM 3.0.4 choice; using "sift".
  * optimize-disk-space: "false" keeps originals under images/ for all.zip (raw photos preserved).
  * max-concurrency "8" is for /options display; filterOptions derives a RAM-safe value unless the client explicitly sends this option.
+ *
+ * Set NODEODM_LOCAL_CPU=1 in docker-compose.dev.yml for CPU-only local processing (lower resolution, no GPU).
  */
 "use strict";
 
-const OPTION_UI_DEFAULTS = {
+const STAGING_OPTION_UI_DEFAULTS = {
     "3d-tiles": "false",
     "auto-boundary": "true",
     "auto-boundary-distance": "10",
@@ -89,6 +91,28 @@ const OPTION_UI_DEFAULTS = {
     "video-limit": "500",
     "video-resolution": "4000"
 };
+
+/** Lighter defaults for local dev (CPU, limited RAM). Enabled via NODEODM_LOCAL_CPU=1. */
+const LOCAL_CPU_OPTION_OVERRIDES = {
+    "feature-quality": "medium",
+    "min-num-features": "10000",
+    "mesh-size": "200000",
+    "mesh-octree-depth": "11",
+    "no-gpu": "true",
+    "orthophoto-resolution": "5",
+    "pc-quality": "low"
+};
+
+function isLocalCpuMode() {
+    const v = process.env.NODEODM_LOCAL_CPU;
+    return v === "1" || v === "true" || v === "yes";
+}
+
+const OPTION_UI_DEFAULTS = Object.assign(
+    {},
+    STAGING_OPTION_UI_DEFAULTS,
+    isLocalCpuMode() ? LOCAL_CPU_OPTION_OVERRIDES : null
+);
 
 function applyUiDefaultsToOptions(list) {
     if (!Array.isArray(list)) return;

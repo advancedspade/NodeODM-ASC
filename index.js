@@ -141,6 +141,15 @@ app.get('/index.html', (req, res) => {
     }
     sendWebUiIndex(res);
 });
+function sendWebUiView(req, res) {
+    if (config.oauthEnabled && googleOAuth && !googleOAuth.hasWebAuth(req)) {
+        return res.redirect(302, '/login.html');
+    }
+    sendWebUiIndex(res);
+}
+app.get('/home', sendWebUiView);
+app.get('/uploads', sendWebUiView);
+app.get('/incomplete', sendWebUiView);
 
 /** @swagger
  *  /task/list:
@@ -199,6 +208,9 @@ app.use("/gcs", gcsApiNoCache);
 
 app.get('/gcs/upload/status', authCheck, gcsUploadApi.handleStatus);
 app.get('/gcs/projects', authCheck, gcsUploadApi.handleListProjects);
+app.get('/gcs/projects/incomplete', authCheck, gcsUploadApi.handleListIncompleteProjects);
+app.get('/gcs/projects/:projectName/inputs', authCheck, gcsUploadApi.handleListProjectInputs);
+app.get('/gcs/projects/:projectName/download', authCheck, gcsUploadApi.handleDownloadProjectFile);
 app.post('/gcs/upload/init', authCheck, urlEncodedBodyParser, jsonBodyParser, gcsUploadApi.handleInit);
 app.post('/gcs/upload/:uploadId/sign', authCheck, gcsUploadApi.assignUpload, jsonBodyParser, gcsUploadApi.handleSign);
 app.post('/gcs/upload/:uploadId/complete', authCheck, gcsUploadApi.assignUpload, jsonBodyParser, gcsUploadApi.handleComplete);

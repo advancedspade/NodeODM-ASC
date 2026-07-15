@@ -12,7 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/main.css?t=2">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-    <link rel="stylesheet" href="css/app.css?t=36">
+    <link rel="stylesheet" href="css/app.css?t=39">
 </head>
 <body>
     <div class="page-atmosphere" aria-hidden="true">
@@ -130,6 +130,10 @@
                     <span class="ndm-nav-item__icon" aria-hidden="true">↑</span>
                     <span class="ndm-nav-item__label">Uploads</span>
                 </button>
+                <button type="button" class="ndm-nav-item" data-ndm-view="incomplete" id="ndmNavIncomplete">
+                    <span class="ndm-nav-item__icon" aria-hidden="true">!</span>
+                    <span class="ndm-nav-item__label">Incomplete</span>
+                </button>
             </nav>
         </aside>
 
@@ -209,13 +213,14 @@
 
                             <section class="section project-name-section">
                                 <label class="ndm-label" for="taskName">Project name <span class="ndm-label__req" aria-hidden="true">(required)</span></label>
-                                <p class="project-name-hint">Required — shown in the task list so you can identify this job.</p>
+                                <p class="project-name-hint" id="taskNameHint">Required — shown in the task list so you can identify this job.</p>
                                 <div class="project-name-row">
-                                    <input type="text" class="ndm-input" id="taskName" name="taskName" autocomplete="off" required aria-required="true" placeholder="e.g. North field survey, Client site ortho">
+                                    <input type="text" class="ndm-input" id="taskName" name="taskName" autocomplete="off" required aria-required="true" placeholder="e.g. North field survey, Client site ortho" aria-describedby="taskNameHint taskNameGcsStatus">
                                     <span class="opt-actions">
                                         <button type="button" class="btn-icon" id="resetTaskName" title="Clear project name">↺</button>
                                     </span>
                                 </div>
+                                <p class="file-meta project-name-gcs-status" id="taskNameGcsStatus" aria-live="polite" hidden></p>
                             </section>
 
                             <div class="actions">
@@ -481,6 +486,34 @@
                 </div>
             </div>
         </div><!-- /ndmViewUploads -->
+
+        <div class="ndm-view" id="ndmViewIncomplete" data-ndm-view="incomplete" hidden>
+            <header class="page-header">
+                <div class="page-header__headline">
+                    <h1 class="page-header__title">Incomplete jobs</h1>
+                </div>
+                <p>Cloud projects that do not have an <code>odm_orthophoto</code> folder yet — failed runs, jobs still in progress, or raw images only.</p>
+            </header>
+
+            <div class="grid grid--incomplete">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="ndm-incomplete-toolbar">
+                            <p class="file-meta ndm-incomplete-status" id="ndmIncompleteStatus" aria-live="polite"></p>
+                            <button type="button" class="btn-ghost" id="ndmIncompleteRefresh" disabled>Refresh</button>
+                        </div>
+                        <div id="ndmIncompleteError" class="error-block" hidden role="alert"></div>
+                        <div class="ndm-incomplete-empty" id="ndmIncompleteEmpty" hidden>
+                            <p>No incomplete projects found — every cloud project has an orthophoto output.</p>
+                        </div>
+                        <div class="ndm-incomplete-unavailable" id="ndmIncompleteUnavailable" hidden>
+                            <p>Cloud storage is not connected on this server, so incomplete projects cannot be listed.</p>
+                        </div>
+                        <ul class="ndm-incomplete-list" id="ndmIncompleteList" role="list" hidden></ul>
+                    </div>
+                </div>
+            </div>
+        </div><!-- /ndmViewIncomplete -->
     </div>
         </div><!-- /app-main -->
     </div><!-- /app-layout -->
@@ -494,6 +527,6 @@
     <script src="js/dropzone.js" type="text/javascript"></script>
     <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-    <script src="js/main.js?t=92"></script>
+    <script src="js/main.js?t=99"></script>
 </body>
 </html>

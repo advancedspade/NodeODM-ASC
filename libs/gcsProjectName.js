@@ -25,7 +25,13 @@ function gcsDestPathForProject(sanitizedName, uploadPrefix) {
     return prefix ? `${prefix}/${sanitizedName}` : sanitizedName;
 }
 
+function projectNameExists(sanitizedName, existingNames) {
+    if (!sanitizedName) return false;
+    return (existingNames || []).some(n => n === sanitizedName);
+}
+
 module.exports = {
     sanitizeProjectName,
-    gcsDestPathForProject
+    gcsDestPathForProject,
+    projectNameExists
 };

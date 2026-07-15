@@ -1166,6 +1166,23 @@ body {
     min-width: 0;
 }
 
+.ndm-input--duplicate-name {
+    border-color: rgba(245, 101, 101, 0.75);
+    box-shadow: 0 0 0 1px rgba(245, 101, 101, 0.35);
+}
+
+.project-name-gcs-status {
+    margin-top: 0.5rem;
+}
+
+.project-name-gcs-status--warn {
+    color: #f56565;
+}
+
+.project-name-gcs-status--ok {
+    color: var(--muted);
+}
+
 fieldset.preset-fieldset {
     border: none;
     border-left: 4px solid var(--accent);
@@ -2064,6 +2081,115 @@ fieldset.preset-fieldset legend {
 .grid--uploads {
     grid-template-columns: 1fr;
     max-width: 720px;
+}
+
+.grid--incomplete {
+    grid-template-columns: 1fr;
+    max-width: 960px;
+}
+
+.ndm-incomplete-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem 1rem;
+    margin-bottom: 1rem;
+}
+
+.ndm-incomplete-status {
+    margin: 0;
+    flex: 1 1 200px;
+}
+
+.ndm-incomplete-status--loading {
+    color: var(--muted);
+}
+
+.ndm-incomplete-status--error {
+    color: #f56565;
+}
+
+.ndm-incomplete-empty,
+.ndm-incomplete-unavailable {
+    padding: 1.25rem 0;
+    color: var(--muted);
+}
+
+.ndm-incomplete-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.ndm-incomplete-item {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    padding: 0.875rem 1rem;
+}
+
+.ndm-incomplete-item__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.35rem 1rem;
+    margin-bottom: 0.35rem;
+}
+
+.ndm-incomplete-item__title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.ndm-incomplete-item__folder {
+    font-size: 0.8125rem;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.ndm-incomplete-item__status {
+    display: inline-block;
+    font-size: 0.8125rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(245, 101, 101, 0.12);
+    color: #f56565;
+}
+
+.ndm-incomplete-item__status--raw {
+    background: rgba(237, 137, 54, 0.14);
+    color: #ed8936;
+}
+
+.ndm-incomplete-item__uri {
+    margin: 0.35rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--muted);
+    word-break: break-all;
+}
+
+.ndm-incomplete-item__actions {
+    margin-top: 0.75rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem 0.75rem;
+}
+
+.ndm-incomplete-item__no-inputs {
+    margin: 0;
+    color: var(--muted);
+}
+
+.ndm-incomplete-reprocess {
+    font-size: 0.875rem;
+    padding: 0.4rem 0.85rem;
 }
 
 .ndm-gcs-project-section {

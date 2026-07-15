@@ -185,8 +185,14 @@ class TaskManager{
     // Finds the first QUEUED task.
     findNextTaskToProcess(){
         for (let uuid in this.tasks){
-            if (this.tasks[uuid].getStatus() === statusCodes.QUEUED && this.tasks[uuid].initialized){
-                return this.tasks[uuid];
+            const task = this.tasks[uuid];
+            // A task is reserved in runningQueue before Task.start() begins. Task.start()
+            // may keep it QUEUED while asynchronous pre-processing (such as the raw GCS
+            // backup) runs, so do not select the same task again during that window.
+            if (task.getStatus() === statusCodes.QUEUED &&
+                task.initialized &&
+                this.runningQueue.indexOf(task) === -1){
+                return task;
             }
         }
     }
@@ -197,7 +203,7 @@ class TaskManager{
         if (this.runningQueue.length < config.parallelQueueProcessing){
             let task = this.findNextTaskToProcess();
             if (task){
-                this.addToRunningQueue(task);
+                if (!this.addToRunningQueue(task)) return;
                 task.start(() => {
 
                     task.callWebhooks();
@@ -215,7 +221,12 @@ class TaskManager{
 
     addToRunningQueue(task){
         assert(task.constructor.name === "Task", "Must be a Task object");
+        if (this.runningQueue.indexOf(task) !== -1) {
+            logger.warn(`Task ${task.uuid} is already reserved in the running queue; refusing duplicate start`);
+            return false;
+        }
         this.runningQueue.push(task);
+        return true;
     }
 
     removeFromRunningQueue(task){

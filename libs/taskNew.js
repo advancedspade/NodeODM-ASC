@@ -32,6 +32,70 @@ const request = require('request');
 const ziputils = require('./ziputils');
 const statusCodes = require('./statusCodes');
 const logger = require('./logger');
+const GCS = require('./GCS');
+const { sanitizeProjectName, projectNameExists } = require('./gcsProjectName');
+
+/** In-flight upload sessions that reserved a project name at init (not yet in GCS). */
+const pendingProjectNames = new Map();
+
+function releasePendingProjectName(taskUuid) {
+    if (taskUuid) pendingProjectNames.delete(String(taskUuid));
+}
+
+function assertProjectNameUnique(rawName, opts, cb) {
+    if (typeof opts === "function") {
+        cb = opts;
+        opts = {};
+    }
+    const trimmed = String(rawName || "").trim();
+    if (!trimmed) {
+        return cb(new Error("Project name is required."));
+    }
+    if (!GCS.enabled()) {
+        return cb(null, sanitizeProjectName(trimmed));
+    }
+    const sanitized = sanitizeProjectName(trimmed);
+    if (!sanitized) {
+        return cb(new Error("Project name is required."));
+    }
+    const taskUuid = opts.taskUuid ? String(opts.taskUuid) : "";
+
+    GCS.listProjectsCached((err, projects) => {
+        if (err) return cb(err);
+        if (projectNameExists(sanitized, projects)) {
+            if (opts.allowIncompleteReprocess) {
+                return GCS.projectHasOrthophoto(sanitized, (orthoErr, hasOrthophoto) => {
+                    if (orthoErr) return cb(orthoErr);
+                    if (!hasOrthophoto) return cb(null, sanitized);
+                    return cb(new Error(
+                        `A project named "${sanitized}" already exists in cloud storage. Choose a different name.`
+                    ));
+                });
+            }
+            return cb(new Error(
+                `A project named "${sanitized}" already exists in cloud storage. Choose a different name.`
+            ));
+        }
+        for (const [uuid, name] of pendingProjectNames) {
+            if (name === sanitized && uuid !== taskUuid) {
+                return cb(new Error(
+                    `A project named "${sanitized}" is already being uploaded. Choose a different name or wait.`
+                ));
+            }
+        }
+        if (taskUuid) {
+            pendingProjectNames.set(taskUuid, sanitized);
+        }
+        cb(null, sanitized);
+    });
+}
+
+function projectNameOptsFromBody(body) {
+    const v = body && body.reprocessIncomplete;
+    return {
+        allowIncompleteReprocess: v === true || v === "true" || v === "1"
+    };
+}
 
 const download = function(uri, filename, callback) {
     request.head(uri, function(err, res, body) {
@@ -192,6 +256,7 @@ module.exports = {
 
         // Print error message and cleanup
         const die = (error) => {
+            releasePendingProjectName(req.id);
             res.json({error});
             removeDirectory(srcPath);
         };
@@ -205,6 +270,15 @@ module.exports = {
                         else cb();
                     });
                 }else cb();
+            },
+            cb => {
+                assertProjectNameUnique(req.body && req.body.name, Object.assign(
+                    { taskUuid: req.id },
+                    projectNameOptsFromBody(req.body)
+                ), err => {
+                    if (err) cb(err);
+                    else cb();
+                });
             },
             cb => {
                 fs.stat(srcPath, (err, stat) => {
@@ -229,6 +303,7 @@ module.exports = {
 
         // Print error message and cleanup
         const die = (error) => {
+            releasePendingProjectName(req.id);
             res.json({error});
             removeDirectory(srcPath);
         };
@@ -420,6 +495,7 @@ module.exports = {
                             imagesCountEstimate
                         );
                     TaskManager.singleton().addNew(task);
+                    releasePendingProjectName(req.id);
                     res.json({ uuid: req.id });
                     cb();
 

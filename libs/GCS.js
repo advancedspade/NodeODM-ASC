@@ -25,10 +25,49 @@ const glob = require('glob');
 const logger = require('./logger');
 const config = require('../config');
 const rmdir = require('rimraf');
+const { sanitizeProjectName } = require('./gcsProjectName');
 
 let storage = null;
 let bucket = null;
 let lastInitError = null;
+let projectsListCache = { names: [], fetchedAt: 0 };
+let incompleteProjectsCache = { projects: [], fetchedAt: 0 };
+const PROJECTS_LIST_CACHE_MS = 5 * 60 * 1000;
+
+function gcsUploadPrefixPath() {
+    return config.gcsUploadPrefix
+        ? String(config.gcsUploadPrefix).replace(/\/$/, "") + "/"
+        : "";
+}
+
+function projectFolderPrefix(name) {
+    return gcsUploadPrefixPath() + String(name || "").replace(/\/+$/, "") + "/";
+}
+
+function prefixHasAnyObjects(relativePrefix, cb) {
+    if (!bucket) {
+        return cb(new Error("GCS is not initialized"));
+    }
+    bucket.getFiles({ prefix: relativePrefix, maxResults: 1, autoPaginate: false }, (err, files) => {
+        if (err) return cb(err);
+        cb(null, !!(files && files.length));
+    });
+}
+
+const INPUT_IMAGE_RE = /\.(jpe?g|png|tiff?|heic|heif|webp|avif|raw|dng)$/i;
+const INPUT_GCP_RE = /\.txt$/i;
+
+function isProjectInputFile(relPath) {
+    const base = path.basename(relPath || "");
+    if (!base || base.startsWith(".")) return false;
+    if (relPath.startsWith("images/")) {
+        return INPUT_IMAGE_RE.test(base) || INPUT_GCP_RE.test(base);
+    }
+    if (relPath.startsWith("gcp/")) {
+        return INPUT_GCP_RE.test(base) || /^align\.(las|laz|tif)$/i.test(base);
+    }
+    return false;
+}
 
 module.exports = {
     enabled: function() {
@@ -273,6 +312,156 @@ module.exports = {
 
             cb(null, Array.from(names).sort((a, b) => a.localeCompare(b)));
         });
+    },
+
+    /** Cached list of project folder names (same TTL as UI session cache). */
+    listProjectsCached: function(cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        if (Date.now() - projectsListCache.fetchedAt < PROJECTS_LIST_CACHE_MS) {
+            return cb(null, projectsListCache.names.slice());
+        }
+        module.exports.listProjects((err, names) => {
+            if (!err) {
+                projectsListCache = {
+                    names: names || [],
+                    fetchedAt: Date.now()
+                };
+            }
+            cb(err, names);
+        });
+    },
+
+    invalidateProjectsListCache: function() {
+        projectsListCache = { names: [], fetchedAt: 0 };
+        incompleteProjectsCache = { projects: [], fetchedAt: 0 };
+    },
+
+    rememberProjectName: function(name) {
+        const n = String(name || "").trim();
+        if (!n) return;
+        if (projectsListCache.names.indexOf(n) === -1) {
+            projectsListCache.names.push(n);
+            projectsListCache.names.sort((a, b) => a.localeCompare(b));
+        }
+        if (!projectsListCache.fetchedAt) {
+            projectsListCache.fetchedAt = Date.now();
+        }
+        incompleteProjectsCache = { projects: [], fetchedAt: 0 };
+    },
+
+    /**
+     * Projects in cloud storage that do not have odm_orthophoto output yet.
+     */
+    listIncompleteProjects: function(cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+
+        module.exports.listProjectsCached((err, names) => {
+            if (err) return cb(err);
+
+            const incomplete = [];
+            async.eachLimit(names || [], 8, (name, done) => {
+                const base = projectFolderPrefix(name);
+                prefixHasAnyObjects(base + "odm_orthophoto/", (orthoErr, hasOrthophoto) => {
+                    if (orthoErr) return done(orthoErr);
+                    if (hasOrthophoto) return done();
+
+                    prefixHasAnyObjects(base + "images/", (imagesErr, hasRawImages) => {
+                        if (imagesErr) return done(imagesErr);
+                        incomplete.push({
+                            name,
+                            hasRawImages: !!hasRawImages,
+                            gcsPath: base.replace(/\/$/, "")
+                        });
+                        done();
+                    });
+                });
+            }, listErr => {
+                if (listErr) return cb(listErr);
+                incomplete.sort((a, b) => a.name.localeCompare(b.name));
+                cb(null, incomplete);
+            });
+        });
+    },
+
+    listIncompleteProjectsCached: function(cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        if (Date.now() - incompleteProjectsCache.fetchedAt < PROJECTS_LIST_CACHE_MS) {
+            return cb(null, incompleteProjectsCache.projects.slice());
+        }
+        module.exports.listIncompleteProjects((err, projects) => {
+            if (!err) {
+                incompleteProjectsCache = {
+                    projects: projects || [],
+                    fetchedAt: Date.now()
+                };
+            }
+            cb(err, projects);
+        });
+    },
+
+    projectHasOrthophoto: function(projectName, cb) {
+        const sanitized = sanitizeProjectName(projectName, "");
+        if (!sanitized) return cb(null, false);
+        prefixHasAnyObjects(projectFolderPrefix(sanitized) + "odm_orthophoto/", cb);
+    },
+
+    /**
+     * List re-processable input files (images/ and gcp/) for a cloud project folder.
+     */
+    listProjectInputFiles: function(projectName, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const sanitized = sanitizeProjectName(projectName, "");
+        if (!sanitized || sanitized !== String(projectName || "").trim()) {
+            return cb(new Error("Invalid project name"));
+        }
+
+        const base = projectFolderPrefix(sanitized);
+        const subdirs = ["images/", "gcp/"];
+        const all = [];
+
+        async.eachSeries(subdirs, (sub, next) => {
+            module.exports.listFilesUnderPrefix(base + sub, (err, objects) => {
+                if (err) return next(err);
+                (objects || []).forEach(obj => {
+                    const key = obj.name || "";
+                    if (!key.startsWith(base)) return;
+                    const rel = key.slice(base.length);
+                    if (!isProjectInputFile(rel)) return;
+                    const meta = obj.metadata || {};
+                    all.push({
+                        path: rel,
+                        name: path.basename(key),
+                        size: parseInt(meta.size || 0, 10) || 0,
+                        contentType: module.exports.contentTypeForPath(key)
+                    });
+                });
+                next();
+            });
+        }, err => {
+            if (err) return cb(err);
+            all.sort((a, b) => a.path.localeCompare(b.path));
+            cb(null, all);
+        });
+    },
+
+    createReadStream: function(objectPath) {
+        if (!bucket) return null;
+        return bucket.file(objectPath).createReadStream();
+    },
+
+    getObjectMetadata: function(objectPath, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        bucket.file(objectPath).getMetadata(cb);
     },
 
     /**

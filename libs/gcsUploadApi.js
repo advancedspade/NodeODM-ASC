@@ -335,8 +335,12 @@ function handleListProjects(req, res) {
         return res.json({ error: "GCS uploads are not available on this server." });
     }
     const query = String((req.query && req.query.q) || "").trim().toLowerCase();
+    const forceRefresh = req.query.refresh === "1" || req.query.refresh === "true";
+    if (forceRefresh) {
+        GCS.invalidateProjectsListCache();
+    }
 
-    GCS.listProjects((err, projects) => {
+    GCS.listProjectsCached((err, projects) => {
         if (err) return res.json({ error: err.message });
 
         let list = (projects || []).map(name => ({
@@ -354,6 +358,109 @@ function handleListProjects(req, res) {
         res.json({
             projects: list
         });
+    });
+}
+
+function incompleteStatusLabel(entry) {
+    if (entry.hasRawImages) {
+        return "Raw images only — no orthophoto yet";
+    }
+    return "No orthophoto output";
+}
+
+function handleListIncompleteProjects(req, res) {
+    if (!GCS.enabled()) {
+        return res.json({ error: "GCS uploads are not available on this server." });
+    }
+    const forceRefresh = req.query.refresh === "1" || req.query.refresh === "true";
+    if (forceRefresh) {
+        GCS.invalidateProjectsListCache();
+    }
+
+    GCS.listIncompleteProjectsCached((err, projects) => {
+        if (err) return res.json({ error: err.message });
+
+        const bucket = config.gcsBucket || "";
+        const list = (projects || []).map(p => ({
+            name: p.name,
+            displayName: projectDisplayName(p.name),
+            hasRawImages: !!p.hasRawImages,
+            status: incompleteStatusLabel(p),
+            gcsUri: bucket && p.gcsPath ? `gs://${bucket}/${p.gcsPath}` : ""
+        }));
+
+        res.json({ projects: list });
+    });
+}
+
+function resolveProjectObjectPath(projectName, objectRel) {
+    const sanitized = sanitizeProjectName(projectName, "");
+    if (!sanitized || sanitized !== String(projectName || "").trim()) {
+        return null;
+    }
+    const rel = String(objectRel || "").replace(/^\/+/, "");
+    if (!rel || rel.includes("..") || (!rel.startsWith("images/") && !rel.startsWith("gcp/"))) {
+        return null;
+    }
+    const base = gcsDestPathForProject(sanitized, config.gcsUploadPrefix);
+    return base ? `${base}/${rel}` : null;
+}
+
+function handleListProjectInputs(req, res) {
+    if (!GCS.enabled()) {
+        return res.json({ error: "GCS uploads are not available on this server." });
+    }
+
+    const projectName = String(req.params.projectName || "").trim();
+    GCS.listProjectInputFiles(projectName, (err, files) => {
+        if (err) return res.json({ error: err.message });
+        if (!files || !files.length) {
+            return res.json({
+                error: "No input images found for this project in cloud storage.",
+                projectName,
+                files: []
+            });
+        }
+        res.json({
+            projectName,
+            displayName: projectDisplayName(projectName),
+            fileCount: files.length,
+            files
+        });
+    });
+}
+
+function handleDownloadProjectFile(req, res) {
+    if (!GCS.enabled()) {
+        return res.status(503).json({ error: "GCS uploads are not available on this server." });
+    }
+
+    const objectPath = resolveProjectObjectPath(req.params.projectName, req.query.path);
+    if (!objectPath) {
+        return res.status(400).json({ error: "Invalid project file path." });
+    }
+
+    GCS.getObjectMetadata(objectPath, (err, metadata) => {
+        if (err) {
+            return res.status(404).json({ error: "File not found in cloud storage." });
+        }
+        const contentType = (metadata && metadata.contentType) ||
+            GCS.contentTypeForPath(objectPath) ||
+            "application/octet-stream";
+        res.setHeader("Content-Type", contentType);
+        if (metadata && metadata.size) {
+            res.setHeader("Content-Length", String(metadata.size));
+        }
+        const stream = GCS.createReadStream(objectPath);
+        if (!stream) {
+            return res.status(503).json({ error: "GCS is not initialized" });
+        }
+        stream.on("error", () => {
+            if (!res.headersSent) {
+                res.status(500).json({ error: "Failed to read file from cloud storage." });
+            }
+        });
+        stream.pipe(res);
     });
 }
 
@@ -1418,6 +1525,9 @@ module.exports = {
     uploadBatchMiddleware,
     handleStatus,
     handleListProjects,
+    handleListIncompleteProjects,
+    handleListProjectInputs,
+    handleDownloadProjectFile,
     handleInit,
     handleSign,
     handleComplete,

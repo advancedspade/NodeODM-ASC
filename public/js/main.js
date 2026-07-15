@@ -139,6 +139,7 @@ $(function() {
         this.uploadedFiles(0);
         this.fileUploadStatus.removeAll();
         clearNdmRtkState();
+        ndmReprocessSanitizedName = null;
         dz.removeAllFiles(true);
     };
     App.prototype.startTask = function(){
@@ -157,12 +158,22 @@ $(function() {
             $("#taskName").focus();
             return;
         }
+        if (ndmGcsEnabled && ndmTaskNameGcsIsDuplicate(projectName)) {
+            die(ndmTaskNameGcsDuplicateMessage(projectName));
+            $("#taskName").focus();
+            ndmTaskNameUpdateGcsStatus(projectName);
+            return;
+        }
 
         this.uploading(true);
 
         // Start upload
         var formData = new FormData();
         formData.append("name", projectName);
+        if (ndmReprocessSanitizedName &&
+            ndmSanitizeProjectName(projectName) === ndmReprocessSanitizedName) {
+            formData.append("reprocessIncomplete", "true");
+        }
         formData.append("webhook", $("#webhook").val());
         formData.append("skipPostProcessing", !$("#doPostProcessing").prop('checked'));
         formData.append("options", JSON.stringify(buildTaskOptions()));
@@ -1081,12 +1092,28 @@ $(function() {
         gpsMapTimer = setTimeout(refreshGpsFromDropzone, 220);
     }
 
+    function ndmSyncDropzoneFileState() {
+        app.filesCount((dz.files || []).length);
+        scheduleGpsFromDropzone();
+        scheduleRtkFromDropzone();
+    }
+
     dz.on("processing", function(file){
         this.options.url = ndmApi("/task/new/upload/") + app.uuid() + ndmTokenQs();
         app.fileUploadStatus.set(file.name, 0);
     })
-    .on("error", function(file){
-        // Retry
+    .on("error", function(file, message, xhr){
+        if (xhr && xhr.responseJSON && xhr.responseJSON.noRetry) {
+            app.error(message || xhr.responseJSON.error || "Upload failed.");
+            app.uploading(false);
+            return;
+        }
+        if (xhr && (xhr.status === 401 || xhr.status === 403 || xhr.status === 404 || xhr.status === 0)) {
+            app.error(ndmAjaxFailMessage(xhr, "error", dz.options.url || ndmApi("/task/new/upload/")));
+            app.uploading(false);
+            return;
+        }
+        // Retry transient failures
         console.log("Error uploading ", file, " put back in queue...");
         app.error("Upload of " + file.name + " failed, retrying...");
         file.status = Dropzone.QUEUED;
@@ -1096,10 +1123,11 @@ $(function() {
     .on("uploadprogress", function(file, progress){
         app.fileUploadStatus.set(file.name, progress);
     })
-    .on("addedfiles", function(files){
-        app.filesCount(app.filesCount() + files.length);
-        scheduleGpsFromDropzone();
-        scheduleRtkFromDropzone();
+    .on("addedfile", function() {
+        ndmSyncDropzoneFileState();
+    })
+    .on("addedfiles", function() {
+        ndmSyncDropzoneFileState();
     })
     .on("complete", function(file){
         if (file.status === "success"){
@@ -1115,13 +1143,14 @@ $(function() {
         }).done(function(json){
             if (json.uuid){
                 taskList.add(new Task(json.uuid));
+                ndmReprocessSanitizedName = null;
                 app.resetUpload();
             }else{
                 app.error(json.error || json);
             }
             app.uploading(false);
-        }).fail(function(){
-            app.error("Cannot commit task. Is the server available and are you connected to the internet?");
+        }).fail(function(xhr, status){
+            app.error(ndmAjaxFailMessage(xhr, status, ndmApi("/task/new/commit/" + app.uuid())));
             app.uploading(false);
         });
     })
@@ -1525,6 +1554,15 @@ $(function() {
     });
     $('#resetTaskName').on('click', function(){
         $("#taskName").val('');
+        ndmTaskNameUpdateGcsStatus("");
+    });
+
+    $("#taskName").on("input change", function() {
+        var val = ($("#taskName").val() || "").trim();
+        if (ndmReprocessSanitizedName && ndmSanitizeProjectName(val) !== ndmReprocessSanitizedName) {
+            ndmReprocessSanitizedName = null;
+        }
+        ndmTaskNameScheduleGcsCheck();
     });
 
 
@@ -1788,7 +1826,22 @@ $(function() {
             });
         }
 
-        function showView(name) {
+        function ndmViewFromPath(pathname) {
+            var path = String(pathname || "/").replace(/\/+$/, "") || "/";
+            if (path === "/uploads") return "uploads";
+            if (path === "/incomplete") return "incomplete";
+            return "home";
+        }
+
+        function ndmPathForView(name) {
+            if (name === "uploads") return "/uploads";
+            if (name === "incomplete") return "/incomplete";
+            return "/";
+        }
+
+        function showView(name, opts) {
+            opts = opts || {};
+            name = name || "home";
             views.forEach(function(v) {
                 var match = v.getAttribute("data-ndm-view") === name;
                 v.hidden = !match;
@@ -1797,6 +1850,12 @@ $(function() {
                 var active = btn.getAttribute("data-ndm-view") === name;
                 btn.classList.toggle("ndm-nav-item--active", active);
             });
+            if (!opts.skipHistory) {
+                var targetPath = ndmPathForView(name);
+                if (location.pathname !== targetPath) {
+                    history.pushState({ ndmView: name }, "", targetPath);
+                }
+            }
             if (name === "home") {
                 setTimeout(function() {
                     if (ndmGpsMap) ndmGpsMap.invalidateSize();
@@ -1804,6 +1863,9 @@ $(function() {
             }
             if (name === "uploads" && typeof ndmGcsUploadOnView === "function") {
                 ndmGcsUploadOnView();
+            }
+            if (name === "incomplete" && typeof ndmIncompleteOnView === "function") {
+                ndmIncompleteOnView();
             }
         }
 
@@ -1813,9 +1875,23 @@ $(function() {
             });
         });
 
-        var hash = (location.hash || "").replace(/^#/, "");
-        if (hash === "uploads") showView("uploads");
+        window.addEventListener("popstate", function() {
+            showView(ndmViewFromPath(location.pathname), { skipHistory: true });
+        });
+
+        var legacyHash = (location.hash || "").replace(/^#/, "");
+        if (legacyHash === "uploads" || legacyHash === "incomplete") {
+            history.replaceState({ ndmView: legacyHash }, "", ndmPathForView(legacyHash));
+            showView(legacyHash, { skipHistory: true });
+        } else {
+            showView(ndmViewFromPath(location.pathname), { skipHistory: true });
+        }
+
+        window.ndmShowView = showView;
     })();
+
+    var ndmReprocessSanitizedName = null;
+    var ndmReprocessLoading = false;
 
     var ndmGcsEnabled = false;
     var ndmGcsFiles = [];
@@ -2212,6 +2288,9 @@ $(function() {
         ndmGcsProjectsCache = projects || [];
         ndmGcsProjectsCacheMeta = { key: cacheKey, fetchedAt: Date.now() };
         ndmGcsWriteProjectsSessionCache(cacheKey, ndmGcsProjectsCache);
+        ndmTaskNameRefreshHint();
+        var taskNameEl = document.getElementById("taskName");
+        ndmTaskNameUpdateGcsStatus(taskNameEl ? taskNameEl.value : "");
     }
 
     function ndmGcsSetProjectStatusFromCache(fromSession) {
@@ -2239,6 +2318,124 @@ $(function() {
                 ndmGcsWriteProjectsSessionCache(ndmGcsProjectsCacheMeta.key, ndmGcsProjectsCache);
             }
         }
+        ndmTaskNameRefreshHint();
+        var taskNameEl = document.getElementById("taskName");
+        ndmTaskNameUpdateGcsStatus(taskNameEl ? taskNameEl.value : "");
+    }
+
+    function ndmSanitizeProjectName(name, fallback) {
+        var sanitized = String(name || "")
+            .trim()
+            .replace(/[^a-zA-Z0-9_\-\s]/g, "")
+            .replace(/\s+/g, "_")
+            .substring(0, 100);
+        return sanitized || fallback || "";
+    }
+
+    function ndmGcsFindCachedProject(sanitized) {
+        if (!sanitized) return null;
+        for (var i = 0; i < ndmGcsProjectsCache.length; i++) {
+            if (ndmGcsProjectsCache[i].name === sanitized) {
+                return ndmGcsProjectsCache[i];
+            }
+        }
+        return null;
+    }
+
+    function ndmTaskNameGcsIsDuplicate(rawName) {
+        if (!ndmGcsEnabled) return false;
+        var sanitized = ndmSanitizeProjectName(rawName);
+        if (!sanitized) return false;
+        if (ndmReprocessSanitizedName && sanitized === ndmReprocessSanitizedName) return false;
+        return !!ndmGcsFindCachedProject(sanitized);
+    }
+
+    function ndmTaskNameGcsDuplicateMessage(rawName) {
+        var sanitized = ndmSanitizeProjectName(rawName);
+        var existing = ndmGcsFindCachedProject(sanitized);
+        var label = existing && existing.displayName ? existing.displayName : sanitized;
+        return 'A project named "' + label + '" already exists in cloud storage. Choose a different name.';
+    }
+
+    var ndmTaskNameCheckTimer = null;
+
+    function ndmTaskNameRefreshHint() {
+        var hint = document.getElementById("taskNameHint");
+        if (!hint) return;
+        if (!ndmGcsEnabled) {
+            hint.textContent = "Required — shown in the task list so you can identify this job.";
+            return;
+        }
+        var n = ndmGcsProjectsCache.length;
+        if (n) {
+            hint.textContent = "Required — must be unique. " + n + " existing cloud project(s); names match after removing special characters.";
+        } else {
+            hint.textContent = "Required — must be unique in cloud storage. No existing projects found yet.";
+        }
+    }
+
+    function ndmTaskNameUpdateGcsStatus(rawName) {
+        var statusEl = document.getElementById("taskNameGcsStatus");
+        var inputEl = document.getElementById("taskName");
+        if (!statusEl || !inputEl) return;
+
+        if (!ndmGcsEnabled) {
+            statusEl.hidden = true;
+            statusEl.textContent = "";
+            statusEl.className = "file-meta project-name-gcs-status";
+            inputEl.classList.remove("ndm-input--duplicate-name");
+            return;
+        }
+
+        var trimmed = String(rawName || "").trim();
+        if (!trimmed) {
+            statusEl.hidden = true;
+            statusEl.textContent = "";
+            statusEl.className = "file-meta project-name-gcs-status";
+            inputEl.classList.remove("ndm-input--duplicate-name");
+            return;
+        }
+
+        var sanitized = ndmSanitizeProjectName(trimmed);
+        if (!sanitized) {
+            statusEl.hidden = false;
+            statusEl.textContent = "Enter letters or numbers — special characters are removed for cloud storage.";
+            statusEl.className = "file-meta project-name-gcs-status project-name-gcs-status--warn";
+            inputEl.classList.remove("ndm-input--duplicate-name");
+            return;
+        }
+
+        var existing = ndmGcsFindCachedProject(sanitized);
+        if (existing && !(ndmReprocessSanitizedName && sanitized === ndmReprocessSanitizedName)) {
+            var label = existing.displayName || existing.name;
+            statusEl.hidden = false;
+            statusEl.textContent = 'Already in cloud storage as "' + label + '". Choose a different name.';
+            statusEl.className = "file-meta project-name-gcs-status project-name-gcs-status--warn";
+            inputEl.classList.add("ndm-input--duplicate-name");
+            return;
+        }
+
+        if (ndmReprocessSanitizedName && sanitized === ndmReprocessSanitizedName) {
+            statusEl.hidden = false;
+            statusEl.textContent = 'Re-processing incomplete project — will update "' + sanitized + '" when the job completes.';
+            statusEl.className = "file-meta project-name-gcs-status project-name-gcs-status--ok";
+            inputEl.classList.remove("ndm-input--duplicate-name");
+            return;
+        }
+
+        statusEl.hidden = false;
+        statusEl.textContent = 'Will be stored as "' + sanitized + '" — name is available.';
+        statusEl.className = "file-meta project-name-gcs-status project-name-gcs-status--ok";
+        inputEl.classList.remove("ndm-input--duplicate-name");
+    }
+
+    function ndmTaskNameScheduleGcsCheck() {
+        if (ndmTaskNameCheckTimer) clearTimeout(ndmTaskNameCheckTimer);
+        ndmTaskNameCheckTimer = setTimeout(function() {
+            ndmTaskNameCheckTimer = null;
+            var inputEl = document.getElementById("taskName");
+            ndmTaskNameUpdateGcsStatus(inputEl ? inputEl.value : "");
+        }, 300);
     }
 
     function ndmGcsSetupHintHtml(st) {
@@ -2269,6 +2466,8 @@ $(function() {
         if (!forceRefresh && ndmGcsProjectsCacheFresh(cacheKey)) {
             ndmGcsSetProjectStatusFromCache(false);
             ndmGcsRenderProjectSuggest(query);
+            ndmTaskNameRefreshHint();
+            ndmTaskNameUpdateGcsStatus((document.getElementById("taskName") || {}).value || "");
             return $.when();
         }
 
@@ -2291,6 +2490,9 @@ $(function() {
 
         ndmGcsSetProjectStatus("Loading projects…", "loading");
         var url = ndmApi("/gcs/projects") + ndmTokenQs();
+        if (forceRefresh) {
+            url += (url.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+        }
 
         ndmGcsProjectsFetch = $.get(url, ndmGcsAjaxOpts).done(function(data) {
             if (data && data.error) {
@@ -2346,12 +2548,340 @@ $(function() {
             ndmGcsClearProjectsCache();
             ndmGcsSetError(ndmGcsSetupHintHtml(st));
             ndmGcsSetProjectStatus("Uploads unavailable until cloud storage is connected on this server.", "error");
+            ndmTaskNameRefreshHint();
+            ndmTaskNameUpdateGcsStatus("");
         } else {
             ndmGcsSetError("");
             ndmGcsCacheKeyStr = ndmGcsProjectsCacheKey(st);
             ndmGcsLoadProjects(false);
         }
         ndmGcsRenderFileList();
+        ndmIncompleteApplyGcsStatus();
+    }
+
+    var ndmIncompleteCache = [];
+    var ndmIncompleteCacheAt = 0;
+    var ndmIncompleteFetch = null;
+    var NDM_INCOMPLETE_CACHE_MS = 5 * 60 * 1000;
+
+    function ndmIncompleteSetStatus(text, kind) {
+        var el = document.getElementById("ndmIncompleteStatus");
+        if (!el) return;
+        el.textContent = text || "";
+        el.className = "file-meta ndm-incomplete-status";
+        if (kind === "loading") el.classList.add("ndm-incomplete-status--loading");
+        if (kind === "error") el.classList.add("ndm-incomplete-status--error");
+    }
+
+    function ndmIncompleteSetError(text) {
+        var el = document.getElementById("ndmIncompleteError");
+        if (!el) return;
+        if (text) {
+            el.textContent = text;
+            el.hidden = false;
+        } else {
+            el.textContent = "";
+            el.hidden = true;
+        }
+    }
+
+    function ndmIncompleteRenderList(projects) {
+        var list = document.getElementById("ndmIncompleteList");
+        var empty = document.getElementById("ndmIncompleteEmpty");
+        var unavailable = document.getElementById("ndmIncompleteUnavailable");
+        if (!list || !empty || !unavailable) return;
+
+        unavailable.hidden = true;
+        list.innerHTML = "";
+
+        if (!projects || !projects.length) {
+            list.hidden = true;
+            empty.hidden = false;
+            ndmIncompleteSetStatus("All cloud projects have an orthophoto output.", "");
+            return;
+        }
+
+        empty.hidden = true;
+        list.hidden = false;
+        ndmIncompleteSetStatus(projects.length + " incomplete project(s) in cloud storage.", "");
+
+        projects.forEach(function(p) {
+            var li = document.createElement("li");
+            li.className = "ndm-incomplete-item";
+            li.setAttribute("role", "listitem");
+
+            var head = document.createElement("div");
+            head.className = "ndm-incomplete-item__head";
+
+            var title = document.createElement("h3");
+            title.className = "ndm-incomplete-item__title";
+            title.textContent = p.displayName || p.name;
+
+            var folder = document.createElement("span");
+            folder.className = "ndm-incomplete-item__folder";
+            folder.textContent = p.name;
+
+            var status = document.createElement("span");
+            status.className = "ndm-incomplete-item__status" + (p.hasRawImages ? " ndm-incomplete-item__status--raw" : "");
+            status.textContent = p.status || (p.hasRawImages ? "Raw images only" : "No orthophoto");
+
+            head.appendChild(title);
+            head.appendChild(folder);
+            head.appendChild(status);
+
+            var uri = document.createElement("p");
+            uri.className = "ndm-incomplete-item__uri";
+            uri.textContent = p.gcsUri || "";
+
+            li.appendChild(head);
+            if (p.gcsUri) li.appendChild(uri);
+
+            var actions = document.createElement("div");
+            actions.className = "ndm-incomplete-item__actions";
+
+            if (p.hasRawImages) {
+                var reprocessBtn = document.createElement("button");
+                reprocessBtn.type = "button";
+                reprocessBtn.className = "btn-primary ndm-incomplete-reprocess";
+                reprocessBtn.textContent = "Re-process";
+                reprocessBtn.title = "Load images on the home page, then click Start task when ready";
+                reprocessBtn.addEventListener("click", function() {
+                    ndmIncompleteReprocess(p);
+                });
+                actions.appendChild(reprocessBtn);
+            } else {
+                var noInputs = document.createElement("p");
+                noInputs.className = "file-meta ndm-incomplete-item__no-inputs";
+                noInputs.textContent = "No raw images in cloud storage to re-process.";
+                actions.appendChild(noInputs);
+            }
+
+            li.appendChild(actions);
+            list.appendChild(li);
+        });
+    }
+
+    function ndmReprocessDownloadUrl(projectName, filePath) {
+        var qs = ndmTokenQs();
+        var sep = qs.indexOf("?") >= 0 ? "&" : "?";
+        return ndmApi("/gcs/projects/" + encodeURIComponent(projectName) + "/download") +
+            qs + sep + "path=" + encodeURIComponent(filePath);
+    }
+
+    function ndmReprocessLoadIntoHome(project, files) {
+        var def = $.Deferred();
+        app.resetUpload();
+
+        var displayName = project.displayName || project.name.replace(/_/g, " ");
+        $("#taskName").val(displayName);
+        ndmReprocessSanitizedName = project.name;
+        ndmTaskNameUpdateGcsStatus(displayName);
+
+        if (typeof window.ndmShowView === "function") {
+            window.ndmShowView("home");
+        }
+
+        app.error("");
+        setMapGpsStatus("Loading " + files.length + " file(s) from cloud storage…", true);
+
+        var loaded = 0;
+        var failed = null;
+        var idx = 0;
+        var active = 0;
+        var concurrency = 4;
+
+        function pump() {
+            if (failed) {
+                if (def.state() === "pending") def.reject(failed);
+                return;
+            }
+            if (loaded >= files.length) {
+                ndmSyncDropzoneFileState();
+                setTimeout(function() {
+                    if (ndmGpsMap) ndmGpsMap.invalidateSize();
+                }, 350);
+                if (def.state() === "pending") def.resolve();
+                return;
+            }
+            while (active < concurrency && idx < files.length) {
+                (function(fileMeta) {
+                    active++;
+                    var url = ndmReprocessDownloadUrl(project.name, fileMeta.path);
+                    fetch(url, { credentials: "same-origin", cache: "no-store" })
+                        .then(function(resp) {
+                            if (!resp.ok) {
+                                throw new Error("Failed to load " + fileMeta.name + " (HTTP " + resp.status + ")");
+                            }
+                            return resp.blob().then(function(blob) {
+                                var type = fileMeta.contentType || blob.type || "application/octet-stream";
+                                var file = new File([blob], fileMeta.name, {
+                                    type: type,
+                                    lastModified: Date.now()
+                                });
+                                dz.addFile(file);
+                            });
+                        })
+                        .then(function() {
+                            active--;
+                            loaded++;
+                            setMapGpsStatus(
+                                "Loaded " + loaded + " of " + files.length + " file(s) from cloud storage…",
+                                true
+                            );
+                            pump();
+                        })
+                        .catch(function(err) {
+                            if (!failed) failed = err && err.message ? err.message : String(err);
+                            active--;
+                            pump();
+                        });
+                })(files[idx++]);
+            }
+        }
+
+        pump();
+        return def.promise();
+    }
+
+    function ndmIncompleteReprocess(project) {
+        if (!project || !project.hasRawImages || ndmReprocessLoading) return;
+
+        ndmReprocessLoading = true;
+        ndmIncompleteSetError("");
+        ndmIncompleteSetStatus(
+            "Loading input list for \"" + (project.displayName || project.name) + "\"…",
+            "loading"
+        );
+
+        var listUrl = ndmApi("/gcs/projects/" + encodeURIComponent(project.name) + "/inputs") + ndmTokenQs();
+        $.get(listUrl, ndmGcsAjaxOpts).done(function(data) {
+            if (data && data.error) {
+                ndmIncompleteSetError(data.error);
+                ndmIncompleteSetStatus("", "");
+                return;
+            }
+            var files = (data && data.files) ? data.files : [];
+            if (!files.length) {
+                ndmIncompleteSetError("No input images found for this project.");
+                ndmIncompleteSetStatus("", "");
+                return;
+            }
+            ndmIncompleteSetStatus("", "");
+            return ndmReprocessLoadIntoHome(project, files).done(function() {
+                app.error("");
+                var drop = document.getElementById("images");
+                if (drop) drop.scrollIntoView({ behavior: "smooth", block: "center" });
+            }).fail(function(err) {
+                var msg = err && err.message ? err.message : String(err || "Failed to load images from cloud storage.");
+                app.error(msg);
+                ndmIncompleteSetError(msg);
+            });
+        }).fail(function(xhr, status) {
+            ndmIncompleteSetError(ndmAjaxFailMessage(xhr, status, listUrl));
+            ndmIncompleteSetStatus("", "");
+        }).always(function() {
+            ndmReprocessLoading = false;
+            ndmIncompleteLoad(false);
+        });
+    }
+
+    function ndmIncompleteCacheFresh() {
+        return ndmIncompleteCacheAt > 0 &&
+            Date.now() - ndmIncompleteCacheAt < NDM_INCOMPLETE_CACHE_MS;
+    }
+
+    function ndmIncompleteLoad(forceRefresh) {
+        var refreshBtn = document.getElementById("ndmIncompleteRefresh");
+        var list = document.getElementById("ndmIncompleteList");
+        var empty = document.getElementById("ndmIncompleteEmpty");
+        var unavailable = document.getElementById("ndmIncompleteUnavailable");
+
+        if (!ndmGcsEnabled) {
+            ndmIncompleteSetStatus("", "");
+            ndmIncompleteSetError("");
+            if (list) list.hidden = true;
+            if (empty) empty.hidden = true;
+            if (unavailable) unavailable.hidden = false;
+            if (refreshBtn) refreshBtn.disabled = true;
+            return $.when();
+        }
+
+        if (refreshBtn) refreshBtn.disabled = false;
+        if (unavailable) unavailable.hidden = true;
+        ndmIncompleteSetError("");
+
+        if (!forceRefresh && ndmIncompleteCacheFresh()) {
+            ndmIncompleteRenderList(ndmIncompleteCache);
+            return $.when();
+        }
+
+        if (ndmIncompleteFetch) {
+            return ndmIncompleteFetch;
+        }
+
+        ndmIncompleteSetStatus("Loading incomplete projects…", "loading");
+        if (list) list.hidden = true;
+        if (empty) empty.hidden = true;
+
+        var url = ndmApi("/gcs/projects/incomplete") + ndmTokenQs();
+        if (forceRefresh) {
+            url += (url.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
+        }
+        ndmIncompleteFetch = $.get(url, ndmGcsAjaxOpts).done(function(data) {
+            if (data && data.error) {
+                ndmIncompleteCache = [];
+                ndmIncompleteCacheAt = 0;
+                ndmIncompleteSetStatus(data.error, "error");
+                ndmIncompleteSetError(data.error);
+                return;
+            }
+            ndmIncompleteCache = (data && data.projects) ? data.projects : [];
+            ndmIncompleteCacheAt = Date.now();
+            ndmIncompleteRenderList(ndmIncompleteCache);
+        }).fail(function(xhr, status) {
+            ndmIncompleteCache = [];
+            ndmIncompleteCacheAt = 0;
+            var msg = ndmAjaxFailMessage(xhr, status, ndmApi("/gcs/projects/incomplete"));
+            ndmIncompleteSetStatus(msg, "error");
+            ndmIncompleteSetError(msg);
+        }).always(function() {
+            ndmIncompleteFetch = null;
+        });
+
+        return ndmIncompleteFetch;
+    }
+
+    function ndmIncompleteRefresh() {
+        ndmIncompleteCacheAt = 0;
+        ndmGcsClearProjectsCache();
+        return ndmIncompleteLoad(true);
+    }
+
+    function ndmIncompleteOnView() {
+        ndmIncompleteLoad(false);
+    }
+
+    function ndmIncompleteApplyGcsStatus() {
+        var refreshBtn = document.getElementById("ndmIncompleteRefresh");
+        if (!ndmGcsEnabled) {
+            ndmIncompleteCache = [];
+            ndmIncompleteCacheAt = 0;
+            ndmIncompleteSetStatus("", "");
+            ndmIncompleteSetError("");
+            var unavailable = document.getElementById("ndmIncompleteUnavailable");
+            var empty = document.getElementById("ndmIncompleteEmpty");
+            var list = document.getElementById("ndmIncompleteList");
+            if (unavailable) unavailable.hidden = false;
+            if (empty) empty.hidden = true;
+            if (list) list.hidden = true;
+            if (refreshBtn) refreshBtn.disabled = true;
+            return;
+        }
+        if (refreshBtn) refreshBtn.disabled = false;
+        var view = document.getElementById("ndmViewIncomplete");
+        if (view && !view.hidden) {
+            ndmIncompleteLoad(false);
+        }
     }
 
     function ndmGcsUploadOnView() {
@@ -3521,6 +4051,11 @@ $(function() {
             });
         }
         if (refreshBtn) refreshBtn.addEventListener("click", ndmGcsRefreshProjects);
+
+        var incompleteRefreshBtn = document.getElementById("ndmIncompleteRefresh");
+        if (incompleteRefreshBtn) {
+            incompleteRefreshBtn.addEventListener("click", ndmIncompleteRefresh);
+        }
 
         $.get(ndmApi("/gcs/upload/status") + ndmTokenQs(), ndmGcsAjaxOpts).done(ndmGcsApplyStatus).fail(function() {
             ndmGcsApplyStatus({ enabled: false, reason: "Could not reach GCS upload API." });

@@ -38,6 +38,7 @@ const utils = require('./utils');
 const archiver = require('archiver');
 
 const statusCodes = require('./statusCodes');
+const { sanitizeProjectName, gcsDestPathForProject } = require('./gcsProjectName');
 
 module.exports = class Task{
     constructor(uuid, name, options = [], webhook = null, skipPostProcessing = false, outputs = [], dateCreated = new Date().getTime(), imagesCountEstimate = -1){
@@ -192,6 +193,69 @@ module.exports = class Task{
     // (relative to nodejs process CWD)
     getProjectFolderPath(){
         return path.join(Directories.data, this.uuid);
+    }
+
+    getSanitizedProjectName(){
+        return sanitizeProjectName(this.name, this.uuid);
+    }
+
+    getGcsDestPath(){
+        return gcsDestPathForProject(this.getSanitizedProjectName(), config.gcsUploadPrefix);
+    }
+
+    /** Upload images/ (+ gcp/ when present) to the project folder in GCS when processing starts (after Start Task). */
+    uploadRawInputsToGcs(cb){
+        if (!GCS.enabled()) return cb(null);
+
+        const gcsDestPath = this.getGcsDestPath();
+        if (!gcsDestPath) return cb(null);
+
+        const projectFolder = this.getProjectFolderPath();
+        const paths = ['images'];
+
+        try {
+            const gcpDir = this.getGcpFolderPath();
+            if (fs.existsSync(gcpDir) && fs.readdirSync(gcpDir).length > 0) {
+                paths.push('gcp');
+            }
+        } catch (e) {
+            logger.warn(`Could not inspect gcp/ for ${this.uuid}: ${e.message}`);
+        }
+
+        fs.access(this.getImagesFolderPath(), fs.constants.R_OK, err => {
+            if (err) {
+                logger.warn(`GCS raw input upload skipped for ${this.uuid}: images/ missing or unreadable`);
+                return cb(null);
+            }
+
+            const destUri = `gs://${config.gcsBucket}/${gcsDestPath}/`;
+            this.output.push(`Backing up raw inputs to ${destUri} (${paths.join(', ')})…`);
+            logger.info(`GCS raw input upload for ${this.uuid} → ${destUri}`);
+
+            GCS.uploadPaths(
+                projectFolder,
+                config.gcsBucket,
+                gcsDestPath,
+                paths,
+                uploadErr => {
+                    if (uploadErr) {
+                        const msg = `Raw input backup to GCS failed: ${uploadErr.message}`;
+                        this.output.push(msg);
+                        logger.error(`${this.uuid}: ${msg}`);
+                        this.gcsRawInputsUploaded = false;
+                        return cb(null);
+                    }
+                    this.gcsRawInputsUploaded = true;
+                    this.output.push(`Raw inputs backed up to ${destUri}`);
+                    logger.info(`GCS raw inputs uploaded for ${this.uuid}`);
+                    GCS.rememberProjectName(this.getSanitizedProjectName());
+                    cb(null);
+                },
+                output => {
+                    if (output) this.output.push(output);
+                }
+            );
+        });
     }
 
     // Get the path of the archive where all assets
@@ -633,11 +697,7 @@ module.exports = class Task{
             }
 
             // Sanitize task name for use as folder name and title (remove special chars, replace spaces)
-            const sanitizedName = this.name
-                .replace(/[^a-zA-Z0-9_\-\s]/g, '')  // Remove special characters
-                .replace(/\s+/g, '_')               // Replace spaces with underscores
-                .substring(0, 100)                  // Limit length
-                || this.uuid;                       // Fallback to UUID if name is empty
+            const sanitizedName = this.getSanitizedProjectName();
 
             // Update tilemapresource.xml Title to use project name instead of default
             const tilemapPath = path.join(this.getProjectFolderPath(), 'orthophoto_tiles', 'tilemapresource.xml');
@@ -671,9 +731,7 @@ module.exports = class Task{
                     .filter(p => p.length > 0);
 
                 // Build destination path with optional prefix
-                const gcsDestPath = config.gcsUploadPrefix 
-                    ? path.join(config.gcsUploadPrefix, sanitizedName)
-                    : sanitizedName;
+                const gcsDestPath = this.getGcsDestPath();
 
                 tasks.push((done) => {
                     this.output.push(`Starting GCS upload for paths: ${gcsUploadPaths.join(', ')}`);
@@ -748,6 +806,7 @@ module.exports = class Task{
         };
 
         if (this.status.code === statusCodes.QUEUED){
+            const runOdm = () => {
             this.startTrackingProcessingTime();
             this.dateStarted = new Date().getTime();
             this.setStatus(statusCodes.RUNNING);
@@ -819,6 +878,13 @@ module.exports = class Task{
                     });
                 })
             );
+            };
+
+            if (GCS.enabled() && !this.gcsRawInputsUploaded) {
+                this.uploadRawInputsToGcs(() => runOdm());
+            } else {
+                runOdm();
+            }
 
             return true;
         }else{

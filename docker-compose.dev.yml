@@ -9,6 +9,10 @@
 #     • JSON key:    docker compose -f docker-compose.dev.yml -f docker-compose.gcs.yml up
 #   On GCE (staging), only --gcs_bucket is passed; the VM service account handles auth.
 #
+# Local ODM runs on CPU (no GPU). mem_limit/shm_size below are for OpenMVS dense recon;
+# raise mem_limit (e.g. 24g) if you have RAM and still hit OOM. NODEODM_LOCAL_CPU=1
+# uses lighter defaults (5 cm ortho, low pc-quality) — not staging's 0.1 cm settings.
+#
 # Hot reload expectations:
 # - There is no in-browser HMR (no webpack live reload). Edits under public/ are served
 #   from the bind mount immediately, but you must refresh the tab (hard refresh if needed).
@@ -27,6 +31,8 @@ services:
     environment:
       # Express static uses ETag by default — browsers often keep old CSS/JS without this.
       NODEODM_DEV_STATIC_NO_CACHE: "1"
+      # CPU-friendly ODM defaults (5 cm ortho, low point cloud, no-gpu) — see libs/odmUiDefaults.js
+      NODEODM_LOCAL_CPU: "1"
       # Disable Google OAuth locally (.env would otherwise enable it and redirect to /login.html)
       OAUTH_GOOGLE_CLIENT_ID: ""
       OAUTH_GOOGLE_CLIENT_SECRET: ""
@@ -39,6 +45,8 @@ services:
       GCS_KEY_PATH: ${GCS_KEY_PATH:-}
     ports:
       - "3000:3000"
+    mem_limit: 16g
+    shm_size: 2gb
     entrypoint: ["/usr/bin/nodemon", "--legacy-watch"]
     volumes:
       - ./public:/var/www/public

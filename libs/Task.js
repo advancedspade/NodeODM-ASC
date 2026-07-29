@@ -696,6 +696,26 @@ module.exports = class Task{
                 });
             }
 
+            // ClusterODM post-teardown downloads look up <uuid>/all.zip.
+            // Default off so legacy staging/prod/super VMs are unchanged.
+            // TODO (@alonsodot): once the current nodeODM projects are sun downed maybe we should enable this by default?
+            if (GCS.enabled() && config.gcsTaskArchive){
+                tasks.push((done) => {
+                    this.output.push(`Uploading task archive to gs://${config.gcsBucket}/${this.uuid}/all.zip`);
+                    GCS.uploadPaths(
+                        this.getProjectFolderPath(),
+                        config.gcsBucket,
+                        this.uuid,
+                        ['all.zip'],
+                        err => {
+                            if (!err) this.output.push("Done uploading task archive to GCS!");
+                            done(err);
+                        },
+                        output => this.output.push(output)
+                    );
+                });
+            }
+
             // Sanitize task name for use as folder name and title (remove special chars, replace spaces)
             const sanitizedName = this.getSanitizedProjectName();
 

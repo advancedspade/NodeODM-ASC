@@ -111,6 +111,7 @@ GCS (Google Cloud Storage) Options:
 	--gcs_upload_paths <paths>	Comma-separated list of paths to upload to GCS. Use "." for entire task folder. (default: .)
 	--gcs_upload_prefix <prefix>	Prefix path in GCS bucket (e.g., 'outputs' results in gs://bucket/outputs/task-uuid/). (default: none)
 	--gcs_cleanup_after_upload	Delete local files after successful GCS upload. (default: false)
+	--gcs_task_archive	Also upload all.zip to <task-uuid>/all.zip for ClusterODM post-teardown downloads. (default: false)
 
 Log Levels: 
 error | debug | info | verbose | debug | silly 
@@ -128,7 +129,7 @@ const allOpts = ["slice","help","config","odm_path","log_level","port","p",
 "s3_force_path_style","s3_access_key","s3_secret_key","s3_signature_version",
 "s3_acl","s3_upload_everything","s3_ignore_ssl","max_concurrency","max_runtime",
 "gcs_bucket","gcs_project_id","gcs_key_path","gcs_parallel_uploads",
-"gcs_upload_paths","gcs_upload_prefix","gcs_cleanup_after_upload",
+"gcs_upload_paths","gcs_upload_prefix","gcs_cleanup_after_upload","gcs_task_archive",
 "portal_staging_env_url","portal_staging_env_label","portal_staging_env_tagline","portal_super_env_url","portal_super_env_label","portal_super_env_tagline","oauth_session_days"];
 
 // Support for "-" or "_" style params syntax
@@ -187,7 +188,7 @@ config.testDropUploads = argv.test_drop_uploads || fromConfigFile("testDropUploa
 config.testFailTasks = argv.test_fail_tasks || fromConfigFile("testFailTasks", false);
 config.testSeconds = parseInt(argv.test_seconds || fromConfigFile("testSeconds", 0));
 config.powercycle = argv.powercycle || fromConfigFile("powercycle", false);
-config.token = argv.token || fromConfigFile("token", "");
+config.token = argv.token || fromConfigFile("token", "") || process.env.NODEODM_TOKEN || "";
 // Prefer CLI, then JSON; treat empty JSON as unset so .env (loaded above) can supply values.
 config.oauthGoogleClientId = argv.oauth_google_client_id || fromConfigFile("oauthGoogleClientId", "") || process.env.OAUTH_GOOGLE_CLIENT_ID || "";
 config.oauthGoogleClientSecret = argv.oauth_google_client_secret || fromConfigFile("oauthGoogleClientSecret", "") || process.env.OAUTH_GOOGLE_CLIENT_SECRET || "";
@@ -293,6 +294,9 @@ config.gcsUploadPrefix = argv.gcs_upload_prefix || fromConfigFile("gcsUploadPref
 config.gcsCleanupAfterUpload = argv.gcs_cleanup_after_upload === true || 
     argv.gcs_cleanup_after_upload === 'true' || 
     fromConfigFile("gcsCleanupAfterUpload", false) === true;
+config.gcsTaskArchive = argv.gcs_task_archive === true ||
+    argv.gcs_task_archive === 'true' ||
+    fromConfigFile("gcsTaskArchive", false) === true;
 
 config.rtkAnalysis = argv.no_rtk_analysis
     ? false

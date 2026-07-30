@@ -94,6 +94,14 @@
                     return false;
                 }
             }
+            function soloSubhead(otherOrigin, otherLabel) {
+                if (!otherOrigin) return "Sign in with Google to use this site.";
+                return (
+                    "Sign in with Google to use this site. To use " +
+                    otherLabel +
+                    " instead, open that host in your browser."
+                );
+            }
             var params = new URLSearchParams(window.location.search);
             var err = params.get("error");
             var el = document.getElementById("loginError");
@@ -117,7 +125,10 @@
                     if (!d || !d.oauth) return;
                     var st = d.portalStagingEnvOrigin;
                     var su = d.portalSuperEnvOrigin;
-                    if (!st || !su) return;
+                    // A standalone host configures only its own origin. The static
+                    // markup ships two cards with dead hrefs, so bail out only when
+                    // neither origin is known.
+                    if (!st && !su) return;
                     var here = window.location.origin;
                     var labSt = d.portalStagingEnvLabel || "dronemaps";
                     var labSu = d.portalSuperEnvLabel || "superdrone";
@@ -142,29 +153,19 @@
                         if (shell) shell.classList.add("login-shell--single-host");
                         if (cardSu) cardSu.hidden = true;
                         if (btnSt) btnSt.href = "/auth/google";
-                        if (sub) {
-                            sub.textContent =
-                                "Sign in with Google to use this site. To use " +
-                                labSu +
-                                " instead, open that host in your browser.";
-                        }
+                        if (sub) sub.textContent = soloSubhead(su, labSu);
                         if (headline) headline.textContent = "Sign in — " + labSt;
                         document.title = "Sign in — " + labSt;
                     } else if (onSu && !onSt) {
                         if (shell) shell.classList.add("login-shell--single-host");
                         if (cardSt) cardSt.hidden = true;
                         if (btnSu) btnSu.href = "/auth/google";
-                        if (sub) {
-                            sub.textContent =
-                                "Sign in with Google to use this site. To use " +
-                                labSt +
-                                " instead, open that host in your browser.";
-                        }
+                        if (sub) sub.textContent = soloSubhead(st, labSt);
                         if (headline) headline.textContent = "Sign in — " + labSu;
                         document.title = "Sign in — " + labSu;
                     } else {
-                        if (btnSt) btnSt.href = loginUrl(st);
-                        if (btnSu) btnSu.href = loginUrl(su);
+                        if (st && btnSt) btnSt.href = loginUrl(st);
+                        if (su && btnSu) btnSu.href = loginUrl(su);
                         if (btnSu) btnSu.classList.add("btn-google--outline");
                     }
                 })

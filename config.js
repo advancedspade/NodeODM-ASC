@@ -224,6 +224,11 @@ function portalOriginFromRaw(raw) {
 		return "";
 	}
 }
+// Which hosts a deployment pairs with is deployment-specific, so the origins
+// must stay empty in config-default.json. An unset env var is falsy and falls
+// through to the file, so a non-empty origin there would silently pair every
+// standalone host with whatever the file names — and cross-host sign-in then
+// fails with bridge_invalid unless both hosts share a SESSION_SECRET.
 config.portalStagingEnvOrigin = portalOriginFromRaw(
 	argv.portal_staging_env_url ||
 		process.env.PORTAL_STAGING_ENV_URL ||
@@ -238,13 +243,13 @@ config.portalSuperEnvOrigin = portalOriginFromRaw(
 );
 config.portalStagingEnvLabel =
 	argv.portal_staging_env_label ||
-	fromConfigFile("portalStagingEnvLabel", "") ||
 	process.env.PORTAL_STAGING_ENV_LABEL ||
+	fromConfigFile("portalStagingEnvLabel", "") ||
 	"dronemaps";
 config.portalSuperEnvLabel =
 	argv.portal_super_env_label ||
-	fromConfigFile("portalSuperEnvLabel", "") ||
 	process.env.PORTAL_SUPER_ENV_LABEL ||
+	fromConfigFile("portalSuperEnvLabel", "") ||
 	"superdrone";
 if (typeof config.portalStagingEnvLabel === "string") {
 	config.portalStagingEnvLabel = config.portalStagingEnvLabel.trim();
@@ -254,13 +259,13 @@ if (typeof config.portalSuperEnvLabel === "string") {
 }
 const _portalStTag =
 	argv.portal_staging_env_tagline ||
-	fromConfigFile("portalStagingEnvTagline", "") ||
 	process.env.PORTAL_STAGING_ENV_TAGLINE ||
+	fromConfigFile("portalStagingEnvTagline", "") ||
 	"";
 const _portalSuTag =
 	argv.portal_super_env_tagline ||
-	fromConfigFile("portalSuperEnvTagline", "") ||
 	process.env.PORTAL_SUPER_ENV_TAGLINE ||
+	fromConfigFile("portalSuperEnvTagline", "") ||
 	"";
 config.portalStagingEnvTagline = String(_portalStTag).trim() || "Standard capacity — everyday maps and processing.";
 config.portalSuperEnvTagline = String(_portalSuTag).trim() || "High capacity — large projects and heavier processing.";

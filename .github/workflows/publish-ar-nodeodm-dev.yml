@@ -99,7 +99,8 @@ jobs:
           SSH=(gcloud compute ssh "${GATEWAY_INSTANCE}"
             --zone="${GCE_ZONE}"
             --project="${GCP_PROJECT_ID}"
-            --tunnel-through-iap)
+            --tunnel-through-iap
+            --quiet)
 
           stack_state="$("${SSH[@]}" --command='if [[ -f /opt/clusterodm/compose.yml && -f /opt/clusterodm/.env ]]; then echo ready; else echo missing; fi')"
           if [[ "${stack_state}" != *ready* ]]; then

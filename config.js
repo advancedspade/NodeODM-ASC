@@ -197,7 +197,10 @@ config.sessionSecret = argv.session_secret || fromConfigFile("sessionSecret", ""
 ["oauthGoogleClientId", "oauthGoogleClientSecret", "oauthGoogleRedirectUri", "sessionSecret"].forEach(k => {
 	if (typeof config[k] === "string") config[k] = config[k].trim();
 });
-const _oauthDomainsRaw = argv.oauth_allowed_domains || fromConfigFile("oauthAllowedDomains", "") || process.env.OAUTH_ALLOWED_DOMAINS || "";
+// Env before the config file: ClusterODM's edge reads OAUTH_ALLOWED_DOMAINS
+// directly, so if the file won here the two could disagree and sign-in would
+// succeed while every proxied API returned 401.
+const _oauthDomainsRaw = argv.oauth_allowed_domains || process.env.OAUTH_ALLOWED_DOMAINS || fromConfigFile("oauthAllowedDomains", "") || "";
 config.oauthAllowedDomains = String(_oauthDomainsRaw).split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
 config.oauthCookieName = fromConfigFile("oauthCookieName", "ndm_oauth");
 config.oauthSessionDays = Math.min(

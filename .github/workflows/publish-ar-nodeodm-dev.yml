@@ -118,10 +118,13 @@ jobs:
             else
               echo \"NODEODM_IMAGE=${NODEODM_IMAGE}\" >> .env
             fi
-            gcloud auth configure-docker ${AR_LOCATION}-docker.pkg.dev --quiet
-            docker compose --env-file .env -f compose.yml pull reference-node
-            docker compose --env-file .env -f compose.yml up -d --no-deps --force-recreate reference-node
-            docker compose --env-file .env -f compose.yml up -d clusterodm caddy
+            # The Compose stack is owned by root (remote-deploy.sh runs under
+            # sudo) and the OS Login user is not in the docker group, so these
+            # must run as root or they fail on /var/run/docker.sock.
+            sudo gcloud auth configure-docker ${AR_LOCATION}-docker.pkg.dev --quiet
+            sudo docker compose --env-file .env -f compose.yml pull reference-node
+            sudo docker compose --env-file .env -f compose.yml up -d --no-deps --force-recreate reference-node
+            sudo docker compose --env-file .env -f compose.yml up -d clusterodm caddy
             echo 'reference-node refreshed'
           "
           echo "refreshed=true" >> "$GITHUB_OUTPUT"

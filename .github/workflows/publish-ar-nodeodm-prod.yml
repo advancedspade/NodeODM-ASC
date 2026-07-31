@@ -1,0 +1,153 @@
+name: Publish NodeODM-ASC to Artifact Registry + refresh gateway (prod)
+
+# Additive only — does NOT touch deploy-prod.yml / deploy-staging.yml.
+# When NodeODM changes for the ClusterODM path:
+#   1) push nodeodm-asc:prod to asc-shared-services Artifact Registry
+#   2) on clusterodm-gateway-prod, retag NODEODM_IMAGE and recreate reference-node
+#
+# ClusterODM owns the Compose stack
+# (ClusterODM-ASC/.github/workflows/deploy-gateway-prod.yml).
+# Run that first if /opt/clusterodm is not yet installed on the VM.
+#
+# GitHub Environment: prod
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+env:
+  GCP_PROJECT_ID: tools-471222
+  GCE_ZONE: us-central1-a
+  GATEWAY_INSTANCE: clusterodm-gateway-prod
+  AR_PROJECT_ID: asc-shared-services
+  AR_LOCATION: us-central1
+  AR_REPOSITORY: containers
+  NODEODM_IMAGE_NAME: nodeodm-asc
+  IMAGE_TAG: prod
+  WIF_PROVIDER: projects/809964514017/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
+  SA_EMAIL: clusterodm-deployer@tools-471222.iam.gserviceaccount.com
+  GATEWAY_HOSTNAME_DEFAULT: drone.advancedspadecompany.com
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-push:
+    name: Build and Push nodeodm-asc
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SA_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.AR_LOCATION }}-docker.pkg.dev --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.AR_LOCATION }}-docker.pkg.dev/${{ env.AR_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/${{ env.NODEODM_IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.AR_LOCATION }}-docker.pkg.dev/${{ env.AR_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/${{ env.NODEODM_IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  refresh-gateway-reference-node:
+    name: Refresh reference-node on gateway
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: prod
+    outputs:
+      refreshed: ${{ steps.refresh.outputs.refreshed }}
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SA_EMAIL }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Update NODEODM_IMAGE and recreate reference-node
+        id: refresh
+        run: |
+          set -euo pipefail
+          NODEODM_IMAGE="${AR_LOCATION}-docker.pkg.dev/${AR_PROJECT_ID}/${AR_REPOSITORY}/${NODEODM_IMAGE_NAME}:${IMAGE_TAG}"
+          SSH=(gcloud compute ssh "${GATEWAY_INSTANCE}"
+            --zone="${GCE_ZONE}"
+            --project="${GCP_PROJECT_ID}"
+            --tunnel-through-iap
+            --quiet)
+
+          stack_state="$("${SSH[@]}" --command='if [[ -f /opt/clusterodm/compose.yml && -f /opt/clusterodm/.env ]]; then echo ready; else echo missing; fi')"
+          if [[ "${stack_state}" != *ready* ]]; then
+            echo "nodeodm-asc image published to Artifact Registry."
+            echo "Gateway Compose is not installed yet — run ClusterODM-ASC deploy-gateway-prod.yml next."
+            echo "refreshed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          "${SSH[@]}" --command="
+            set -euo pipefail
+            cd /opt/clusterodm
+            if grep -q '^NODEODM_IMAGE=' .env; then
+              sed -i 's|^NODEODM_IMAGE=.*|NODEODM_IMAGE=${NODEODM_IMAGE}|' .env
+            else
+              echo \"NODEODM_IMAGE=${NODEODM_IMAGE}\" >> .env
+            fi
+            sudo gcloud auth configure-docker ${AR_LOCATION}-docker.pkg.dev --quiet
+            sudo docker compose --env-file .env -f compose.yml pull reference-node
+            sudo docker compose --env-file .env -f compose.yml up -d --no-deps --force-recreate reference-node
+            sudo docker compose --env-file .env -f compose.yml up -d clusterodm caddy
+            echo 'reference-node refreshed'
+          "
+          echo "refreshed=true" >> "$GITHUB_OUTPUT"
+
+      - name: External health check
+        if: steps.refresh.outputs.refreshed == 'true'
+        env:
+          GATEWAY_HOSTNAME: ${{ vars.GATEWAY_HOSTNAME }}
+        run: |
+          set -euo pipefail
+          GATEWAY_HOSTNAME="${GATEWAY_HOSTNAME:-${GATEWAY_HOSTNAME_DEFAULT}}"
+          VM_IP=$(gcloud compute instances describe "${GATEWAY_INSTANCE}" \
+            --zone="${GCE_ZONE}" \
+            --project="${GCP_PROJECT_ID}" \
+            --format='get(networkInterfaces[0].accessConfigs[0].natIP)')
+          ok=0
+          for i in 1 2 3 4 5 6 7 8; do
+            if curl -fsS -H "Host: ${GATEWAY_HOSTNAME}" "http://${VM_IP}/login.html" >/dev/null; then
+              ok=1
+              break
+            fi
+            echo "Attempt ${i} failed, retrying..."
+            sleep 10
+          done
+          if [[ "${ok}" != "1" ]]; then
+            echo "Gateway health check failed after NodeODM refresh"
+            exit 1
+          fi
+          echo "Gateway healthy"

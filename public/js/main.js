@@ -3071,7 +3071,7 @@ $(function() {
             empty.hidden = false;
             empty.querySelector("p").textContent = ndmHistoryJobs.length ?
                 "No jobs match this filter." :
-                "No jobs recorded yet. Start a task from the Home page and it will show up here.";
+                "No jobs recorded yet. When someone starts a task from the Home page, it will show up here.";
             return;
         }
 
@@ -3120,7 +3120,7 @@ $(function() {
     }
 
     function ndmHistoryDelete(job, button) {
-        if (!confirm("Delete \"" + (job.name || job.uuid) + "\" from your job list?\n\nProcessing outputs already saved to cloud storage are kept.")) return;
+        if (!confirm("Delete \"" + (job.name || job.uuid) + "\" from the shared job list?\n\nProcessing outputs already saved to cloud storage are kept.")) return;
 
         var url = ndmApi("/task/remove") + ndmTokenQs();
         button.disabled = true;

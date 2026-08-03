@@ -3126,12 +3126,16 @@ $(function() {
         button.disabled = true;
 
         $.post(url, { uuid: job.uuid }).done(function(res) {
-            if (res && res.error) {
-                ndmHistorySetError(res.error);
+            if (!(res && res.success) && !ndmTaskAlreadyGone(res && res.error)) {
+                ndmHistorySetError((res && res.error) || "Delete failed.");
                 button.disabled = false;
                 return;
             }
             ndmHistorySetError("");
+            // Soft-delete locally first so a failed refresh cannot leave a stuck button.
+            job.status = "deleted";
+            job.deletedAt = job.deletedAt || Date.now();
+            ndmHistoryRender();
             ndmHistoryLoad();
         }).fail(function(xhr, textStatus) {
             ndmHistorySetError(ndmAjaxFailMessage(xhr, textStatus, url));

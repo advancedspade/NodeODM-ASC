@@ -382,5 +382,5 @@ module.exports = function createGoogleOAuth(config) {
         });
     }
 
-    return { attach, hasWebAuth, issueSessionJwt, verifySessionJwt, cookieName };
+    return { attach, hasWebAuth, readWebSession, issueSessionJwt, verifySessionJwt, cookieName };
 };

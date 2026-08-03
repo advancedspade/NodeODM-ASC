@@ -2192,6 +2192,150 @@ fieldset.preset-fieldset legend {
     padding: 0.4rem 0.85rem;
 }
 
+.page-header__signed-in {
+    font-size: 0.8125rem;
+    color: var(--muted);
+    margin-right: 0.75rem;
+}
+
+.ndm-history-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 1rem;
+}
+
+.ndm-history-chip {
+    font: inherit;
+    font-size: 0.8125rem;
+    padding: 0.3rem 0.75rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.ndm-history-chip:hover {
+    color: var(--text);
+}
+
+.ndm-history-chip--active {
+    background: var(--surface-2);
+    border-color: var(--accent, #4299e1);
+    color: var(--text);
+}
+
+.ndm-history-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.ndm-history-item {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    padding: 0.875rem 1rem;
+}
+
+.ndm-history-item--deleted {
+    opacity: 0.65;
+}
+
+.ndm-history-item__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.35rem 1rem;
+}
+
+.ndm-history-item__title {
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.ndm-history-item--deleted .ndm-history-item__title {
+    text-decoration: line-through;
+}
+
+.ndm-history-status {
+    display: inline-block;
+    font-size: 0.8125rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(160, 174, 192, 0.14);
+    color: var(--muted);
+}
+
+.ndm-history-status--queued,
+.ndm-history-status--running {
+    background: rgba(66, 153, 225, 0.14);
+    color: #4299e1;
+}
+
+.ndm-history-status--succeeded {
+    background: rgba(72, 187, 120, 0.14);
+    color: #48bb78;
+}
+
+.ndm-history-status--failed {
+    background: rgba(245, 101, 101, 0.12);
+    color: #f56565;
+}
+
+.ndm-history-status--canceled {
+    background: rgba(237, 137, 54, 0.14);
+    color: #ed8936;
+}
+
+.ndm-history-item__meta {
+    margin: 0.35rem 0 0;
+    font-size: 0.8125rem;
+    color: var(--muted);
+}
+
+.ndm-history-item__uuid {
+    margin: 0.2rem 0 0;
+    font-size: 0.75rem;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    word-break: break-all;
+}
+
+.ndm-history-item__audit {
+    margin-top: 0.6rem;
+    font-size: 0.8125rem;
+}
+
+.ndm-history-item__audit summary {
+    cursor: pointer;
+    color: var(--muted);
+}
+
+.ndm-history-audit-list {
+    list-style: none;
+    margin: 0.5rem 0 0;
+    padding: 0 0 0 0.75rem;
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    color: var(--muted);
+}
+
+.ndm-history-item__actions {
+    margin-top: 0.75rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 0.75rem;
+}
+
 .ndm-gcs-project-section {
     position: relative;
     z-index: 2;

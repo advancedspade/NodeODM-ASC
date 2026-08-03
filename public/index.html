@@ -134,6 +134,10 @@
                     <span class="ndm-nav-item__icon" aria-hidden="true">!</span>
                     <span class="ndm-nav-item__label">Incomplete</span>
                 </button>
+                <button type="button" class="ndm-nav-item" data-ndm-view="history" id="ndmNavHistory">
+                    <span class="ndm-nav-item__icon" aria-hidden="true">⟲</span>
+                    <span class="ndm-nav-item__label">Job history</span>
+                </button>
             </nav>
         </aside>
 
@@ -144,6 +148,7 @@
             <div class="page-header__headline">
                 <h1 class="page-header__title">Drone processing job</h1>
                 <div class="page-header__signout-wrap" id="ndmOAuthBar" hidden>
+                    <span class="page-header__signed-in" id="ndmSignedInAs" hidden></span>
                     <a href="/auth/logout" class="btn-ghost page-header__signout">Sign out</a>
                 </div>
             </div>
@@ -514,6 +519,38 @@
                 </div>
             </div>
         </div><!-- /ndmViewIncomplete -->
+
+        <div class="ndm-view" id="ndmViewHistory" data-ndm-view="history" hidden>
+            <header class="page-header">
+                <div class="page-header__headline">
+                    <h1 class="page-header__title">Job history</h1>
+                </div>
+                <p>Every processing job you started, with its outcome and who acted on it. Records are kept after the processing machine is released, so results stay visible here.</p>
+            </header>
+
+            <div class="grid grid--incomplete">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="ndm-incomplete-toolbar">
+                            <p class="file-meta ndm-incomplete-status" id="ndmHistoryStatus" aria-live="polite"></p>
+                            <button type="button" class="btn-ghost" id="ndmHistoryRefresh">Refresh</button>
+                        </div>
+                        <div class="ndm-history-filters" id="ndmHistoryFilters" role="group" aria-label="Filter jobs by status">
+                            <button type="button" class="ndm-history-chip ndm-history-chip--active" data-ndm-history-filter="all">All</button>
+                            <button type="button" class="ndm-history-chip" data-ndm-history-filter="active">In progress</button>
+                            <button type="button" class="ndm-history-chip" data-ndm-history-filter="succeeded">Succeeded</button>
+                            <button type="button" class="ndm-history-chip" data-ndm-history-filter="failed">Failed</button>
+                            <button type="button" class="ndm-history-chip" data-ndm-history-filter="deleted">Deleted</button>
+                        </div>
+                        <div id="ndmHistoryError" class="error-block" hidden role="alert"></div>
+                        <div class="ndm-incomplete-empty" id="ndmHistoryEmpty" hidden>
+                            <p>No jobs recorded yet. Start a task from the Home page and it will show up here.</p>
+                        </div>
+                        <ul class="ndm-history-list" id="ndmHistoryList" role="list" hidden></ul>
+                    </div>
+                </div>
+            </div>
+        </div><!-- /ndmViewHistory -->
     </div>
         </div><!-- /app-main -->
     </div><!-- /app-layout -->

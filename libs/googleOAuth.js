@@ -176,13 +176,18 @@ module.exports = function createGoogleOAuth(config) {
         return false;
     }
 
-    function readWebSession(req) {
-        const c = req.cookies && req.cookies[cookieName];
-        const p = verifySessionJwt(c);
+    function sessionFromPayload(p) {
         if (!p || !p.email) return null;
         const sub = p.sub != null ? String(p.sub) : "";
         if (!sub) return null;
         return { email: String(p.email), sub };
+    }
+
+    // Same auth sources as hasWebAuth, minus the shared API token (no identity).
+    function readWebSession(req) {
+        const c = req.cookies && req.cookies[cookieName];
+        return sessionFromPayload(verifySessionJwt(c)) ||
+            sessionFromPayload(verifySessionJwt(req.query && req.query.token));
     }
 
     function attach(app) {
@@ -382,5 +387,5 @@ module.exports = function createGoogleOAuth(config) {
         });
     }
 
-    return { attach, hasWebAuth, issueSessionJwt, verifySessionJwt, cookieName };
+    return { attach, hasWebAuth, readWebSession, issueSessionJwt, verifySessionJwt, cookieName };
 };

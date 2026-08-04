@@ -1195,6 +1195,15 @@ $(function() {
         if (d.oauth && d.signedIn) {
             var bar = document.getElementById("ndmOAuthBar");
             if (bar) bar.hidden = false;
+            if (d.user && d.user.email) {
+                ndmSignedInEmail = d.user.email;
+                var who = document.getElementById("ndmSignedInAs");
+                if (who) {
+                    who.textContent = d.user.email;
+                    who.hidden = false;
+                }
+                ndmHistoryRerenderIfLoaded();
+            }
         }
         if (d.oauth && d.portalStagingEnvOrigin && d.portalSuperEnvOrigin) {
             var wrap = document.getElementById("ndmEnvSwitch");
@@ -1474,6 +1483,14 @@ $(function() {
             this.refreshInterval = null;
         }
     };
+    // A gateway that has already released the job reports it as unroutable.
+    // Removing it should still clear the row rather than replace the status
+    // with an error the user cannot act on.
+    function ndmTaskAlreadyGone(error) {
+        if (!error) return false;
+        return /no nodes in routing table|no task table entry|task no longer exists/i.test(String(error));
+    }
+
     Task.prototype.remove = function() {
         var self = this;
         var url = ndmApi("/task/remove") + ndmTokenQs();
@@ -1485,7 +1502,7 @@ $(function() {
                     uuid: self.uuid
                 })
                 .done(function(json) {
-                    if (json.success || self.info().error) {
+                    if (json.success || self.info().error || ndmTaskAlreadyGone(json.error)) {
                         taskList.remove(self);
                     } else {
                         self.info({ error: json.error });
@@ -1830,12 +1847,14 @@ $(function() {
             var path = String(pathname || "/").replace(/\/+$/, "") || "/";
             if (path === "/uploads") return "uploads";
             if (path === "/incomplete") return "incomplete";
+            if (path === "/history") return "history";
             return "home";
         }
 
         function ndmPathForView(name) {
             if (name === "uploads") return "/uploads";
             if (name === "incomplete") return "/incomplete";
+            if (name === "history") return "/history";
             return "/";
         }
 
@@ -1867,6 +1886,9 @@ $(function() {
             if (name === "incomplete" && typeof ndmIncompleteOnView === "function") {
                 ndmIncompleteOnView();
             }
+            if (typeof ndmHistoryOnViewChange === "function") {
+                ndmHistoryOnViewChange(name);
+            }
         }
 
         document.querySelectorAll(".ndm-nav-item[data-ndm-view]").forEach(function(btn) {
@@ -1880,7 +1902,7 @@ $(function() {
         });
 
         var legacyHash = (location.hash || "").replace(/^#/, "");
-        if (legacyHash === "uploads" || legacyHash === "incomplete") {
+        if (legacyHash === "uploads" || legacyHash === "incomplete" || legacyHash === "history") {
             history.replaceState({ ndmView: legacyHash }, "", ndmPathForView(legacyHash));
             showView(legacyHash, { skipHistory: true });
         } else {
@@ -1892,6 +1914,8 @@ $(function() {
 
     var ndmReprocessSanitizedName = null;
     var ndmReprocessLoading = false;
+
+    var ndmSignedInEmail = "";
 
     var ndmGcsEnabled = false;
     var ndmGcsFiles = [];
@@ -2882,6 +2906,258 @@ $(function() {
         if (view && !view.hidden) {
             ndmIncompleteLoad(false);
         }
+    }
+
+    var NDM_HISTORY_REFRESH_MS = 30 * 1000;
+    var ndmHistoryJobs = [];
+    var ndmHistoryLoaded = false;
+    var ndmHistoryFetch = null;
+    var ndmHistoryFilter = "all";
+    var ndmHistoryTimer = null;
+
+    var NDM_HISTORY_LABELS = {
+        queued: "In progress",
+        running: "In progress",
+        succeeded: "Succeeded",
+        failed: "Failed",
+        canceled: "Canceled",
+        deleted: "Deleted"
+    };
+
+    var NDM_HISTORY_ACTIONS = {
+        created: "created",
+        uploaded: "uploaded images for",
+        launching: "queued",
+        routed: "started processing",
+        finished: "finished",
+        failed: "failed",
+        canceled: "canceled",
+        restarted: "restarted",
+        deleted: "deleted"
+    };
+
+    function ndmHistorySetStatus(text, kind) {
+        var el = document.getElementById("ndmHistoryStatus");
+        if (!el) return;
+        el.textContent = text || "";
+        el.className = "file-meta ndm-incomplete-status";
+        if (kind === "loading") el.classList.add("ndm-incomplete-status--loading");
+        if (kind === "error") el.classList.add("ndm-incomplete-status--error");
+    }
+
+    function ndmHistorySetError(text) {
+        var el = document.getElementById("ndmHistoryError");
+        if (!el) return;
+        el.textContent = text || "";
+        el.hidden = !text;
+    }
+
+    function ndmHistoryFormatDate(ms) {
+        if (!ms) return "—";
+        try {
+            return new Date(ms).toLocaleString();
+        } catch (e) {
+            return String(ms);
+        }
+    }
+
+    function ndmHistoryActorLabel(actor) {
+        if (!actor) return "system";
+        if (actor.email) {
+            return actor.email === ndmSignedInEmail ? actor.email + " (you)" : actor.email;
+        }
+        if (actor.source === "api") return "API token";
+        if (actor.source === "local") return "local user";
+        return "system";
+    }
+
+    function ndmHistoryMatchesFilter(job) {
+        if (ndmHistoryFilter === "deleted") return job.status === "deleted";
+        if (job.status === "deleted") return false;
+        if (ndmHistoryFilter === "all") return true;
+        if (ndmHistoryFilter === "active") return job.status === "queued" || job.status === "running";
+        if (ndmHistoryFilter === "succeeded") return job.status === "succeeded";
+        if (ndmHistoryFilter === "failed") return job.status === "failed" || job.status === "canceled";
+        return true;
+    }
+
+    function ndmHistoryBuildItem(job) {
+        var li = document.createElement("li");
+        li.className = "ndm-history-item ndm-history-item--" + job.status;
+        li.setAttribute("role", "listitem");
+
+        var head = document.createElement("div");
+        head.className = "ndm-history-item__head";
+
+        var title = document.createElement("h3");
+        title.className = "ndm-history-item__title";
+        title.textContent = job.name || job.uuid;
+
+        var status = document.createElement("span");
+        status.className = "ndm-history-status ndm-history-status--" + job.status;
+        status.textContent = NDM_HISTORY_LABELS[job.status] || job.status;
+
+        head.appendChild(title);
+        head.appendChild(status);
+        li.appendChild(head);
+
+        var meta = document.createElement("p");
+        meta.className = "ndm-history-item__meta";
+        var parts = ["Started " + ndmHistoryFormatDate(job.createdAt)];
+        if (job.imagesCount) parts.push(job.imagesCount + " image(s)");
+        parts.push("by " + ndmHistoryActorLabel(job.createdBy));
+        if (job.status === "deleted" && job.lastUpdatedBy) {
+            parts.push("deleted by " + ndmHistoryActorLabel(job.lastUpdatedBy));
+        }
+        meta.textContent = parts.join(" · ");
+        li.appendChild(meta);
+
+        var uuid = document.createElement("p");
+        uuid.className = "ndm-history-item__uuid";
+        uuid.textContent = job.uuid;
+        li.appendChild(uuid);
+
+        if (job.events && job.events.length) {
+            var details = document.createElement("details");
+            details.className = "ndm-history-item__audit";
+
+            var summary = document.createElement("summary");
+            summary.textContent = "Activity (" + job.events.length + ")";
+            details.appendChild(summary);
+
+            var ul = document.createElement("ul");
+            ul.className = "ndm-history-audit-list";
+            job.events.forEach(function(ev) {
+                var row = document.createElement("li");
+                var who = ndmHistoryActorLabel(ev.actor);
+                var what = NDM_HISTORY_ACTIONS[ev.action] || ev.action;
+                row.textContent = ndmHistoryFormatDate(ev.at) + " — " + who + " " + what;
+                if (ev.detail) row.textContent += ": " + ev.detail;
+                ul.appendChild(row);
+            });
+            details.appendChild(ul);
+            li.appendChild(details);
+        }
+
+        if (job.status !== "deleted") {
+            var actions = document.createElement("div");
+            actions.className = "ndm-history-item__actions";
+
+            var del = document.createElement("button");
+            del.type = "button";
+            del.className = "btn-task";
+            del.textContent = "Delete";
+            del.title = "Removes the job from processing and marks it deleted here. Cloud storage outputs are kept.";
+            del.addEventListener("click", function() {
+                ndmHistoryDelete(job, del);
+            });
+            actions.appendChild(del);
+            li.appendChild(actions);
+        }
+
+        return li;
+    }
+
+    function ndmHistoryRender() {
+        var list = document.getElementById("ndmHistoryList");
+        var empty = document.getElementById("ndmHistoryEmpty");
+        if (!list || !empty) return;
+
+        var visible = ndmHistoryJobs.filter(ndmHistoryMatchesFilter);
+        list.innerHTML = "";
+
+        if (!visible.length) {
+            list.hidden = true;
+            empty.hidden = false;
+            empty.querySelector("p").textContent = ndmHistoryJobs.length ?
+                "No jobs match this filter." :
+                "No jobs recorded yet. When someone starts a task from the Home page, it will show up here.";
+            return;
+        }
+
+        empty.hidden = true;
+        list.hidden = false;
+        visible.forEach(function(job) {
+            list.appendChild(ndmHistoryBuildItem(job));
+        });
+    }
+
+    function ndmHistoryRerenderIfLoaded() {
+        if (ndmHistoryLoaded) ndmHistoryRender();
+    }
+
+    function ndmHistoryLoad() {
+        if (ndmHistoryFetch) return ndmHistoryFetch;
+
+        var url = ndmApi("/task/history") + ndmTokenQs();
+        if (!ndmHistoryLoaded) ndmHistorySetStatus("Loading job history…", "loading");
+
+        ndmHistoryFetch = $.ajax({ url: url, method: "GET", dataType: "json" }).done(function(data) {
+            if (data && data.error) {
+                ndmHistorySetError(data.error);
+                ndmHistorySetStatus("", "error");
+                return;
+            }
+            ndmHistoryJobs = (data && data.jobs) || [];
+            ndmHistoryLoaded = true;
+            ndmHistorySetError("");
+            ndmHistorySetStatus(ndmHistoryJobs.length + " job(s) recorded.", "");
+            ndmHistoryRender();
+        }).fail(function(xhr, textStatus) {
+            // Keep whatever is on screen: a transient gateway hiccup should not
+            // wipe a user's history view.
+            var unsupported = (xhr && xhr.status === 404) || textStatus === "parsererror";
+            var msg = unsupported ?
+                "Job history is not available on this server. It is provided by the cluster gateway." :
+                ndmAjaxFailMessage(xhr, textStatus, url);
+            ndmHistorySetError(msg);
+            ndmHistorySetStatus(ndmHistoryLoaded ? "Showing the last loaded list." : "", "error");
+        }).always(function() {
+            ndmHistoryFetch = null;
+        });
+
+        return ndmHistoryFetch;
+    }
+
+    function ndmHistoryDelete(job, button) {
+        if (!confirm("Delete \"" + (job.name || job.uuid) + "\" from the shared job list?\n\nProcessing outputs already saved to cloud storage are kept.")) return;
+
+        var url = ndmApi("/task/remove") + ndmTokenQs();
+        button.disabled = true;
+
+        $.post(url, { uuid: job.uuid }).done(function(res) {
+            if (!(res && res.success) && !ndmTaskAlreadyGone(res && res.error)) {
+                ndmHistorySetError((res && res.error) || "Delete failed.");
+                button.disabled = false;
+                return;
+            }
+            ndmHistorySetError("");
+            // Soft-delete locally first so a failed refresh cannot leave a stuck button.
+            job.status = "deleted";
+            job.deletedAt = job.deletedAt || Date.now();
+            ndmHistoryRender();
+            ndmHistoryLoad();
+        }).fail(function(xhr, textStatus) {
+            ndmHistorySetError(ndmAjaxFailMessage(xhr, textStatus, url));
+            button.disabled = false;
+        });
+    }
+
+    function ndmHistoryOnViewChange(name) {
+        if (ndmHistoryTimer) {
+            clearInterval(ndmHistoryTimer);
+            ndmHistoryTimer = null;
+        }
+        if (name !== "history") return;
+
+        // Deferred because view routing runs before this block's constants are
+        // assigned when the page is opened directly on /history.
+        setTimeout(function() {
+            var view = document.getElementById("ndmViewHistory");
+            if (!view || view.hidden) return;
+            ndmHistoryLoad();
+            ndmHistoryTimer = setInterval(ndmHistoryLoad, NDM_HISTORY_REFRESH_MS);
+        }, 0);
     }
 
     function ndmGcsUploadOnView() {
@@ -4056,6 +4332,23 @@ $(function() {
         if (incompleteRefreshBtn) {
             incompleteRefreshBtn.addEventListener("click", ndmIncompleteRefresh);
         }
+
+        var historyRefreshBtn = document.getElementById("ndmHistoryRefresh");
+        if (historyRefreshBtn) {
+            historyRefreshBtn.addEventListener("click", function() {
+                ndmHistoryLoad();
+            });
+        }
+
+        document.querySelectorAll("[data-ndm-history-filter]").forEach(function(chip) {
+            chip.addEventListener("click", function() {
+                ndmHistoryFilter = chip.getAttribute("data-ndm-history-filter");
+                document.querySelectorAll("[data-ndm-history-filter]").forEach(function(other) {
+                    other.classList.toggle("ndm-history-chip--active", other === chip);
+                });
+                ndmHistoryRender();
+            });
+        });
 
         $.get(ndmApi("/gcs/upload/status") + ndmTokenQs(), ndmGcsAjaxOpts).done(ndmGcsApplyStatus).fail(function() {
             ndmGcsApplyStatus({ enabled: false, reason: "Could not reach GCS upload API." });

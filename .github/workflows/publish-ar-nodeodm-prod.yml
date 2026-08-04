@@ -17,6 +17,9 @@ on:
     branches:
       - main
 
+concurrency:
+  group: publish-ar-nodeodm-prod
+
 env:
   GCP_PROJECT_ID: tools-471222
   GCE_ZONE: us-central1-a
@@ -28,7 +31,7 @@ env:
   IMAGE_TAG: prod
   WIF_PROVIDER: projects/809964514017/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
   SA_EMAIL: clusterodm-deployer@tools-471222.iam.gserviceaccount.com
-  GATEWAY_HOSTNAME_DEFAULT: drone.advancedspadecompany.com
+  GATEWAY_HOSTNAME_DEFAULT: dronez.advancedspadecompany.com
 
 permissions:
   contents: read

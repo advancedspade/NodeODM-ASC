@@ -101,9 +101,11 @@ app.get('/auth/bootstrap', (req, res) => {
         } catch (e2) {
             crossSso = false;
         }
+        const session = googleOAuth.readWebSession ? googleOAuth.readWebSession(req) : null;
         const payload = {
             oauth: true,
             signedIn: googleOAuth.hasWebAuth(req),
+            user: session ? { email: session.email } : null,
             gcsUpload: GCS.enabled() ? {
                 enabled: true,
                 directUpload: true
@@ -150,6 +152,7 @@ function sendWebUiView(req, res) {
 app.get('/home', sendWebUiView);
 app.get('/uploads', sendWebUiView);
 app.get('/incomplete', sendWebUiView);
+app.get('/history', sendWebUiView);
 
 /** @swagger
  *  /task/list:

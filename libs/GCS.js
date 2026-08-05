@@ -25,7 +25,7 @@ const glob = require('glob');
 const logger = require('./logger');
 const config = require('../config');
 const rmdir = require('rimraf');
-const { sanitizeProjectName } = require('./gcsProjectName');
+const { sanitizeProjectName, isSafeProjectRelativePath, isDownloadableProjectRelativePath } = require('./gcsProjectName');
 
 let storage = null;
 let bucket = null;
@@ -58,6 +58,7 @@ const INPUT_IMAGE_RE = /\.(jpe?g|png|tiff?|heic|heif|webp|avif|raw|dng)$/i;
 const INPUT_GCP_RE = /\.txt$/i;
 
 function isProjectInputFile(relPath) {
+    if (!isSafeProjectRelativePath(relPath)) return false;
     const base = path.basename(relPath || "");
     if (!base || base.startsWith(".")) return false;
     if (relPath.startsWith("images/")) {
@@ -453,8 +454,8 @@ module.exports = {
     },
 
     /**
-     * List every file under a project folder (relative paths + size/type).
-     * Skips .uploads/ staging and legacy top-level all.zip.
+     * List every downloadable file under a project folder (relative paths + size/type).
+     * Uses isDownloadableProjectRelativePath — same gate as /download.
      */
     listProjectFiles: function(projectName, cb) {
         if (!bucket) {
@@ -473,8 +474,7 @@ module.exports = {
                 const key = obj.name || "";
                 if (!key.startsWith(base)) return;
                 const rel = key.slice(base.length);
-                if (!rel || rel.startsWith(".uploads/") || rel === "all.zip") return;
-                if (rel.startsWith("opensfm/")) return;
+                if (!isDownloadableProjectRelativePath(rel)) return;
                 const meta = obj.metadata || {};
                 files.push({
                     path: rel,

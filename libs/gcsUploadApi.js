@@ -21,7 +21,7 @@ const config = require("../config");
 const GCS = require("./GCS");
 const ziputils = require("./ziputils");
 const logger = require("./logger");
-const { sanitizeProjectName, gcsDestPathForProject } = require("./gcsProjectName");
+const { sanitizeProjectName, gcsDestPathForProject, isDownloadableProjectRelativePath } = require("./gcsProjectName");
 
 const UPLOAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-7][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ZIP_EXT = /\.zip$/i;
@@ -410,7 +410,7 @@ function resolveProjectObjectPath(projectName, objectRel) {
         return null;
     }
     const rel = resolveProjectRelativePath(objectRel);
-    if (!rel) return null;
+    if (!rel || !isDownloadableProjectRelativePath(rel)) return null;
     const base = gcsDestPathForProject(sanitized, config.gcsUploadPrefix);
     return base ? `${base}/${rel}` : null;
 }

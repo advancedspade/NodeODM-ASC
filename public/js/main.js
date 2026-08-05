@@ -1565,7 +1565,16 @@ $(function() {
         if (!name || !ndmGcsEnabled) return;
         var sanitized = ndmSanitizeProjectName(name);
         if (!sanitized) return;
-        var el = document.querySelector('.ndm-task-quick-downloads[data-task-name="' + name + '"]');
+        // Match on the attribute value instead of interpolating the raw task
+        // name into a selector, which a quote in the title would break.
+        var el = null;
+        var candidates = document.querySelectorAll('.ndm-task-quick-downloads');
+        for (var i = 0; i < candidates.length; i++) {
+            if (candidates[i].getAttribute('data-task-name') === name) {
+                el = candidates[i];
+                break;
+            }
+        }
         if (!el || el.dataset.loaded) return;
         el.dataset.loaded = "1";
         var url = ndmApi("/gcs/projects/" + encodeURIComponent(sanitized) + "/files") + ndmTokenQs();
@@ -3003,12 +3012,16 @@ $(function() {
         actions.className = "ndm-history-item__actions";
         actions.style.cssText = "display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.5rem";
 
-        var dlBtn = document.createElement("a");
-        dlBtn.href = ndmProjectsArchiveUrl(proj.name);
-        dlBtn.className = "btn-ghost";
-        dlBtn.textContent = "Download ZIP";
-        dlBtn.style.fontSize = "0.8125rem";
-        actions.appendChild(dlBtn);
+        // proj.name is only a real bucket folder for folder-derived rows. Ledger-only
+        // rows carry a display key, so every /gcs/projects/* action would miss.
+        if (proj.hasFolder) {
+            var dlBtn = document.createElement("a");
+            dlBtn.href = ndmProjectsArchiveUrl(proj.name);
+            dlBtn.className = "btn-ghost";
+            dlBtn.textContent = "Download ZIP";
+            dlBtn.style.fontSize = "0.8125rem";
+            actions.appendChild(dlBtn);
+        }
 
         if (proj.hasRawImages) {
             var reprocessBtn = document.createElement("button");
@@ -3049,23 +3062,25 @@ $(function() {
 
         li.appendChild(actions);
 
-        var fileBrowserWrap = document.createElement("details");
-        fileBrowserWrap.className = "ndm-history-item__audit";
-        fileBrowserWrap.style.marginTop = "0.5rem";
-        var fileSummary = document.createElement("summary");
-        fileSummary.textContent = "Browse files";
-        fileBrowserWrap.appendChild(fileSummary);
-        var fileBrowserContent = document.createElement("div");
-        fileBrowserContent.style.padding = "0.5rem 0";
-        fileBrowserWrap.appendChild(fileBrowserContent);
-        var fileBrowserLoaded = false;
-        fileBrowserWrap.addEventListener("toggle", function() {
-            if (fileBrowserWrap.open && !fileBrowserLoaded) {
-                fileBrowserLoaded = true;
-                ndmProjectsBuildFileBrowser(proj, fileBrowserContent);
-            }
-        });
-        li.appendChild(fileBrowserWrap);
+        if (proj.hasFolder) {
+            var fileBrowserWrap = document.createElement("details");
+            fileBrowserWrap.className = "ndm-history-item__audit";
+            fileBrowserWrap.style.marginTop = "0.5rem";
+            var fileSummary = document.createElement("summary");
+            fileSummary.textContent = "Browse files";
+            fileBrowserWrap.appendChild(fileSummary);
+            var fileBrowserContent = document.createElement("div");
+            fileBrowserContent.style.padding = "0.5rem 0";
+            fileBrowserWrap.appendChild(fileBrowserContent);
+            var fileBrowserLoaded = false;
+            fileBrowserWrap.addEventListener("toggle", function() {
+                if (fileBrowserWrap.open && !fileBrowserLoaded) {
+                    fileBrowserLoaded = true;
+                    ndmProjectsBuildFileBrowser(proj, fileBrowserContent);
+                }
+            });
+            li.appendChild(fileBrowserWrap);
+        }
 
         return li;
     }
@@ -3137,6 +3152,7 @@ $(function() {
                 displayName: displayName,
                 isIncomplete: isIncomplete,
                 hasRawImages: hasRaw,
+                hasFolder: true,
                 job: jobsByFolder[name] || null
             });
             seen[name] = true;
@@ -3153,6 +3169,7 @@ $(function() {
                 displayName: j.name || key.replace(/_/g, " "),
                 isIncomplete: true,
                 hasRawImages: false,
+                hasFolder: false,
                 job: j
             });
             seen[key] = true;

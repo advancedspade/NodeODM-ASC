@@ -1594,7 +1594,7 @@ $(function() {
                 var sep = qs.indexOf("?") >= 0 ? "&" : "?";
                 var href = ndmApi("/gcs/projects/" + encodeURIComponent(sanitized) + "/download") +
                     qs + sep + "path=" + encodeURIComponent(filePath);
-                return '<a href="' + href + '" style="margin-right:0.5rem;font-size:0.8125rem">' + label + '</a>';
+                return '<a href="' + href + '" style="margin-right:0.7rem;font-size:0.8125rem">' + label + '</a>';
             }
             if (ortho) links.push(makeLink("Orthophoto (GeoTIFF)", ortho.path));
             if (pc) links.push(makeLink("Point Cloud", pc.path));
@@ -2638,6 +2638,10 @@ $(function() {
     var ndmProjectsSearchQuery = "";
     var ndmProjectsTimer = null;
     var NDM_PROJECTS_REFRESH_MS = 30 * 1000;
+    // name -> {li, signature}. Reused across re-renders so an open "Browse files"
+    // or "Activity" <details> (and its scroll position) survives background polling
+    // when that row's underlying data hasn't actually changed.
+    var ndmProjectsItemNodes = {};
 
     function ndmReprocessDownloadUrl(projectName, filePath) {
         var qs = ndmTokenQs();
@@ -2826,6 +2830,49 @@ $(function() {
         return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
     }
 
+    // Turns a flat list of {path, size, contentType} into a nested tree so the
+    // browser can navigate one folder at a time instead of dumping every path
+    // as a single flat line.
+    function ndmProjectsBuildFileTree(files) {
+        var root = { type: "dir", name: "", children: {} };
+        files.forEach(function(f) {
+            var parts = String(f.path || "").split("/");
+            var node = root;
+            for (var i = 0; i < parts.length; i++) {
+                var part = parts[i];
+                if (!part) continue;
+                if (i === parts.length - 1) {
+                    node.children[part] = { type: "file", name: part, path: f.path, size: f.size, contentType: f.contentType };
+                } else {
+                    if (!node.children[part] || node.children[part].type !== "dir") {
+                        node.children[part] = { type: "dir", name: part, children: {} };
+                    }
+                    node = node.children[part];
+                }
+            }
+        });
+        return root;
+    }
+
+    function ndmProjectsTreeNodeAtPath(root, pathParts) {
+        var node = root;
+        for (var i = 0; i < pathParts.length; i++) {
+            node = node && node.children && node.children[pathParts[i]];
+            if (!node || node.type !== "dir") return null;
+        }
+        return node;
+    }
+
+    function ndmProjectsCollectFiles(node) {
+        var result = [];
+        Object.keys(node.children).forEach(function(key) {
+            var child = node.children[key];
+            if (child.type === "file") result.push(child);
+            else result = result.concat(ndmProjectsCollectFiles(child));
+        });
+        return result;
+    }
+
     function ndmProjectsBuildFileBrowser(proj, container) {
         container.innerHTML = '<p class="file-meta" style="padding:0.5rem 0">Loading files…</p>';
         var url = ndmApi("/gcs/projects/" + encodeURIComponent(proj.name) + "/files") + ndmTokenQs();
@@ -2910,43 +2957,127 @@ $(function() {
                 }
             }
 
-            var fileList = document.createElement("ul");
-            fileList.className = "ndm-projects-file-list";
-            fileList.style.cssText = "list-style:none;padding:0;margin:0;max-height:20rem;overflow-y:auto";
+            var tree = ndmProjectsBuildFileTree(files);
+            var currentPath = [];
+            var browserDiv = document.createElement("div");
+            container.appendChild(browserDiv);
 
-            files.forEach(function(f) {
-                var li = document.createElement("li");
-                li.style.cssText = "display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0;border-bottom:1px solid var(--border,#eee);font-size:0.8125rem";
-                var cb = document.createElement("input");
-                cb.type = "checkbox";
-                cb.style.margin = "0";
-                cb.addEventListener("change", function() {
-                    if (cb.checked) {
-                        if (selectedPaths.indexOf(f.path) < 0) selectedPaths.push(f.path);
-                    } else {
-                        selectedPaths = selectedPaths.filter(function(p) { return p !== f.path; });
-                    }
-                    updateSelectUI();
+            function renderBrowser() {
+                browserDiv.innerHTML = "";
+
+                var crumb = document.createElement("div");
+                crumb.className = "ndm-projects-breadcrumb";
+                crumb.style.cssText = "display:flex;gap:0.25rem;flex-wrap:wrap;align-items:center;margin-bottom:0.5rem;font-size:0.8125rem";
+
+                function addCrumb(label, depth) {
+                    var link = document.createElement("a");
+                    link.href = "#";
+                    link.textContent = label;
+                    link.style.fontWeight = depth === currentPath.length ? "600" : "normal";
+                    link.addEventListener("click", function(e) {
+                        e.preventDefault();
+                        currentPath = currentPath.slice(0, depth);
+                        renderBrowser();
+                    });
+                    crumb.appendChild(link);
+                }
+                addCrumb(proj.displayName || proj.name, 0);
+                currentPath.forEach(function(seg, idx) {
+                    var sep = document.createElement("span");
+                    sep.textContent = "/";
+                    sep.style.color = "var(--muted,#888)";
+                    crumb.appendChild(sep);
+                    addCrumb(seg, idx + 1);
                 });
-                var label = document.createElement("span");
-                label.style.cssText = "flex:1;word-break:break-all";
-                label.textContent = f.path;
-                var size = document.createElement("span");
-                size.style.cssText = "color:var(--muted,#888);white-space:nowrap";
-                size.textContent = ndmProjectsFormatSize(f.size);
-                var dl = document.createElement("a");
-                dl.href = ndmProjectsDownloadFileUrl(proj.name, f.path);
-                dl.textContent = "↓";
-                dl.title = "Download";
-                dl.style.textDecoration = "none";
-                li.appendChild(cb);
-                li.appendChild(label);
-                li.appendChild(size);
-                li.appendChild(dl);
-                fileList.appendChild(li);
-            });
+                browserDiv.appendChild(crumb);
 
-            container.appendChild(fileList);
+                var node = ndmProjectsTreeNodeAtPath(tree, currentPath) || tree;
+                var entries = Object.keys(node.children).map(function(k) { return node.children[k]; });
+                entries.sort(function(a, b) {
+                    if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+                    return a.name.localeCompare(b.name);
+                });
+
+                if (!entries.length) {
+                    var emptyP = document.createElement("p");
+                    emptyP.className = "file-meta";
+                    emptyP.textContent = "This folder is empty.";
+                    browserDiv.appendChild(emptyP);
+                    return;
+                }
+
+                var fileList = document.createElement("ul");
+                fileList.className = "ndm-projects-file-list";
+                fileList.style.cssText = "list-style:none;padding:0;margin:0;max-height:20rem;overflow-y:auto";
+
+                entries.forEach(function(entry) {
+                    var li = document.createElement("li");
+                    li.style.cssText = "display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0;border-bottom:1px solid var(--border,#eee);font-size:0.8125rem";
+                    var cb = document.createElement("input");
+                    cb.type = "checkbox";
+                    cb.style.margin = "0";
+
+                    if (entry.type === "dir") {
+                        var descendantPaths = ndmProjectsCollectFiles(entry).map(function(f) { return f.path; });
+                        cb.checked = descendantPaths.length > 0 && descendantPaths.every(function(p) { return selectedPaths.indexOf(p) >= 0; });
+                        cb.indeterminate = !cb.checked && descendantPaths.some(function(p) { return selectedPaths.indexOf(p) >= 0; });
+                        cb.title = "Select all files in this folder";
+                        cb.addEventListener("change", function() {
+                            descendantPaths.forEach(function(p) {
+                                var i = selectedPaths.indexOf(p);
+                                if (cb.checked && i < 0) selectedPaths.push(p);
+                                else if (!cb.checked && i >= 0) selectedPaths.splice(i, 1);
+                            });
+                            updateSelectUI();
+                            renderBrowser();
+                        });
+
+                        var folderLink = document.createElement("a");
+                        folderLink.href = "#";
+                        folderLink.style.cssText = "flex:1;text-decoration:none";
+                        folderLink.textContent = "\uD83D\uDCC1 " + entry.name + " (" + descendantPaths.length + ")";
+                        folderLink.addEventListener("click", function(e) {
+                            e.preventDefault();
+                            currentPath = currentPath.concat(entry.name);
+                            renderBrowser();
+                        });
+
+                        li.appendChild(cb);
+                        li.appendChild(folderLink);
+                    } else {
+                        cb.checked = selectedPaths.indexOf(entry.path) >= 0;
+                        cb.addEventListener("change", function() {
+                            if (cb.checked) {
+                                if (selectedPaths.indexOf(entry.path) < 0) selectedPaths.push(entry.path);
+                            } else {
+                                selectedPaths = selectedPaths.filter(function(p) { return p !== entry.path; });
+                            }
+                            updateSelectUI();
+                        });
+                        var label = document.createElement("span");
+                        label.style.cssText = "flex:1;word-break:break-all";
+                        label.textContent = entry.name;
+                        var size = document.createElement("span");
+                        size.style.cssText = "color:var(--muted,#888);white-space:nowrap";
+                        size.textContent = ndmProjectsFormatSize(entry.size);
+                        var dl = document.createElement("a");
+                        dl.href = ndmProjectsDownloadFileUrl(proj.name, entry.path);
+                        dl.textContent = "↓";
+                        dl.title = "Download";
+                        dl.style.textDecoration = "none";
+                        li.appendChild(cb);
+                        li.appendChild(label);
+                        li.appendChild(size);
+                        li.appendChild(dl);
+                    }
+
+                    fileList.appendChild(li);
+                });
+
+                browserDiv.appendChild(fileList);
+            }
+
+            renderBrowser();
         }).fail(function(xhr, status) {
             container.innerHTML = '<p class="file-meta" style="color:var(--danger,red)">' +
                 ndmAjaxFailMessage(xhr, status, url) + '</p>';
@@ -3085,6 +3216,57 @@ $(function() {
         return li;
     }
 
+    // Rows whose signature is unchanged since the last render are left completely
+    // untouched (not even detached/reattached), so an open "Browse files" panel,
+    // its scroll position, and any checkbox selections survive background polling.
+    function ndmProjectsSignature(proj) {
+        var job = proj.job;
+        return JSON.stringify({
+            name: proj.name,
+            displayName: proj.displayName,
+            isIncomplete: proj.isIncomplete,
+            hasRawImages: proj.hasRawImages,
+            hasFolder: proj.hasFolder,
+            job: job ? {
+                uuid: job.uuid,
+                status: job.status,
+                createdAt: job.createdAt,
+                imagesCount: job.imagesCount,
+                createdBy: job.createdBy,
+                events: (job.events || []).length
+            } : null
+        });
+    }
+
+    // When a row does have to be rebuilt, reopen any <details> panel (Browse
+    // files, Activity) that was open on the row it's replacing, matched by
+    // summary text (Activity's summary includes a count, so match by prefix).
+    function ndmProjectsCopyOpenDetails(oldLi, newLi) {
+        if (!oldLi) return;
+        var oldDetails = oldLi.querySelectorAll("details");
+        var newDetails = newLi.querySelectorAll("details");
+        for (var i = 0; i < oldDetails.length; i++) {
+            if (!oldDetails[i].open) continue;
+            var oldSummary = oldDetails[i].querySelector("summary");
+            oldSummary = oldSummary ? oldSummary.textContent : "";
+            for (var j = 0; j < newDetails.length; j++) {
+                if (newDetails[j].open) continue;
+                var newSummary = newDetails[j].querySelector("summary");
+                newSummary = newSummary ? newSummary.textContent : "";
+                var samePanel = newSummary === oldSummary ||
+                    (oldSummary.indexOf("Activity") === 0 && newSummary.indexOf("Activity") === 0);
+                if (samePanel) {
+                    newDetails[j].open = true;
+                    // Fire manually too: the lazy-load listener is added via
+                    // addEventListener before this runs, but dispatch keeps this
+                    // robust even where a scripted `.open = true` doesn't imply one.
+                    newDetails[j].dispatchEvent(new Event("toggle"));
+                    break;
+                }
+            }
+        }
+    }
+
     function ndmProjectsRender() {
         var list = document.getElementById("ndmProjectsList");
         var empty = document.getElementById("ndmProjectsEmpty");
@@ -3094,9 +3276,9 @@ $(function() {
             return ndmProjectsMatchesFilter(p) && ndmProjectsMatchesSearch(p);
         });
 
-        list.innerHTML = "";
-
         if (!visible.length) {
+            list.innerHTML = "";
+            ndmProjectsItemNodes = {};
             list.hidden = true;
             empty.hidden = false;
             var emptyP = empty.querySelector("p");
@@ -3110,9 +3292,38 @@ $(function() {
 
         empty.hidden = true;
         list.hidden = false;
+
+        var nextNodes = {};
         visible.forEach(function(proj) {
-            list.appendChild(ndmProjectsBuildItem(proj));
+            var signature = ndmProjectsSignature(proj);
+            var existing = ndmProjectsItemNodes[proj.name];
+            var li;
+            if (existing && existing.signature === signature) {
+                li = existing.li;
+            } else {
+                li = ndmProjectsBuildItem(proj);
+                if (existing) ndmProjectsCopyOpenDetails(existing.li, li);
+            }
+            nextNodes[proj.name] = { li: li, signature: signature };
         });
+
+        var keep = new Set();
+        Object.keys(nextNodes).forEach(function(name) { keep.add(nextNodes[name].li); });
+        Array.prototype.slice.call(list.children).forEach(function(child) {
+            if (!keep.has(child)) list.removeChild(child);
+        });
+
+        var ref = list.firstChild;
+        visible.forEach(function(proj) {
+            var node = nextNodes[proj.name].li;
+            if (node === ref) {
+                ref = ref.nextSibling;
+            } else {
+                list.insertBefore(node, ref);
+            }
+        });
+
+        ndmProjectsItemNodes = nextNodes;
     }
 
     function ndmProjectsRerenderIfLoaded() {

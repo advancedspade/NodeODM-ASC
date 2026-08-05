@@ -36,8 +36,9 @@
 	"gcsProjectId": "",
 	"gcsKeyPath": "",
 	"gcsParallelUploads": 16,
-	"gcsUploadPaths": ".",
+	"gcsUploadPaths": "odm_orthophoto,odm_dem,odm_report,odm_georeferencing,odm_meshing,odm_texturing,odm_texturing_25d,odm_filterpoints,3d_tiles,orthophoto_tiles,rtk_analysis,cameras.json,images.json,img_list.txt,log.json,options.json,task_output.txt,benchmark.txt",
 	"gcsCleanupAfterUpload": false,
+	"gcsSkipLocalArchive": false,
 
 	"rtkAnalysis": true
 }

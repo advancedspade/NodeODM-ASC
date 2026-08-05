@@ -16,11 +16,12 @@ const multer = require("multer");
 const rimraf = require("rimraf");
 const uuidv4 = require("uuid/v4");
 const glob = require("glob");
+const archiver = require("archiver");
 const config = require("../config");
 const GCS = require("./GCS");
 const ziputils = require("./ziputils");
 const logger = require("./logger");
-const { sanitizeProjectName, gcsDestPathForProject } = require("./gcsProjectName");
+const { sanitizeProjectName, gcsDestPathForProject, isDownloadableProjectRelativePath } = require("./gcsProjectName");
 
 const UPLOAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-7][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ZIP_EXT = /\.zip$/i;
@@ -393,17 +394,31 @@ function handleListIncompleteProjects(req, res) {
     });
 }
 
+function resolveProjectRelativePath(objectRel) {
+    const rel = String(objectRel || "")
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "");
+    if (!rel || rel.includes("..")) return null;
+    const parts = rel.split("/").filter(p => p && p !== "." && p !== "..");
+    if (!parts.length) return null;
+    return parts.join("/");
+}
+
 function resolveProjectObjectPath(projectName, objectRel) {
     const sanitized = sanitizeProjectName(projectName, "");
     if (!sanitized || sanitized !== String(projectName || "").trim()) {
         return null;
     }
-    const rel = String(objectRel || "").replace(/^\/+/, "");
-    if (!rel || rel.includes("..") || (!rel.startsWith("images/") && !rel.startsWith("gcp/"))) {
-        return null;
-    }
+    const rel = resolveProjectRelativePath(objectRel);
+    if (!rel || !isDownloadableProjectRelativePath(rel)) return null;
     const base = gcsDestPathForProject(sanitized, config.gcsUploadPrefix);
     return base ? `${base}/${rel}` : null;
+}
+
+function parseArchivePathsQuery(raw) {
+    if (raw == null || raw === "") return null;
+    const parts = String(raw).split(",").map(p => resolveProjectRelativePath(p)).filter(Boolean);
+    return parts.length ? parts : null;
 }
 
 function handleListProjectInputs(req, res) {
@@ -430,6 +445,23 @@ function handleListProjectInputs(req, res) {
     });
 }
 
+function handleListProjectFiles(req, res) {
+    if (!GCS.enabled()) {
+        return res.json({ error: "GCS uploads are not available on this server." });
+    }
+
+    const projectName = String(req.params.projectName || "").trim();
+    GCS.listProjectFiles(projectName, (err, files) => {
+        if (err) return res.json({ error: err.message });
+        res.json({
+            projectName,
+            displayName: projectDisplayName(projectName),
+            fileCount: (files || []).length,
+            files: files || []
+        });
+    });
+}
+
 function handleDownloadProjectFile(req, res) {
     if (!GCS.enabled()) {
         return res.status(503).json({ error: "GCS uploads are not available on this server." });
@@ -447,7 +479,9 @@ function handleDownloadProjectFile(req, res) {
         const contentType = (metadata && metadata.contentType) ||
             GCS.contentTypeForPath(objectPath) ||
             "application/octet-stream";
+        const filename = path.basename(objectPath);
         res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
         if (metadata && metadata.size) {
             res.setHeader("Content-Length", String(metadata.size));
         }
@@ -461,6 +495,77 @@ function handleDownloadProjectFile(req, res) {
             }
         });
         stream.pipe(res);
+    });
+}
+
+function handleArchiveProject(req, res) {
+    if (!GCS.enabled()) {
+        return res.status(503).json({ error: "GCS uploads are not available on this server." });
+    }
+
+    const projectName = String(req.params.projectName || "").trim();
+    const sanitized = sanitizeProjectName(projectName, "");
+    if (!sanitized || sanitized !== projectName) {
+        return res.status(400).json({ error: "Invalid project name." });
+    }
+
+    const pathFilter = parseArchivePathsQuery(req.query.paths);
+    if (pathFilter && pathFilter.length === 1) {
+        // Single-file selection streams directly — no zip wrapper.
+        req.query.path = pathFilter[0];
+        return handleDownloadProjectFile(req, res);
+    }
+
+    GCS.listProjectFiles(projectName, (err, files) => {
+        if (err) {
+            return res.status(500).json({ error: err.message });
+        }
+
+        let selected = files || [];
+        if (pathFilter) {
+            const wanted = new Set(pathFilter);
+            selected = selected.filter(f => wanted.has(f.path));
+        }
+
+        if (!selected.length) {
+            return res.status(404).json({ error: "No downloadable files found for this project." });
+        }
+
+        const base = gcsDestPathForProject(sanitized, config.gcsUploadPrefix);
+        const zipName = `${sanitized}.zip`;
+        res.setHeader("Content-Type", "application/zip");
+        res.setHeader("Content-Disposition", `attachment; filename="${zipName}"`);
+
+        const archive = archiver("zip", { store: true });
+        archive.on("error", archiveErr => {
+            logger.error(`Project archive failed for ${projectName}: ${archiveErr.message}`);
+            if (!res.headersSent) {
+                res.status(500).json({ error: "Failed to build project archive." });
+            } else {
+                res.destroy(archiveErr);
+            }
+        });
+        archive.pipe(res);
+
+        async.eachSeries(selected, (file, next) => {
+            const objectPath = `${base}/${file.path}`;
+            const stream = GCS.createReadStream(objectPath);
+            if (!stream) return next(new Error("GCS is not initialized"));
+            stream.on("error", next);
+            archive.append(stream, { name: file.path });
+            // archiver consumes the stream; move on once it's queued.
+            next();
+        }, appendErr => {
+            if (appendErr) {
+                logger.error(`Project archive append failed for ${projectName}: ${appendErr.message}`);
+                archive.abort();
+                if (!res.headersSent) {
+                    return res.status(500).json({ error: "Failed to build project archive." });
+                }
+                return res.destroy(appendErr);
+            }
+            archive.finalize();
+        });
     });
 }
 
@@ -1527,7 +1632,9 @@ module.exports = {
     handleListProjects,
     handleListIncompleteProjects,
     handleListProjectInputs,
+    handleListProjectFiles,
     handleDownloadProjectFile,
+    handleArchiveProject,
     handleInit,
     handleSign,
     handleComplete,

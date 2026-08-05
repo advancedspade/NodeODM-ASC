@@ -63,14 +63,9 @@ function assertProjectNameUnique(rawName, opts, cb) {
     GCS.listProjectsCached((err, projects) => {
         if (err) return cb(err);
         if (projectNameExists(sanitized, projects)) {
-            if (opts.allowIncompleteReprocess) {
-                return GCS.projectHasOrthophoto(sanitized, (orthoErr, hasOrthophoto) => {
-                    if (orthoErr) return cb(orthoErr);
-                    if (!hasOrthophoto) return cb(null, sanitized);
-                    return cb(new Error(
-                        `A project named "${sanitized}" already exists in cloud storage. Choose a different name.`
-                    ));
-                });
+            if (opts.allowReprocess) {
+                // Explicit reprocess of an existing project folder (incomplete or complete).
+                return cb(null, sanitized);
             }
             return cb(new Error(
                 `A project named "${sanitized}" already exists in cloud storage. Choose a different name.`
@@ -90,11 +85,20 @@ function assertProjectNameUnique(rawName, opts, cb) {
     });
 }
 
+function isTruthyFlag(v) {
+    return v === true || v === "true" || v === "1";
+}
+
 function projectNameOptsFromBody(body) {
-    const v = body && body.reprocessIncomplete;
+    // reprocessProject is the canonical flag; reprocessIncomplete is accepted as an alias.
+    const v = body && (body.reprocessProject != null ? body.reprocessProject : body.reprocessIncomplete);
     return {
-        allowIncompleteReprocess: v === true || v === "true" || v === "1"
+        allowReprocess: isTruthyFlag(v)
     };
+}
+
+function reprocessFromBody(body) {
+    return projectNameOptsFromBody(body).allowReprocess;
 }
 
 const download = function(uri, filename, callback) {
@@ -494,6 +498,7 @@ module.exports = {
                             req.body.dateCreated,
                             imagesCountEstimate
                         );
+                    task.reprocessProject = reprocessFromBody(req.body);
                     TaskManager.singleton().addNew(task);
                     releasePendingProjectName(req.id);
                     res.json({ uuid: req.id });

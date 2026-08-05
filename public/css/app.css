@@ -2294,6 +2294,11 @@ fieldset.preset-fieldset legend {
     color: #ed8936;
 }
 
+.ndm-history-status--incomplete {
+    background: rgba(237, 137, 54, 0.14);
+    color: #ed8936;
+}
+
 .ndm-history-item__meta {
     margin: 0.35rem 0 0;
     font-size: 0.8125rem;

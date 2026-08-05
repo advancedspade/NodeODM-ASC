@@ -62,6 +62,7 @@ module.exports = class Task{
         this.outputs = utils.parseUnsafePathsList(outputs);
         this.progress = 0;
         this.imagesCountEstimate = imagesCountEstimate;
+        this.reprocessProject = false;
         this.initialized = false;
         this.onInitialize = []; // Events to trigger on initialization
     }
@@ -664,56 +665,60 @@ module.exports = class Task{
             tasks.push(saveTaskOutput(taskOutputFile));
 
             let pathsForSidecarUpload = null;
-            tasks.push((done) => {
-                pathsForSidecarUpload = buildArchivePathList();
-                if (this.outputs.length > 0){
-                    this.output.push(`all.zip: ignoring API outputs field (${this.outputs.length} path(s)); zipping full project folder.`);
-                }
-                if (pathsForSidecarUpload.length === 0){
-                    done(new Error("Nothing to archive: project folder has no entries to zip."));
-                    return;
-                }
-                this.output.push(`all.zip: ${pathsForSidecarUpload.length} top-level path(s): ${pathsForSidecarUpload.slice(0, 40).join(", ")}${pathsForSidecarUpload.length > 40 ? "…" : ""}`);
-                const archiveFunc = config.has7z ? createZipArchive : createZipArchiveLegacy;
-                archiveFunc("all.zip", pathsForSidecarUpload)(done);
-            });
-
-            // Upload to S3 all paths + all.zip file (if config says so)
-            if (S3.enabled()){
+            // Skip when ClusterODM builds the download zip on demand from outputs/<name>/.
+            if (!config.gcsSkipLocalArchive){
                 tasks.push((done) => {
-                    let s3Paths;
-                    if (config.s3UploadEverything){
-                        s3Paths = ['all.zip'].concat(pathsForSidecarUpload || []);
-                    }else{
-                        s3Paths = ['all.zip'];
+                    pathsForSidecarUpload = buildArchivePathList();
+                    if (this.outputs.length > 0){
+                        this.output.push(`all.zip: ignoring API outputs field (${this.outputs.length} path(s)); zipping full project folder.`);
                     }
-
-                    S3.uploadPaths(this.getProjectFolderPath(), config.s3Bucket, this.uuid, s3Paths,
-                        err => {
-                            if (!err) this.output.push("Done uploading to S3!");
-                            done(err);
-                        }, output => this.output.push(output));
+                    if (pathsForSidecarUpload.length === 0){
+                        done(new Error("Nothing to archive: project folder has no entries to zip."));
+                        return;
+                    }
+                    this.output.push(`all.zip: ${pathsForSidecarUpload.length} top-level path(s): ${pathsForSidecarUpload.slice(0, 40).join(", ")}${pathsForSidecarUpload.length > 40 ? "…" : ""}`);
+                    const archiveFunc = config.has7z ? createZipArchive : createZipArchiveLegacy;
+                    archiveFunc("all.zip", pathsForSidecarUpload)(done);
                 });
-            }
 
-            // ClusterODM post-teardown downloads look up <uuid>/all.zip.
-            // Default off so legacy staging/prod/super VMs are unchanged.
-            // TODO (@alonsodot): once the current nodeODM projects are sun downed maybe we should enable this by default?
-            if (GCS.enabled() && config.gcsTaskArchive){
-                tasks.push((done) => {
-                    this.output.push(`Uploading task archive to gs://${config.gcsBucket}/${this.uuid}/all.zip`);
-                    GCS.uploadPaths(
-                        this.getProjectFolderPath(),
-                        config.gcsBucket,
-                        this.uuid,
-                        ['all.zip'],
-                        err => {
-                            if (!err) this.output.push("Done uploading task archive to GCS!");
-                            done(err);
-                        },
-                        output => this.output.push(output)
-                    );
-                });
+                // Upload to S3 all paths + all.zip file (if config says so)
+                if (S3.enabled()){
+                    tasks.push((done) => {
+                        let s3Paths;
+                        if (config.s3UploadEverything){
+                            s3Paths = ['all.zip'].concat(pathsForSidecarUpload || []);
+                        }else{
+                            s3Paths = ['all.zip'];
+                        }
+
+                        S3.uploadPaths(this.getProjectFolderPath(), config.s3Bucket, this.uuid, s3Paths,
+                            err => {
+                                if (!err) this.output.push("Done uploading to S3!");
+                                done(err);
+                            }, output => this.output.push(output));
+                    });
+                }
+
+                // ClusterODM post-teardown downloads look up <uuid>/all.zip.
+                // Default off so legacy staging/prod/super VMs are unchanged.
+                if (GCS.enabled() && config.gcsTaskArchive){
+                    tasks.push((done) => {
+                        this.output.push(`Uploading task archive to gs://${config.gcsBucket}/${this.uuid}/all.zip`);
+                        GCS.uploadPaths(
+                            this.getProjectFolderPath(),
+                            config.gcsBucket,
+                            this.uuid,
+                            ['all.zip'],
+                            err => {
+                                if (!err) this.output.push("Done uploading task archive to GCS!");
+                                done(err);
+                            },
+                            output => this.output.push(output)
+                        );
+                    });
+                }
+            } else {
+                this.output.push("Skipping local all.zip archive (gcs_skip_local_archive).");
             }
 
             // Sanitize task name for use as folder name and title (remove special chars, replace spaces)
@@ -752,6 +757,23 @@ module.exports = class Task{
 
                 // Build destination path with optional prefix
                 const gcsDestPath = this.getGcsDestPath();
+
+                // Reprocess: drop stale outputs only after ODM succeeds, before upload,
+                // so a failed reprocess leaves the previous results untouched.
+                if (this.reprocessProject){
+                    tasks.push((done) => {
+                        const projectName = this.getSanitizedProjectName();
+                        this.output.push(`Reprocess: clearing previous outputs under ${projectName} (keeping images/ and gcp/)`);
+                        GCS.deleteProjectOutputsExceptInputs(projectName, (err, stats) => {
+                            if (err) {
+                                this.output.push(`Reprocess cleanup failed: ${err.message}`);
+                                return done(err);
+                            }
+                            this.output.push(`Reprocess: removed ${stats && stats.deleted != null ? stats.deleted : 0} stale object(s).`);
+                            done();
+                        });
+                    });
+                }
 
                 tasks.push((done) => {
                     this.output.push(`Starting GCS upload for paths: ${gcsUploadPaths.join(', ')}`);

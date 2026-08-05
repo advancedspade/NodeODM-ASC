@@ -108,10 +108,11 @@ GCS (Google Cloud Storage) Options:
 	--gcs_project_id <id>	GCS project ID. (default: auto-detect from credentials)
 	--gcs_key_path <path>	Path to GCS service account JSON key file. (default: use default credentials)
 	--gcs_parallel_uploads <number>	Number of parallel file uploads to GCS. (default: 16)
-	--gcs_upload_paths <paths>	Comma-separated list of paths to upload to GCS. Use "." for entire task folder. (default: .)
+	--gcs_upload_paths <paths>	Comma-separated list of paths to upload to GCS. Use "." for entire task folder. (default: curated output list)
 	--gcs_upload_prefix <prefix>	Prefix path in GCS bucket (e.g., 'outputs' results in gs://bucket/outputs/task-uuid/). (default: none)
 	--gcs_cleanup_after_upload	Delete local files after successful GCS upload. (default: false)
 	--gcs_task_archive	Also upload all.zip to <task-uuid>/all.zip for ClusterODM post-teardown downloads. (default: false)
+	--gcs_skip_local_archive	Skip building/uploading all.zip locally. Use when ClusterODM builds the download zip on demand from outputs/<name>/. (default: false)
 
 Log Levels: 
 error | debug | info | verbose | debug | silly 
@@ -129,7 +130,7 @@ const allOpts = ["slice","help","config","odm_path","log_level","port","p",
 "s3_force_path_style","s3_access_key","s3_secret_key","s3_signature_version",
 "s3_acl","s3_upload_everything","s3_ignore_ssl","max_concurrency","max_runtime",
 "gcs_bucket","gcs_project_id","gcs_key_path","gcs_parallel_uploads",
-"gcs_upload_paths","gcs_upload_prefix","gcs_cleanup_after_upload","gcs_task_archive",
+"gcs_upload_paths","gcs_upload_prefix","gcs_cleanup_after_upload","gcs_task_archive","gcs_skip_local_archive",
 "portal_staging_env_url","portal_staging_env_label","portal_staging_env_tagline","portal_super_env_url","portal_super_env_label","portal_super_env_tagline","oauth_session_days"];
 
 // Support for "-" or "_" style params syntax
@@ -296,7 +297,8 @@ config.gcsProjectId = argv.gcs_project_id || fromConfigFile("gcsProjectId", "") 
 config.gcsKeyPath = argv.gcs_key_path || fromConfigFile("gcsKeyPath", "") ||
 	process.env.GCS_KEY_PATH || process.env.GOOGLE_APPLICATION_CREDENTIALS || "";
 config.gcsParallelUploads = parseInt(argv.gcs_parallel_uploads || fromConfigFile("gcsParallelUploads", 16));
-config.gcsUploadPaths = argv.gcs_upload_paths || fromConfigFile("gcsUploadPaths", ".");
+config.gcsUploadPaths = argv.gcs_upload_paths || fromConfigFile("gcsUploadPaths",
+	"odm_orthophoto,odm_dem,odm_report,odm_georeferencing,odm_meshing,odm_texturing,odm_texturing_25d,odm_filterpoints,3d_tiles,orthophoto_tiles,rtk_analysis,cameras.json,images.json,img_list.txt,log.json,options.json,task_output.txt,benchmark.txt");
 config.gcsUploadPrefix = argv.gcs_upload_prefix || fromConfigFile("gcsUploadPrefix", "") || process.env.GCS_UPLOAD_PREFIX || "";
 // Boolean flag - check for explicit true/false or presence of flag
 config.gcsCleanupAfterUpload = argv.gcs_cleanup_after_upload === true || 
@@ -305,6 +307,9 @@ config.gcsCleanupAfterUpload = argv.gcs_cleanup_after_upload === true ||
 config.gcsTaskArchive = argv.gcs_task_archive === true ||
     argv.gcs_task_archive === 'true' ||
     fromConfigFile("gcsTaskArchive", false) === true;
+config.gcsSkipLocalArchive = argv.gcs_skip_local_archive === true ||
+    argv.gcs_skip_local_archive === 'true' ||
+    fromConfigFile("gcsSkipLocalArchive", false) === true;
 
 config.rtkAnalysis = argv.no_rtk_analysis
     ? false

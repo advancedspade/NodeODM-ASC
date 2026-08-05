@@ -25,7 +25,7 @@ const glob = require('glob');
 const logger = require('./logger');
 const config = require('../config');
 const rmdir = require('rimraf');
-const { sanitizeProjectName } = require('./gcsProjectName');
+const { sanitizeProjectName, isSafeProjectRelativePath, isDownloadableProjectRelativePath } = require('./gcsProjectName');
 
 let storage = null;
 let bucket = null;
@@ -58,6 +58,7 @@ const INPUT_IMAGE_RE = /\.(jpe?g|png|tiff?|heic|heif|webp|avif|raw|dng)$/i;
 const INPUT_GCP_RE = /\.txt$/i;
 
 function isProjectInputFile(relPath) {
+    if (!isSafeProjectRelativePath(relPath)) return false;
     const base = path.basename(relPath || "");
     if (!base || base.startsWith(".")) return false;
     if (relPath.startsWith("images/")) {
@@ -292,26 +293,39 @@ module.exports = {
             ? String(config.gcsUploadPrefix).replace(/\/$/, "") + "/"
             : "";
 
-        bucket.getFiles({ prefix, delimiter: "/", autoPaginate: false, maxResults: 5000 }, (err, files, nextQuery, apiResponse) => {
-            if (err) return cb(err);
+        const names = new Set();
 
-            const names = new Set();
-            (apiResponse && apiResponse.prefixes || []).forEach(p => {
-                let name = p.slice(prefix.length).replace(/\/$/, "");
-                if (name && !name.includes("/") && !name.startsWith(".")) names.add(name);
+        // autoPaginate can't be used here: the storage client only aggregates
+        // `files` across pages, not `apiResponse.prefixes`, so folder names
+        // from earlier pages would be silently dropped. Page through
+        // nextQuery manually and merge prefixes from every page ourselves.
+        const fetchPage = (query) => {
+            bucket.getFiles(Object.assign({ prefix, delimiter: "/", autoPaginate: false }, query || {}), (err, files, nextQuery, apiResponse) => {
+                if (err) return cb(err);
+
+                (apiResponse && apiResponse.prefixes || []).forEach(p => {
+                    let name = p.slice(prefix.length).replace(/\/$/, "");
+                    if (name && !name.includes("/") && !name.startsWith(".")) names.add(name);
+                });
+
+                // Fallback: infer folder names from object keys when delimiter prefixes are empty.
+                (files || []).forEach(file => {
+                    const key = file.name || "";
+                    if (!key.startsWith(prefix)) return;
+                    const rest = key.slice(prefix.length);
+                    const seg = rest.split("/")[0];
+                    if (seg && !seg.startsWith(".")) names.add(seg);
+                });
+
+                if (nextQuery) {
+                    fetchPage(nextQuery);
+                } else {
+                    cb(null, Array.from(names).sort((a, b) => a.localeCompare(b)));
+                }
             });
+        };
 
-            // Fallback: infer folder names from object keys when delimiter prefixes are empty.
-            (files || []).forEach(file => {
-                const key = file.name || "";
-                if (!key.startsWith(prefix)) return;
-                const rest = key.slice(prefix.length);
-                const seg = rest.split("/")[0];
-                if (seg && !seg.startsWith(".")) names.add(seg);
-            });
-
-            cb(null, Array.from(names).sort((a, b) => a.localeCompare(b)));
-        });
+        fetchPage();
     },
 
     /** Cached list of project folder names (same TTL as UI session cache). */
@@ -449,6 +463,71 @@ module.exports = {
             if (err) return cb(err);
             all.sort((a, b) => a.path.localeCompare(b.path));
             cb(null, all);
+        });
+    },
+
+    /**
+     * List every downloadable file under a project folder (relative paths + size/type).
+     * Uses isDownloadableProjectRelativePath — same gate as /download.
+     */
+    listProjectFiles: function(projectName, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const sanitized = sanitizeProjectName(projectName, "");
+        if (!sanitized || sanitized !== String(projectName || "").trim()) {
+            return cb(new Error("Invalid project name"));
+        }
+
+        const base = projectFolderPrefix(sanitized);
+        module.exports.listFilesUnderPrefix(base, (err, objects) => {
+            if (err) return cb(err);
+            const files = [];
+            (objects || []).forEach(obj => {
+                const key = obj.name || "";
+                if (!key.startsWith(base)) return;
+                const rel = key.slice(base.length);
+                if (!isDownloadableProjectRelativePath(rel)) return;
+                const meta = obj.metadata || {};
+                files.push({
+                    path: rel,
+                    name: path.basename(key),
+                    size: parseInt(meta.size || 0, 10) || 0,
+                    contentType: module.exports.contentTypeForPath(key)
+                });
+            });
+            files.sort((a, b) => a.path.localeCompare(b.path));
+            cb(null, files);
+        });
+    },
+
+    /**
+     * Delete everything under a project folder except images/ and gcp/.
+     * Used before a successful reprocess uploads fresh outputs.
+     */
+    deleteProjectOutputsExceptInputs: function(projectName, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const sanitized = sanitizeProjectName(projectName, "");
+        if (!sanitized) return cb(new Error("Invalid project name"));
+
+        const base = projectFolderPrefix(sanitized);
+        module.exports.listFilesUnderPrefix(base, (err, objects) => {
+            if (err) return cb(err);
+            const toDelete = (objects || [])
+                .map(obj => obj.name || "")
+                .filter(key => {
+                    if (!key || !key.startsWith(base)) return false;
+                    const rel = key.slice(base.length);
+                    return !(rel.startsWith("images/") || rel.startsWith("gcp/"));
+                });
+            if (!toDelete.length) return cb(null, { deleted: 0 });
+            module.exports.deleteObjects(toDelete, delErr => {
+                if (delErr) return cb(delErr);
+                module.exports.invalidateProjectsListCache();
+                cb(null, { deleted: toDelete.length });
+            });
         });
     },
 

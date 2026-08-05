@@ -130,13 +130,9 @@
                     <span class="ndm-nav-item__icon" aria-hidden="true">↑</span>
                     <span class="ndm-nav-item__label">Uploads</span>
                 </button>
-                <button type="button" class="ndm-nav-item" data-ndm-view="incomplete" id="ndmNavIncomplete">
-                    <span class="ndm-nav-item__icon" aria-hidden="true">!</span>
-                    <span class="ndm-nav-item__label">Incomplete</span>
-                </button>
-                <button type="button" class="ndm-nav-item" data-ndm-view="history" id="ndmNavHistory">
-                    <span class="ndm-nav-item__icon" aria-hidden="true">⟲</span>
-                    <span class="ndm-nav-item__label">Job history</span>
+                <button type="button" class="ndm-nav-item" data-ndm-view="projects" id="ndmNavProjects">
+                    <span class="ndm-nav-item__icon" aria-hidden="true">▦</span>
+                    <span class="ndm-nav-item__label">Projects</span>
                 </button>
             </nav>
         </aside>
@@ -389,6 +385,7 @@
 
                                             <div data-bind="visible: showDownload()" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border);">
                                                 <div class="taskItem"><strong>Download:</strong> <a data-bind="attr: {'href': downloadLink()}">All assets (ZIP)</a></div>
+                                                <div class="taskItem ndm-task-quick-downloads" data-bind="attr: {'data-task-name': info().name}"></div>
                                             </div>
 
                                             <div data-bind="visible: info().status && info().status.code === 20" style="margin-top: 0.75rem;">
@@ -492,65 +489,44 @@
             </div>
         </div><!-- /ndmViewUploads -->
 
-        <div class="ndm-view" id="ndmViewIncomplete" data-ndm-view="incomplete" hidden>
+        <div class="ndm-view" id="ndmViewProjects" data-ndm-view="projects" hidden>
             <header class="page-header">
                 <div class="page-header__headline">
-                    <h1 class="page-header__title">Incomplete jobs</h1>
+                    <h1 class="page-header__title">Projects</h1>
                 </div>
-                <p>Cloud projects that do not have an <code>odm_orthophoto</code> folder yet — failed runs, jobs still in progress, or raw images only.</p>
+                <p>All cloud project folders with their processing status. Download outputs, re-process, or browse individual files.</p>
             </header>
 
             <div class="grid grid--incomplete">
                 <div class="card">
                     <div class="card-body">
                         <div class="ndm-incomplete-toolbar">
-                            <p class="file-meta ndm-incomplete-status" id="ndmIncompleteStatus" aria-live="polite"></p>
-                            <button type="button" class="btn-ghost" id="ndmIncompleteRefresh" disabled>Refresh</button>
+                            <p class="file-meta ndm-incomplete-status" id="ndmProjectsStatus" aria-live="polite"></p>
+                            <button type="button" class="btn-ghost" id="ndmProjectsRefresh">Refresh</button>
                         </div>
-                        <div id="ndmIncompleteError" class="error-block" hidden role="alert"></div>
-                        <div class="ndm-incomplete-empty" id="ndmIncompleteEmpty" hidden>
-                            <p>No incomplete projects found — every cloud project has an orthophoto output.</p>
+                        <div class="ndm-projects-search" style="margin-bottom:0.75rem;">
+                            <input type="text" class="ndm-input" id="ndmProjectsSearch" placeholder="Search by project name…" autocomplete="off" spellcheck="false">
                         </div>
-                        <div class="ndm-incomplete-unavailable" id="ndmIncompleteUnavailable" hidden>
-                            <p>Cloud storage is not connected on this server, so incomplete projects cannot be listed.</p>
+                        <div class="ndm-history-filters" id="ndmProjectsFilters" role="group" aria-label="Filter projects by status">
+                            <button type="button" class="ndm-history-chip ndm-history-chip--active" data-ndm-projects-filter="all">All</button>
+                            <button type="button" class="ndm-history-chip" data-ndm-projects-filter="incomplete">Incomplete</button>
+                            <button type="button" class="ndm-history-chip" data-ndm-projects-filter="succeeded">Succeeded</button>
+                            <button type="button" class="ndm-history-chip" data-ndm-projects-filter="failed">Failed</button>
+                            <button type="button" class="ndm-history-chip" data-ndm-projects-filter="active">In progress</button>
+                            <button type="button" class="ndm-history-chip" data-ndm-projects-filter="deleted">Deleted</button>
                         </div>
-                        <ul class="ndm-incomplete-list" id="ndmIncompleteList" role="list" hidden></ul>
+                        <div id="ndmProjectsError" class="error-block" hidden role="alert"></div>
+                        <div class="ndm-incomplete-empty" id="ndmProjectsEmpty" hidden>
+                            <p>No projects found.</p>
+                        </div>
+                        <div class="ndm-incomplete-unavailable" id="ndmProjectsUnavailable" hidden>
+                            <p>Cloud storage is not connected on this server, so projects cannot be listed.</p>
+                        </div>
+                        <ul class="ndm-history-list" id="ndmProjectsList" role="list" hidden></ul>
                     </div>
                 </div>
             </div>
-        </div><!-- /ndmViewIncomplete -->
-
-        <div class="ndm-view" id="ndmViewHistory" data-ndm-view="history" hidden>
-            <header class="page-header">
-                <div class="page-header__headline">
-                    <h1 class="page-header__title">Job history</h1>
-                </div>
-                <p>Every processing job on this gateway, with its outcome and who acted on it. Records are kept after the processing machine is released, so results stay visible here.</p>
-            </header>
-
-            <div class="grid grid--incomplete">
-                <div class="card">
-                    <div class="card-body">
-                        <div class="ndm-incomplete-toolbar">
-                            <p class="file-meta ndm-incomplete-status" id="ndmHistoryStatus" aria-live="polite"></p>
-                            <button type="button" class="btn-ghost" id="ndmHistoryRefresh">Refresh</button>
-                        </div>
-                        <div class="ndm-history-filters" id="ndmHistoryFilters" role="group" aria-label="Filter jobs by status">
-                            <button type="button" class="ndm-history-chip ndm-history-chip--active" data-ndm-history-filter="all">All</button>
-                            <button type="button" class="ndm-history-chip" data-ndm-history-filter="active">In progress</button>
-                            <button type="button" class="ndm-history-chip" data-ndm-history-filter="succeeded">Succeeded</button>
-                            <button type="button" class="ndm-history-chip" data-ndm-history-filter="failed">Failed</button>
-                            <button type="button" class="ndm-history-chip" data-ndm-history-filter="deleted">Deleted</button>
-                        </div>
-                        <div id="ndmHistoryError" class="error-block" hidden role="alert"></div>
-                        <div class="ndm-incomplete-empty" id="ndmHistoryEmpty" hidden>
-                            <p>No jobs recorded yet. When someone starts a task from the Home page, it will show up here.</p>
-                        </div>
-                        <ul class="ndm-history-list" id="ndmHistoryList" role="list" hidden></ul>
-                    </div>
-                </div>
-            </div>
-        </div><!-- /ndmViewHistory -->
+        </div><!-- /ndmViewProjects -->
     </div>
         </div><!-- /app-main -->
     </div><!-- /app-layout -->

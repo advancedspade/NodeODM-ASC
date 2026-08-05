@@ -30,8 +30,31 @@ function projectNameExists(sanitizedName, existingNames) {
     return (existingNames || []).some(n => n === sanitizedName);
 }
 
+/**
+ * Object names are arbitrary strings, so a key under a project prefix can still
+ * carry ".." or empty segments. Such a path must never reach a ZIP entry name
+ * (zip slip) or a client-side file list.
+ */
+function isSafeProjectRelativePath(rel) {
+    const path = String(rel || "");
+    if (!path || path.includes("\\")) return false;
+    return path.split("/").every(seg => seg && seg !== "." && seg !== "..");
+}
+
+/** Paths omitted from listProjectFiles — download/archive must match. */
+function isDownloadableProjectRelativePath(rel) {
+    const path = String(rel || "");
+    if (!isSafeProjectRelativePath(path)) return false;
+    if (path === ".uploads" || path.startsWith(".uploads/")) return false;
+    if (path === "all.zip") return false;
+    if (path === "opensfm" || path.startsWith("opensfm/")) return false;
+    return true;
+}
+
 module.exports = {
     sanitizeProjectName,
     gcsDestPathForProject,
-    projectNameExists
+    projectNameExists,
+    isSafeProjectRelativePath,
+    isDownloadableProjectRelativePath
 };

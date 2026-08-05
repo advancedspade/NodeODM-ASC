@@ -293,26 +293,39 @@ module.exports = {
             ? String(config.gcsUploadPrefix).replace(/\/$/, "") + "/"
             : "";
 
-        bucket.getFiles({ prefix, delimiter: "/", autoPaginate: false, maxResults: 5000 }, (err, files, nextQuery, apiResponse) => {
-            if (err) return cb(err);
+        const names = new Set();
 
-            const names = new Set();
-            (apiResponse && apiResponse.prefixes || []).forEach(p => {
-                let name = p.slice(prefix.length).replace(/\/$/, "");
-                if (name && !name.includes("/") && !name.startsWith(".")) names.add(name);
+        // autoPaginate can't be used here: the storage client only aggregates
+        // `files` across pages, not `apiResponse.prefixes`, so folder names
+        // from earlier pages would be silently dropped. Page through
+        // nextQuery manually and merge prefixes from every page ourselves.
+        const fetchPage = (query) => {
+            bucket.getFiles(Object.assign({ prefix, delimiter: "/", autoPaginate: false }, query || {}), (err, files, nextQuery, apiResponse) => {
+                if (err) return cb(err);
+
+                (apiResponse && apiResponse.prefixes || []).forEach(p => {
+                    let name = p.slice(prefix.length).replace(/\/$/, "");
+                    if (name && !name.includes("/") && !name.startsWith(".")) names.add(name);
+                });
+
+                // Fallback: infer folder names from object keys when delimiter prefixes are empty.
+                (files || []).forEach(file => {
+                    const key = file.name || "";
+                    if (!key.startsWith(prefix)) return;
+                    const rest = key.slice(prefix.length);
+                    const seg = rest.split("/")[0];
+                    if (seg && !seg.startsWith(".")) names.add(seg);
+                });
+
+                if (nextQuery) {
+                    fetchPage(nextQuery);
+                } else {
+                    cb(null, Array.from(names).sort((a, b) => a.localeCompare(b)));
+                }
             });
+        };
 
-            // Fallback: infer folder names from object keys when delimiter prefixes are empty.
-            (files || []).forEach(file => {
-                const key = file.name || "";
-                if (!key.startsWith(prefix)) return;
-                const rest = key.slice(prefix.length);
-                const seg = rest.split("/")[0];
-                if (seg && !seg.startsWith(".")) names.add(seg);
-            });
-
-            cb(null, Array.from(names).sort((a, b) => a.localeCompare(b)));
-        });
+        fetchPage();
     },
 
     /** Cached list of project folder names (same TTL as UI session cache). */

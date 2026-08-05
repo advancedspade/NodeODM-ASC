@@ -27,6 +27,16 @@ body {
     background: var(--bg);
 }
 
+/* Default browser link blue is unreadable against the dark theme; most
+   anchors don't set their own color. */
+a {
+    color: var(--accent);
+}
+
+a:hover {
+    color: var(--text);
+}
+
 /* Full-viewport utility / photogrammetry-style map atmosphere */
 .page-atmosphere {
     position: fixed;
@@ -1078,7 +1088,7 @@ body {
     margin-top: 0.5rem;
 }
 
-.tasks-body .task .actionButtons .btn-task {
+.btn-task {
     appearance: none;
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -1092,9 +1102,20 @@ body {
     margin-left: 0.35rem;
 }
 
-.tasks-body .task .actionButtons .btn-task:hover {
+.btn-task:hover {
     border-color: var(--accent);
     color: var(--accent);
+}
+
+.btn-task--danger {
+    color: var(--danger);
+    border-color: var(--danger);
+}
+
+.btn-task--danger:hover {
+    color: #fff;
+    background: var(--danger);
+    border-color: var(--danger);
 }
 
 .tasks-body .task .alert {

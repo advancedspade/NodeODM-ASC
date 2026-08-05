@@ -151,6 +151,7 @@ function sendWebUiView(req, res) {
 }
 app.get('/home', sendWebUiView);
 app.get('/uploads', sendWebUiView);
+app.get('/projects', sendWebUiView);
 app.get('/incomplete', sendWebUiView);
 app.get('/history', sendWebUiView);
 

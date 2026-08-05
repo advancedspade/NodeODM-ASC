@@ -1866,6 +1866,37 @@ $(function() {
         });
     })();
 
+    // These must be declared before setupNdmAppNav runs: its initial view-sync
+    // call can synchronously reach into GCS/Projects state (e.g. via
+    // ndmGcsUploadOnView) on page load, before this point in the script would
+    // otherwise have executed.
+    var ndmReprocessSanitizedName = null;
+    var ndmReprocessLoading = false;
+
+    var ndmSignedInEmail = "";
+
+    var ndmGcsEnabled = false;
+    var ndmGcsFiles = [];
+    var ndmGcsProjectsCache = [];
+    var ndmGcsProjectsCacheMeta = { key: "", fetchedAt: 0 };
+    var ndmGcsProjectsFetch = null;
+    var ndmGcsCacheKeyStr = "";
+    var ndmGcsSuggestIndex = -1;
+    var ndmGcsAjaxOpts = {
+        xhrFields: { withCredentials: true },
+        cache: false,
+        headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" }
+    };
+    var NDM_GCS_PROJECTS_CACHE_STORAGE = "ndmGcsProjectsCacheV1";
+    var NDM_GCS_PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000;
+    var NDM_GCS_MAX_INDIVIDUAL_FILES = 2500;
+    var NDM_GCS_STALL_MS = 5 * 60 * 1000;
+    var NDM_GCS_FILE_LIST_PREVIEW = 30;
+    var ndmGcsDirectUpload = false;
+    var ndmGcsUploadStartedAt = 0;
+    var ndmGcsUploadElapsedTimer = null;
+    var NDM_GCS_UPLOAD_CTX_KEY = "ndmGcsUploadCtxV1";
+
     (function setupNdmAppNav() {
         var layout = document.getElementById("ndmAppLayout");
         var collapseBtn = document.getElementById("ndmSidebarCollapse");
@@ -1959,33 +1990,6 @@ $(function() {
 
         window.ndmShowView = showView;
     })();
-
-    var ndmReprocessSanitizedName = null;
-    var ndmReprocessLoading = false;
-
-    var ndmSignedInEmail = "";
-
-    var ndmGcsEnabled = false;
-    var ndmGcsFiles = [];
-    var ndmGcsProjectsCache = [];
-    var ndmGcsProjectsCacheMeta = { key: "", fetchedAt: 0 };
-    var ndmGcsProjectsFetch = null;
-    var ndmGcsCacheKeyStr = "";
-    var ndmGcsSuggestIndex = -1;
-    var ndmGcsAjaxOpts = {
-        xhrFields: { withCredentials: true },
-        cache: false,
-        headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" }
-    };
-    var NDM_GCS_PROJECTS_CACHE_STORAGE = "ndmGcsProjectsCacheV1";
-    var NDM_GCS_PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000;
-    var NDM_GCS_MAX_INDIVIDUAL_FILES = 2500;
-    var NDM_GCS_STALL_MS = 5 * 60 * 1000;
-    var NDM_GCS_FILE_LIST_PREVIEW = 30;
-    var ndmGcsDirectUpload = false;
-    var ndmGcsUploadStartedAt = 0;
-    var ndmGcsUploadElapsedTimer = null;
-    var NDM_GCS_UPLOAD_CTX_KEY = "ndmGcsUploadCtxV1";
 
     function ndmGcsPersistUploadContext(uploadId, patch) {
         if (!uploadId || typeof sessionStorage === "undefined") return;
@@ -3181,7 +3185,7 @@ $(function() {
         if (proj.job && proj.job.status !== "deleted") {
             var delBtn = document.createElement("button");
             delBtn.type = "button";
-            delBtn.className = "btn-task";
+            delBtn.className = "btn-task btn-task--danger";
             delBtn.textContent = "Delete";
             delBtn.style.fontSize = "0.8125rem";
             delBtn.title = "Removes the job from processing and marks it deleted. Cloud outputs are kept.";

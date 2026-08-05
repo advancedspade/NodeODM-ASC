@@ -452,6 +452,72 @@ module.exports = {
         });
     },
 
+    /**
+     * List every file under a project folder (relative paths + size/type).
+     * Skips .uploads/ staging and legacy top-level all.zip.
+     */
+    listProjectFiles: function(projectName, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const sanitized = sanitizeProjectName(projectName, "");
+        if (!sanitized || sanitized !== String(projectName || "").trim()) {
+            return cb(new Error("Invalid project name"));
+        }
+
+        const base = projectFolderPrefix(sanitized);
+        module.exports.listFilesUnderPrefix(base, (err, objects) => {
+            if (err) return cb(err);
+            const files = [];
+            (objects || []).forEach(obj => {
+                const key = obj.name || "";
+                if (!key.startsWith(base)) return;
+                const rel = key.slice(base.length);
+                if (!rel || rel.startsWith(".uploads/") || rel === "all.zip") return;
+                if (rel.startsWith("opensfm/")) return;
+                const meta = obj.metadata || {};
+                files.push({
+                    path: rel,
+                    name: path.basename(key),
+                    size: parseInt(meta.size || 0, 10) || 0,
+                    contentType: module.exports.contentTypeForPath(key)
+                });
+            });
+            files.sort((a, b) => a.path.localeCompare(b.path));
+            cb(null, files);
+        });
+    },
+
+    /**
+     * Delete everything under a project folder except images/ and gcp/.
+     * Used before a successful reprocess uploads fresh outputs.
+     */
+    deleteProjectOutputsExceptInputs: function(projectName, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const sanitized = sanitizeProjectName(projectName, "");
+        if (!sanitized) return cb(new Error("Invalid project name"));
+
+        const base = projectFolderPrefix(sanitized);
+        module.exports.listFilesUnderPrefix(base, (err, objects) => {
+            if (err) return cb(err);
+            const toDelete = (objects || [])
+                .map(obj => obj.name || "")
+                .filter(key => {
+                    if (!key || !key.startsWith(base)) return false;
+                    const rel = key.slice(base.length);
+                    return !(rel.startsWith("images/") || rel.startsWith("gcp/"));
+                });
+            if (!toDelete.length) return cb(null, { deleted: 0 });
+            module.exports.deleteObjects(toDelete, delErr => {
+                if (delErr) return cb(delErr);
+                module.exports.invalidateProjectsListCache();
+                cb(null, { deleted: toDelete.length });
+            });
+        });
+    },
+
     createReadStream: function(objectPath) {
         if (!bucket) return null;
         return bucket.file(objectPath).createReadStream();

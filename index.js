@@ -49,6 +49,7 @@ const authCheck = auth.getMiddleware();
 const taskNew = require('./libs/taskNew');
 const rtkApi = require('./libs/rtkApi');
 const gcsUploadApi = require('./libs/gcsUploadApi');
+const supportProxy = require('./libs/supportProxy');
 
 const formDataParser = multer().none();
 const urlEncodedBodyParser = bodyParser.urlencoded({ extended: false });
@@ -88,6 +89,7 @@ app.get('/auth/bootstrap', (req, res) => {
                 enabled: true,
                 directUpload: true
             } : { enabled: false },
+            feedback: { enabled: supportProxy.enabled() },
             oauthSessionDays: config.oauthSessionDays || 30
         };
         return res.json(payload);
@@ -98,7 +100,8 @@ app.get('/auth/bootstrap', (req, res) => {
         gcsUpload: GCS.enabled() ? {
             enabled: true,
             directUpload: true
-        } : { enabled: false }
+        } : { enabled: false },
+        feedback: { enabled: supportProxy.enabled() }
     });
 });
 app.get('/', (req, res) => {
@@ -170,6 +173,8 @@ app.post('/rtk/session/:sessionId/upload', authCheck, rtkApi.assignSessionDir, r
 app.post('/rtk/session/:sessionId/analyze', authCheck, rtkApi.assignSessionDir, rtkApi.handleSessionAnalyze);
 app.delete('/rtk/session/:sessionId', authCheck, rtkApi.handleSessionDelete);
 app.post('/rtk/analyze', authCheck, rtkApi.assignPreviewDir, rtkApi.uploadImages, rtkApi.handleAnalyze);
+
+app.post('/support/feedback', authCheck, jsonBodyParser, supportProxy.handleFeedback);
 
 function gcsApiNoCache(req, res, next) {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");

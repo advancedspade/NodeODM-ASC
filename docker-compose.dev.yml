@@ -46,6 +46,8 @@ services:
       GCS_PROJECT_ID: ${GCS_PROJECT_ID:-}
       GCS_UPLOAD_PREFIX: ${GCS_UPLOAD_PREFIX:-outputs}
       GCS_KEY_PATH: ${GCS_KEY_PATH:-}
+      # Optional — Shelby Cloud base URL. Feedback buttons stay hidden when unset.
+      SUPPORT_API_URL: ${SUPPORT_API_URL:-}
     ports:
       - "4000:3000"
     mem_limit: 16g

@@ -24,6 +24,7 @@
 	"oauthAllowedDomains": "aspadeco.com",
 	"oauthSessionDays": 30,
 	"authorizedIps": [],
+	"supportApiUrl": "",
 	"maxImages": "",
 
 	"gcsBucket": "",

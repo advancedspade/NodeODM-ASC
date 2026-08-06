@@ -150,19 +150,6 @@
             </div>
             <p>Upload images and optional GCP files, tune options, then start a task. Running jobs appear in the panel on the right.</p>
             <p class="page-header__featureline">Jobs use the <strong>full pipeline</strong> (orthophoto and related outputs; 3D model skipped by default, raw photos kept on the server). The <strong>Image locations</strong> map is above the task list.</p>
-            <div class="ndm-env-switch" id="ndmEnvSwitch" hidden>
-                <div class="ndm-env-switch__inner">
-                    <span class="ndm-env-switch__lead">Environment</span>
-                    <div class="ndm-env-switch__item">
-                        <a class="ndm-env-switch__pill" id="ndmEnvStaging" href="#">dronemaps</a>
-                        <span class="ndm-env-switch__tagline" id="ndmEnvStagingTagline"></span>
-                    </div>
-                    <div class="ndm-env-switch__item">
-                        <a class="ndm-env-switch__pill" id="ndmEnvSuper" href="#">superdrone</a>
-                        <span class="ndm-env-switch__tagline" id="ndmEnvSuperTagline"></span>
-                    </div>
-                </div>
-            </div>
         </header>
 
         <div class="grid">
@@ -513,7 +500,7 @@
                             <button type="button" class="ndm-history-chip" data-ndm-projects-filter="succeeded">Succeeded</button>
                             <button type="button" class="ndm-history-chip" data-ndm-projects-filter="failed">Failed</button>
                             <button type="button" class="ndm-history-chip" data-ndm-projects-filter="active">In progress</button>
-                            <button type="button" class="ndm-history-chip" data-ndm-projects-filter="deleted">Deleted</button>
+                            <button type="button" class="ndm-history-chip" data-ndm-projects-filter="archived">Archived</button>
                         </div>
                         <div id="ndmProjectsError" class="error-block" hidden role="alert"></div>
                         <div class="ndm-incomplete-empty" id="ndmProjectsEmpty" hidden>

@@ -75,56 +75,6 @@ function emailAllowed(email, domains) {
     return domains.some(d => host === d);
 }
 
-function portalOriginFromOAuthRedirect(config) {
-    try {
-        return new URL(config.oauthGoogleRedirectUri || "").origin;
-    } catch (e) {
-        return "";
-    }
-}
-
-function siblingPortalOrigin(config) {
-    const mine = portalOriginFromOAuthRedirect(config);
-    const st = config.portalStagingEnvOrigin || "";
-    const su = config.portalSuperEnvOrigin || "";
-    if (!mine || !st || !su) return "";
-    if (mine === st) return su;
-    if (mine === su) return st;
-    return "";
-}
-
-function crossSsoEnabled(config) {
-    const mine = portalOriginFromOAuthRedirect(config);
-    if (!mine || !config.portalStagingEnvOrigin || !config.portalSuperEnvOrigin) return false;
-    return mine === config.portalStagingEnvOrigin || mine === config.portalSuperEnvOrigin;
-}
-
-function validatePortalNextUrl(config, urlStr) {
-    try {
-        const u = new URL(String(urlStr || ""));
-        const allowed = [config.portalStagingEnvOrigin, config.portalSuperEnvOrigin].filter(Boolean);
-        const ok = allowed.some(o => {
-            try {
-                return new URL(o).origin === u.origin;
-            } catch (e2) {
-                return false;
-            }
-        });
-        if (!ok) return null;
-        return u.origin + u.pathname + u.search;
-    } catch (e) {
-        return null;
-    }
-}
-
-function publicAppBaseUrl(req) {
-    const xfProto = (req.get("x-forwarded-proto") || "").split(",")[0].trim();
-    const proto = xfProto || req.protocol || "https";
-    const host = (req.get("x-forwarded-host") || req.get("host") || "").split(",")[0].trim();
-    if (!host) return null;
-    return `${proto}://${host}/`;
-}
-
 module.exports = function createGoogleOAuth(config) {
     const cookieName = config.oauthCookieName || "ndm_oauth";
     const client = new OAuth2Client(
@@ -158,14 +108,6 @@ module.exports = function createGoogleOAuth(config) {
         } catch (e) {
             return null;
         }
-    }
-
-    function issueBridgeJwt(email, sub) {
-        return jwt.sign(
-            { purpose: "sso-bridge", email: String(email), sub: String(sub) },
-            config.sessionSecret,
-            { expiresIn: "3m" }
-        );
     }
 
     function hasWebAuth(req) {
@@ -202,60 +144,6 @@ module.exports = function createGoogleOAuth(config) {
             res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
             res.setHeader("Pragma", "no-cache");
             res.sendFile(loginPage);
-        });
-
-        /**
-         * Signed-in user switches host: mint bridge JWT on this origin (cookie), redirect to sibling /auth/session-bridge.
-         * Query: dest=staging|super (portal hosts from config).
-         */
-        app.get("/auth/switch-site", (req, res) => {
-            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-            res.setHeader("Pragma", "no-cache");
-            const raw = String(req.query.dest || req.query.target || "")
-                .toLowerCase()
-                .trim();
-            let destOriginRaw = "";
-            if (raw === "staging" || raw === "st" || raw === "dronemaps") {
-                destOriginRaw = config.portalStagingEnvOrigin || "";
-            } else if (raw === "super" || raw === "su" || raw === "superdrone") {
-                destOriginRaw = config.portalSuperEnvOrigin || "";
-            }
-            let destOrigin = "";
-            try {
-                destOrigin = destOriginRaw ? new URL(destOriginRaw.replace(/\/+$/, "") + "/").origin : "";
-            } catch (e0) {
-                destOrigin = "";
-            }
-            if (!destOrigin) {
-                return res.redirect(302, "/login.html");
-            }
-            let reqOrigin = "";
-            try {
-                const b = publicAppBaseUrl(req);
-                if (b) reqOrigin = new URL(b).origin;
-            } catch (e1) {
-                reqOrigin = "";
-            }
-            if (reqOrigin && reqOrigin === destOrigin) {
-                return res.redirect(302, "/");
-            }
-            const loginOnDest = destOrigin + "/login.html";
-            const session = readWebSession(req);
-            if (!session || !crossSsoEnabled(config)) {
-                return res.redirect(302, loginOnDest);
-            }
-            const nextSafe = validatePortalNextUrl(config, destOrigin + "/");
-            if (!nextSafe) {
-                return res.redirect(302, loginOnDest);
-            }
-            const bridge = issueBridgeJwt(session.email, session.sub);
-            const u =
-                destOrigin +
-                "/auth/session-bridge?token=" +
-                encodeURIComponent(bridge) +
-                "&next=" +
-                encodeURIComponent(nextSafe);
-            return res.redirect(302, u);
         });
 
         app.get("/auth/google", (req, res) => {
@@ -315,22 +203,6 @@ module.exports = function createGoogleOAuth(config) {
                 }
                 const sessionJwt = issueSessionJwt(email, sub);
                 res.cookie(cookieName, sessionJwt, cookieOpts(config, oauthSessionCookieMaxAgeMs()));
-                const sibling = siblingPortalOrigin(config);
-                const mineOrigin = portalOriginFromOAuthRedirect(config);
-                const nextAfter =
-                    validatePortalNextUrl(config, publicAppBaseUrl(req)) ||
-                    (mineOrigin ? validatePortalNextUrl(config, mineOrigin + "/") : null) ||
-                    "/";
-                if (crossSsoEnabled(config) && sibling) {
-                    const bridge = issueBridgeJwt(email, sub);
-                    const target =
-                        sibling +
-                        "/auth/session-bridge?token=" +
-                        encodeURIComponent(bridge) +
-                        "&next=" +
-                        encodeURIComponent(nextAfter);
-                    return res.redirect(302, target);
-                }
                 return res.redirect(302, "/");
             } catch (err) {
                 const googleBody = err && err.response && err.response.data;
@@ -342,48 +214,9 @@ module.exports = function createGoogleOAuth(config) {
             }
         });
 
-        app.get("/auth/session-bridge", (req, res) => {
-            const mineOrigin = portalOriginFromOAuthRedirect(config);
-            const nextFallback =
-                validatePortalNextUrl(config, publicAppBaseUrl(req)) ||
-                (mineOrigin ? validatePortalNextUrl(config, mineOrigin + "/") : null) ||
-                "/";
-            const nextRaw = req.query.next;
-            const nextSafe = validatePortalNextUrl(config, nextRaw) || nextFallback;
-            try {
-                const payload = jwt.verify(String(req.query.token || ""), config.sessionSecret);
-                if (payload.purpose !== "sso-bridge" || !payload.email || payload.sub == null) {
-                    return res.redirect(302, "/login.html?error=bridge_invalid");
-                }
-                if (!emailAllowed(payload.email, config.oauthAllowedDomains)) {
-                    return res.redirect(302, "/login.html?error=forbidden_domain");
-                }
-                const sessionJwt = issueSessionJwt(payload.email, String(payload.sub));
-                res.cookie(cookieName, sessionJwt, cookieOpts(config, oauthSessionCookieMaxAgeMs()));
-                return res.redirect(302, nextSafe);
-            } catch (e) {
-                logger.warn("session-bridge: " + (e && e.message));
-                return res.redirect(302, "/login.html?error=bridge_invalid");
-            }
-        });
-
         app.get("/auth/logout", (req, res) => {
             res.clearCookie(cookieName, { path: "/", sameSite: "lax" });
-            const sibling = siblingPortalOrigin(config);
-            const mineOrigin = portalOriginFromOAuthRedirect(config);
-            const back =
-                validatePortalNextUrl(config, req.query.next) ||
-                validatePortalNextUrl(config, publicAppBaseUrl(req)) ||
-                (mineOrigin ? validatePortalNextUrl(config, mineOrigin + "/") : null) ||
-                "/";
-            if (crossSsoEnabled(config) && sibling && req.query.sibling_done !== "1") {
-                const u =
-                    sibling +
-                    "/auth/logout?sibling_done=1&next=" +
-                    encodeURIComponent(String(back));
-                return res.redirect(302, u);
-            }
-            res.redirect(302, String(back));
+            res.redirect(302, "/login.html");
         });
     }
 

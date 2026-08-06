@@ -11,7 +11,7 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/css/main.css?t=2">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
-    <link rel="stylesheet" href="/css/app.css?t=24">
+    <link rel="stylesheet" href="/css/app.css?t=26">
 </head>
 <body>
     <div class="page-atmosphere" aria-hidden="true">
@@ -52,30 +52,18 @@
 
     <div class="shell shell--login">
         <header class="page-header page-header--login">
-            <h1 id="loginHeadline">Drone processing job</h1>
-            <p id="loginSubhead">Choose the host that fits your job, then continue with Google on that site.</p>
+            <h1>DronezODM</h1>
+            <p>Sign in with Google to use this site.</p>
         </header>
 
         <p id="loginError" class="error-block login-error login-error--global" role="alert" hidden></p>
 
-        <div class="grid grid--login grid--login-portal grid--login-portal--two" id="loginDualGrid">
-            <div class="card login-card login-card--env" id="loginCardStaging">
+        <div class="grid grid--login">
+            <div class="card login-card">
                 <div class="card-body">
-                    <h2 class="login-card__title" id="loginTitleStaging">dronemaps</h2>
-                    <p class="login-card__tagline" id="loginTaglineStaging"></p>
                     <p class="login-lead">Only <strong>@aspadeco.com</strong> Google accounts.</p>
                     <div class="login-actions">
-                        <a class="btn-primary btn-google" id="loginBtnStaging" href="#">Continue with Google</a>
-                    </div>
-                </div>
-            </div>
-            <div class="card login-card login-card--env" id="loginCardSuper">
-                <div class="card-body">
-                    <h2 class="login-card__title" id="loginTitleSuper">superdrone</h2>
-                    <p class="login-card__tagline" id="loginTaglineSuper"></p>
-                    <p class="login-lead">Only <strong>@aspadeco.com</strong> Google accounts.</p>
-                    <div class="login-actions">
-                        <a class="btn-primary btn-google" id="loginBtnSuper" href="#">Continue with Google</a>
+                        <a class="btn-primary btn-google" href="/auth/google">Continue with Google</a>
                     </div>
                 </div>
             </div>
@@ -84,24 +72,6 @@
 
     <script>
         (function () {
-            function loginUrl(origin) {
-                return new URL("/login.html", origin + "/").href;
-            }
-            function sameOrigin(a, b) {
-                try {
-                    return new URL(a).origin === new URL(b).origin;
-                } catch (e) {
-                    return false;
-                }
-            }
-            function soloSubhead(otherOrigin, otherLabel) {
-                if (!otherOrigin) return "Sign in with Google to use this site.";
-                return (
-                    "Sign in with Google to use this site. To use " +
-                    otherLabel +
-                    " instead, open that host in your browser."
-                );
-            }
             var params = new URLSearchParams(window.location.search);
             var err = params.get("error");
             var el = document.getElementById("loginError");
@@ -111,65 +81,11 @@
                     forbidden_domain: "This Google account is not allowed for this site.",
                     invalid_state: "Session expired. Try again.",
                     userinfo: "Could not read your Google profile.",
-                    token_exchange: "Google rejected the sign-in (often redirect URI mismatch, wrong client secret, or an expired code). Use the exact same URL in the browser as in Google Cloud (e.g. localhost vs 127.0.0.1). Check server logs for the precise error.",
-                    bridge_invalid: "Cross-host sign-in link was invalid or expired. Sign in again with Google."
+                    token_exchange: "Google rejected the sign-in (often redirect URI mismatch, wrong client secret, or an expired code). Use the exact same URL in the browser as in Google Cloud (e.g. localhost vs 127.0.0.1). Check server logs for the precise error."
                 };
                 el.textContent = labels[err] || ("Sign-in did not complete (" + err + ").");
                 el.hidden = false;
             }
-            fetch("/auth/bootstrap", { credentials: "same-origin" })
-                .then(function (r) {
-                    return r.json();
-                })
-                .then(function (d) {
-                    if (!d || !d.oauth) return;
-                    var st = d.portalStagingEnvOrigin;
-                    var su = d.portalSuperEnvOrigin;
-                    // A standalone host configures only its own origin. The static
-                    // markup ships two cards with dead hrefs, so bail out only when
-                    // neither origin is known.
-                    if (!st && !su) return;
-                    var here = window.location.origin;
-                    var labSt = d.portalStagingEnvLabel || "dronemaps";
-                    var labSu = d.portalSuperEnvLabel || "superdrone";
-                    var titleSt = document.getElementById("loginTitleStaging");
-                    var titleSu = document.getElementById("loginTitleSuper");
-                    if (titleSt) titleSt.textContent = labSt;
-                    if (titleSu) titleSu.textContent = labSu;
-                    var ltSt = document.getElementById("loginTaglineStaging");
-                    var ltSu = document.getElementById("loginTaglineSuper");
-                    if (ltSt && d.portalStagingEnvTagline) ltSt.textContent = d.portalStagingEnvTagline;
-                    if (ltSu && d.portalSuperEnvTagline) ltSu.textContent = d.portalSuperEnvTagline;
-                    var btnSt = document.getElementById("loginBtnStaging");
-                    var btnSu = document.getElementById("loginBtnSuper");
-                    var cardSt = document.getElementById("loginCardStaging");
-                    var cardSu = document.getElementById("loginCardSuper");
-                    var shell = document.querySelector(".shell--login");
-                    var sub = document.getElementById("loginSubhead");
-                    var headline = document.getElementById("loginHeadline");
-                    var onSt = sameOrigin(st, here);
-                    var onSu = sameOrigin(su, here);
-                    if (onSt && !onSu) {
-                        if (shell) shell.classList.add("login-shell--single-host");
-                        if (cardSu) cardSu.hidden = true;
-                        if (btnSt) btnSt.href = "/auth/google";
-                        if (sub) sub.textContent = soloSubhead(su, labSu);
-                        if (headline) headline.textContent = "Sign in — " + labSt;
-                        document.title = "Sign in — " + labSt;
-                    } else if (onSu && !onSt) {
-                        if (shell) shell.classList.add("login-shell--single-host");
-                        if (cardSt) cardSt.hidden = true;
-                        if (btnSu) btnSu.href = "/auth/google";
-                        if (sub) sub.textContent = soloSubhead(st, labSt);
-                        if (headline) headline.textContent = "Sign in — " + labSu;
-                        document.title = "Sign in — " + labSu;
-                    } else {
-                        if (st && btnSt) btnSt.href = loginUrl(st);
-                        if (su && btnSu) btnSu.href = loginUrl(su);
-                        if (btnSu) btnSu.classList.add("btn-google--outline");
-                    }
-                })
-                .catch(function () {});
         })();
     </script>
 </body>

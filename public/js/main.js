@@ -1205,54 +1205,6 @@ $(function() {
                 ndmProjectsRerenderIfLoaded();
             }
         }
-        if (d.oauth && d.portalStagingEnvOrigin && d.portalSuperEnvOrigin) {
-            var wrap = document.getElementById("ndmEnvSwitch");
-            var st = document.getElementById("ndmEnvStaging");
-            var su = document.getElementById("ndmEnvSuper");
-            if (wrap && st && su) {
-                function envSwitchHref(dest) {
-                    var base = dest === "staging" ? d.portalStagingEnvOrigin : d.portalSuperEnvOrigin;
-                    var targetO;
-                    try {
-                        targetO = new URL(base + "/").origin;
-                    } catch (e0) {
-                        return "#";
-                    }
-                    if (window.location.origin === targetO) {
-                        try {
-                            return new URL("/", window.location.origin + "/").href;
-                        } catch (e1) {
-                            return "/";
-                        }
-                    }
-                    if (d.signedIn && d.crossSso) {
-                        return "/auth/switch-site?dest=" + dest;
-                    }
-                    try {
-                        return new URL("/login.html", targetO + "/").href;
-                    } catch (e2) {
-                        return "#";
-                    }
-                }
-                st.href = envSwitchHref("staging");
-                su.href = envSwitchHref("super");
-                st.textContent = d.portalStagingEnvLabel || "dronemaps";
-                su.textContent = d.portalSuperEnvLabel || "superdrone";
-                var metaSt = document.getElementById("ndmEnvStagingTagline");
-                var metaSu = document.getElementById("ndmEnvSuperTagline");
-                if (metaSt && d.portalStagingEnvTagline) metaSt.textContent = d.portalStagingEnvTagline;
-                if (metaSu && d.portalSuperEnvTagline) metaSu.textContent = d.portalSuperEnvTagline;
-                var here = window.location.origin;
-                try {
-                    if (new URL(d.portalStagingEnvOrigin).origin === here) {
-                        st.classList.add("ndm-env-switch__pill--active");
-                    } else if (new URL(d.portalSuperEnvOrigin).origin === here) {
-                        su.classList.add("ndm-env-switch__pill--active");
-                    }
-                } catch (e1) {}
-                wrap.hidden = false;
-            }
-        }
         if (d.gcsUpload) {
             ndmGcsApplyStatus(d.gcsUpload);
         }
@@ -2736,12 +2688,14 @@ $(function() {
         failed: "Failed",
         canceled: "Failed",
         deleted: "Deleted",
-        incomplete: "Incomplete"
+        incomplete: "Incomplete",
+        archived: "Archived"
     };
 
     var NDM_HISTORY_ACTIONS = {
         created: "created",
         uploaded: "uploaded images for",
+        queued: "queued (waiting for capacity)",
         launching: "queued",
         routed: "started processing",
         finished: "finished",
@@ -2788,15 +2742,18 @@ $(function() {
     }
 
     function ndmProjectsDeriveStatus(proj) {
-        if (proj.job) return proj.job.status;
+        if (proj.archived) return "archived";
+        // Legacy task deletion was attached to a UUID, not the project folder.
+        // Keep surviving folder outputs visible by deriving their bucket state.
+        if (proj.job && !(proj.hasFolder && proj.job.status === "deleted")) return proj.job.status;
         if (proj.isIncomplete) return "incomplete";
         return "succeeded";
     }
 
     function ndmProjectsMatchesFilter(proj) {
         var status = ndmProjectsDeriveStatus(proj);
-        if (ndmProjectsFilter === "all") return status !== "deleted";
-        if (ndmProjectsFilter === "deleted") return status === "deleted";
+        if (ndmProjectsFilter === "all") return status !== "deleted" && status !== "archived";
+        if (ndmProjectsFilter === "archived") return status === "archived";
         if (ndmProjectsFilter === "active") return status === "queued" || status === "running";
         if (ndmProjectsFilter === "succeeded") return status === "succeeded";
         if (ndmProjectsFilter === "failed") return status === "failed" || status === "canceled";
@@ -3182,17 +3139,19 @@ $(function() {
             actions.appendChild(cancelBtn);
         }
 
-        if (proj.job && proj.job.status !== "deleted") {
-            var delBtn = document.createElement("button");
-            delBtn.type = "button";
-            delBtn.className = "btn-task btn-task--danger";
-            delBtn.textContent = "Delete";
-            delBtn.style.fontSize = "0.8125rem";
-            delBtn.title = "Removes the job from processing and marks it deleted. Cloud outputs are kept.";
-            delBtn.addEventListener("click", function() {
-                ndmProjectsDelete(proj.job, delBtn);
+        if (proj.hasFolder && proj.projectArchivesSupported) {
+            var archiveBtn = document.createElement("button");
+            archiveBtn.type = "button";
+            archiveBtn.className = "btn-task";
+            archiveBtn.textContent = proj.archived ? "Restore" : "Archive";
+            archiveBtn.style.fontSize = "0.8125rem";
+            archiveBtn.title = proj.archived
+                ? "Return this project to the main Projects list."
+                : "Move this project to Archived. Cloud outputs are kept.";
+            archiveBtn.addEventListener("click", function() {
+                ndmProjectsSetArchived(proj, !proj.archived, archiveBtn);
             });
-            actions.appendChild(delBtn);
+            actions.appendChild(archiveBtn);
         }
 
         li.appendChild(actions);
@@ -3231,6 +3190,9 @@ $(function() {
             isIncomplete: proj.isIncomplete,
             hasRawImages: proj.hasRawImages,
             hasFolder: proj.hasFolder,
+            projectArchivesSupported: !!proj.projectArchivesSupported,
+            archived: !!proj.archived,
+            archivedAt: proj.archivedAt || null,
             job: job ? {
                 uuid: job.uuid,
                 status: job.status,
@@ -3334,7 +3296,12 @@ $(function() {
         if (ndmProjectsLoaded) ndmProjectsRender();
     }
 
-    function ndmProjectsJoinData(folders, incompleteList, jobs) {
+    function ndmProjectsJobTime(job) {
+        if (!job) return 0;
+        return job.createdAt || job.updatedAt || job.finishedAt || 0;
+    }
+
+    function ndmProjectsJoinData(folders, incompleteList, jobs, archivedProjects, projectArchivesSupported) {
         var incompleteSet = {};
         var incompleteHasRaw = {};
         (incompleteList || []).forEach(function(p) {
@@ -3342,10 +3309,24 @@ $(function() {
             if (p.hasRawImages) incompleteHasRaw[p.name] = true;
         });
 
+        // Re-running a name creates a second ledger row rather than updating the
+        // first, so a folder can match several jobs. Keep the most recent one:
+        // an earlier failed attempt must not mask the run that produced the folder.
         var jobsByFolder = {};
         (jobs || []).forEach(function(j) {
             var key = ndmSanitizeProjectName(j.name);
-            if (key) jobsByFolder[key] = j;
+            if (!key) return;
+            var current = jobsByFolder[key];
+            if (!current || ndmProjectsJobTime(j) > ndmProjectsJobTime(current)) {
+                jobsByFolder[key] = j;
+            }
+        });
+
+        var archivesByFolder = {};
+        (archivedProjects || []).forEach(function(project) {
+            if (project && project.name && project.archived) {
+                archivesByFolder[project.name] = project;
+            }
         });
 
         var result = [];
@@ -3356,6 +3337,7 @@ $(function() {
             if (!name) return;
             var displayName = (f && f.displayName) || name.replace(/_/g, " ");
             var isIncomplete = !!incompleteSet[name];
+            var archive = archivesByFolder[name] || null;
             // Completed folders keep images/ from the initial upload; incomplete
             // rows report hasRawImages explicitly. Optimistic true for succeeded
             // folders so Re-process stays available; /inputs confirms on click.
@@ -3368,6 +3350,9 @@ $(function() {
                 isIncomplete: isIncomplete,
                 hasRawImages: hasRaw,
                 hasFolder: true,
+                projectArchivesSupported: !!projectArchivesSupported,
+                archived: !!archive,
+                archivedAt: archive && archive.archivedAt,
                 job: jobsByFolder[name] || null
             });
             seen[name] = true;
@@ -3385,6 +3370,9 @@ $(function() {
                 isIncomplete: true,
                 hasRawImages: false,
                 hasFolder: false,
+                projectArchivesSupported: false,
+                archived: false,
+                archivedAt: null,
                 job: j
             });
             seen[key] = true;
@@ -3398,6 +3386,19 @@ $(function() {
         });
 
         return result;
+    }
+
+    // jQuery 1.x .then(done, fail) keeps the rejected state, so a fail filter
+    // returning a default still rejects the surrounding $.when. Wrap optional
+    // requests so a failure resolves with a fallback instead.
+    function ndmResolveWithFallback(req, extract, fallback) {
+        var def = $.Deferred();
+        req.done(function(data) {
+            def.resolve(extract(data));
+        }).fail(function() {
+            def.resolve(fallback);
+        });
+        return def.promise();
     }
 
     function ndmProjectsLoad(forceRefresh) {
@@ -3435,17 +3436,27 @@ $(function() {
 
         var foldersReq = $.get(foldersUrl, ndmGcsAjaxOpts);
         // Incomplete + history enrich the list; failures must not blank folders.
-        var incompleteReq = $.get(incompleteUrl, ndmGcsAjaxOpts).then(
+        // /task/history only exists on the ClusterODM gateway, so it 404s when
+        // this UI is served by a standalone NodeODM.
+        var incompleteReq = ndmResolveWithFallback(
+            $.get(incompleteUrl, ndmGcsAjaxOpts),
             function(data) { return (data && data.projects) || []; },
-            function() { return []; }
+            []
         );
-        var historyReq = $.ajax({ url: historyUrl, method: "GET", dataType: "json" }).then(
-            function(data) { return (data && data.jobs) || []; },
-            function() { return []; }
+        var historyReq = ndmResolveWithFallback(
+            $.ajax({ url: historyUrl, method: "GET", dataType: "json" }),
+            function(data) {
+                return {
+                    jobs: (data && data.jobs) || [],
+                    archivedProjects: (data && data.archivedProjects) || [],
+                    projectArchivesSupported: !!(data && data.projectArchivesSupported)
+                };
+            },
+            { jobs: [], archivedProjects: [], projectArchivesSupported: false }
         );
 
         ndmProjectsFetch = $.when(foldersReq, incompleteReq, historyReq).then(
-            function(fRes, incomplete, jobs) {
+            function(fRes, incomplete, history) {
                 var foldersData = fRes[0];
                 if (foldersData && foldersData.error) {
                     ndmProjectsSetError(foldersData.error);
@@ -3453,7 +3464,13 @@ $(function() {
                     return;
                 }
                 var folders = (foldersData && foldersData.projects) || [];
-                ndmProjectsAll = ndmProjectsJoinData(folders, incomplete || [], jobs || []);
+                ndmProjectsAll = ndmProjectsJoinData(
+                    folders,
+                    incomplete || [],
+                    (history && history.jobs) || [],
+                    (history && history.archivedProjects) || [],
+                    !!(history && history.projectArchivesSupported)
+                );
                 ndmProjectsLoaded = true;
                 ndmProjectsSetStatus(ndmProjectsAll.length + " project(s).", "");
                 ndmProjectsRender();
@@ -3522,19 +3539,24 @@ $(function() {
         });
     }
 
-    function ndmProjectsDelete(job, button) {
-        if (!confirm("Delete \"" + (job.name || job.uuid) + "\" from the shared job list?\n\nProcessing outputs already saved to cloud storage are kept.")) return;
-        var url = ndmApi("/task/remove") + ndmTokenQs();
+    function ndmProjectsSetArchived(proj, archived, button) {
+        var verb = archived ? "Archive" : "Restore";
+        var explanation = archived
+            ? "\n\nThe project will move to Archived. Cloud outputs are kept."
+            : "\n\nThe project will return to the main Projects list.";
+        if (!confirm(verb + " \"" + (proj.displayName || proj.name) + "\"?" + explanation)) return;
+
+        var url = ndmApi(archived ? "/project/archive" : "/project/restore") + ndmTokenQs();
         button.disabled = true;
-        $.post(url, { uuid: job.uuid }).done(function(res) {
-            if (!(res && res.success) && !ndmTaskAlreadyGone(res && res.error)) {
-                ndmProjectsSetError((res && res.error) || "Delete failed.");
+        $.post(url, { name: proj.name }).done(function(res) {
+            if (!(res && res.success)) {
+                ndmProjectsSetError((res && res.error) || (verb + " failed."));
                 button.disabled = false;
                 return;
             }
             ndmProjectsSetError("");
-            job.status = "deleted";
-            job.deletedAt = job.deletedAt || Date.now();
+            proj.archived = archived;
+            proj.archivedAt = archived ? Date.now() : null;
             ndmProjectsRender();
             ndmProjectsLoad(false);
         }).fail(function(xhr, textStatus) {

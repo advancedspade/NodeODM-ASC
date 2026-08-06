@@ -79,15 +79,9 @@ Options:
 	--oauth_google_client_id <id>	Web application OAuth 2.0 Client ID from Google Cloud Console.
 	--oauth_google_client_secret <secret>	Client secret for the same OAuth client.
 	--oauth_google_redirect_uri <url>	Must exactly match an authorized redirect URI (e.g. https://your-host/auth/google/callback).
-	--session_secret <string>	Secret used to sign session cookies (use a long random string). For cross-host sign-in between dronemaps and superdrone, use the same value on both servers.
+	--session_secret <string>	Secret used to sign session cookies (use a long random string).
 	--oauth_allowed_domains <list>	Optional comma-separated email domains (e.g. example.com,other.org). If set, only Google accounts whose address is exactly user@domain for one of those domains may sign in.
 	--oauth_session_days <n>	OAuth session length in days (JWT + cookie, 1–365). Default: 30.
-	--portal_staging_env_url <url>	Public origin for the dronemaps NodeODM host (e.g. https://dronemaps.example.com).
-	--portal_staging_env_label <text>	Label for that host (e.g. dronemaps).
-	--portal_staging_env_tagline <text>	Short description on the portal (e.g. standard capacity).
-	--portal_super_env_url <url>	Public origin for the superdrone NodeODM host (e.g. https://superdrone.example.com).
-	--portal_super_env_label <text>	Label for that host (e.g. superdrone).
-	--portal_super_env_tagline <text>	Short description on the portal (e.g. high capacity).
 	--max_images <number>	Specify the maximum number of images that this processing node supports. (default: unlimited)
 	--webhook <url>	Specify a POST URL endpoint to be invoked when a task completes processing (default: none)
 	--s3_endpoint <url>	Specify a S3 endpoint (for example, nyc3.digitaloceanspaces.com) to upload completed task results to. (default: do not upload to S3)
@@ -217,62 +211,6 @@ config.oauthSessionDays = Math.min(
 		) || 30
 	)
 );
-function portalOriginFromRaw(raw) {
-	const u = String(raw || "")
-		.trim()
-		.replace(/\/+$/, "");
-	if (!/^https?:\/\//i.test(u)) return "";
-	try {
-		return new URL(u).origin;
-	} catch (e) {
-		return "";
-	}
-}
-// Which hosts a deployment pairs with is deployment-specific, so the origins
-// must stay empty in config-default.json. An unset env var is falsy and falls
-// through to the file, so a non-empty origin there would silently pair every
-// standalone host with whatever the file names — and cross-host sign-in then
-// fails with bridge_invalid unless both hosts share a SESSION_SECRET.
-config.portalStagingEnvOrigin = portalOriginFromRaw(
-	argv.portal_staging_env_url ||
-		process.env.PORTAL_STAGING_ENV_URL ||
-		fromConfigFile("portalStagingEnvOrigin", "") ||
-		""
-);
-config.portalSuperEnvOrigin = portalOriginFromRaw(
-	argv.portal_super_env_url ||
-		process.env.PORTAL_SUPER_ENV_URL ||
-		fromConfigFile("portalSuperEnvOrigin", "") ||
-		""
-);
-config.portalStagingEnvLabel =
-	argv.portal_staging_env_label ||
-	process.env.PORTAL_STAGING_ENV_LABEL ||
-	fromConfigFile("portalStagingEnvLabel", "") ||
-	"dronemaps";
-config.portalSuperEnvLabel =
-	argv.portal_super_env_label ||
-	process.env.PORTAL_SUPER_ENV_LABEL ||
-	fromConfigFile("portalSuperEnvLabel", "") ||
-	"superdrone";
-if (typeof config.portalStagingEnvLabel === "string") {
-	config.portalStagingEnvLabel = config.portalStagingEnvLabel.trim();
-}
-if (typeof config.portalSuperEnvLabel === "string") {
-	config.portalSuperEnvLabel = config.portalSuperEnvLabel.trim();
-}
-const _portalStTag =
-	argv.portal_staging_env_tagline ||
-	process.env.PORTAL_STAGING_ENV_TAGLINE ||
-	fromConfigFile("portalStagingEnvTagline", "") ||
-	"";
-const _portalSuTag =
-	argv.portal_super_env_tagline ||
-	process.env.PORTAL_SUPER_ENV_TAGLINE ||
-	fromConfigFile("portalSuperEnvTagline", "") ||
-	"";
-config.portalStagingEnvTagline = String(_portalStTag).trim() || "Standard capacity — everyday maps and processing.";
-config.portalSuperEnvTagline = String(_portalSuTag).trim() || "High capacity — large projects and heavier processing.";
 config.oauthEnabled = !!(config.oauthGoogleClientId && config.oauthGoogleClientSecret && config.oauthGoogleRedirectUri && config.sessionSecret);
 config.authorizedIps = fromConfigFile("authorizedIps", []);
 config.maxImages = parseInt(argv.max_images || fromConfigFile("maxImages", "")) || null;

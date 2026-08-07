@@ -1208,6 +1208,7 @@ $(function() {
         if (d.gcsUpload) {
             ndmGcsApplyStatus(d.gcsUpload);
         }
+        ndmFeedbackApplyStatus(d.feedback);
     });
 
     function hoursMinutesSecs(t) {
@@ -1331,6 +1332,25 @@ $(function() {
         this.showDownload = ko.pureComputed(function() {
             return this.info().status &&
                 (this.info().status.code === codes.COMPLETED);
+        }, this);
+        // The gateway reports RUNNING as soon as a worker is requested, so there
+        // is a window before the machine exists where no progress is reported.
+        this.progressValue = ko.pureComputed(function() {
+            var pct = parseFloat(this.info().progress);
+            if (!isFinite(pct)) return null;
+            return Math.max(0, Math.min(100, pct));
+        }, this);
+        this.progressPending = ko.pureComputed(function() {
+            return this.progressValue() === null;
+        }, this);
+        this.progressLabel = ko.pureComputed(function() {
+            var pct = this.progressValue();
+            if (pct === null) return "Starting worker… this can take a few minutes";
+            return Math.round(pct) + "%";
+        }, this);
+        this.progressWidth = ko.pureComputed(function() {
+            var pct = this.progressValue();
+            return (pct === null ? 100 : pct) + "%";
         }, this);
         this.startRefreshingInfo();
     }
@@ -1941,6 +1961,414 @@ $(function() {
         }
 
         window.ndmShowView = showView;
+    })();
+
+    // Category labels and severity/priority options match Ayer. Message content is
+    // collected as separate required fields per category (composed into one message
+    // body at submit), rather than a single templated textarea.
+    var NDM_FEEDBACK_CATEGORIES = [
+        { value: "bug", label: "Bug Report" },
+        { value: "feature", label: "Feature Request" },
+        { value: "improvement", label: "Improvement Suggestion" },
+        { value: "behavior", label: "Current Feature Behavior" }
+    ];
+
+    var NDM_FEEDBACK_SEVERITIES = [
+        { value: "critical", label: "Critical (No Workaround)", ticketPriority: "Critical" },
+        { value: "high", label: "High (Workaround Exists)", ticketPriority: "High" },
+        { value: "medium", label: "Medium (Cosmetic/Minor)", ticketPriority: "Medium" },
+        { value: "low", label: "Low (Enhancement)", ticketPriority: "Low" }
+    ];
+
+    var NDM_FEEDBACK_PRIORITIES = [
+        { value: "critical", label: "Critical (Blocker)", ticketPriority: "Critical" },
+        { value: "high", label: "High (Important)", ticketPriority: "High" },
+        { value: "medium", label: "Medium (Nice to Have)", ticketPriority: "Medium" },
+        { value: "low", label: "Low (Future Consideration)", ticketPriority: "Low" }
+    ];
+
+    var NDM_FEEDBACK_DETAIL_FIELDS = {
+        bug: [
+            { key: "steps", label: "Steps to Reproduce", placeholder: "1. [Step 1]\n2. [Step 2]\n3. [Step 3]", multiline: true },
+            { key: "expected", label: "Expected Behavior", placeholder: "[What should happen?]", multiline: true },
+            { key: "actual", label: "Actual Behavior", placeholder: "[What actually happens?]", multiline: true },
+            { key: "context", label: "Additional Context", placeholder: "[Browser, device, etc.]", multiline: true }
+        ],
+        feature: [
+            { key: "problem", label: "Problem/Need", placeholder: "[What problem does this solve?]", multiline: true },
+            { key: "solution", label: "Proposed Solution", placeholder: "[How would you like this to work?]", multiline: true },
+            { key: "alternatives", label: "Alternatives Considered", placeholder: "[Any other approaches?]", multiline: true },
+            { key: "context", label: "Additional Context", placeholder: "[Mockups, examples, etc.]", multiline: true }
+        ],
+        improvement: [
+            { key: "current", label: "Current Behavior", placeholder: "[How does it work now?]", multiline: true },
+            { key: "suggested", label: "Suggested Improvement", placeholder: "[How should it work instead?]", multiline: true },
+            { key: "benefit", label: "Benefit", placeholder: "[Why would this be valuable?]", multiline: true }
+        ],
+        behavior: [
+            { key: "feature", label: "Feature/Area", placeholder: "[Which feature are you asking about?]", multiline: false },
+            { key: "question", label: "Question/Clarification", placeholder: "[What would you like to know?]", multiline: true },
+            { key: "context", label: "Context", placeholder: "[What are you trying to accomplish?]", multiline: true }
+        ]
+    };
+
+    var ndmFeedbackEnabled = false;
+    var ndmFeedbackSubmitting = false;
+    var ndmFeedbackReturnFocus = null;
+
+    function ndmFeedbackEl(id) {
+        return document.getElementById(id);
+    }
+
+    function ndmFeedbackApplyStatus(st) {
+        ndmFeedbackEnabled = !!(st && st.enabled);
+        var footer = ndmFeedbackEl("ndmSidebarFooter");
+        var projectsBtn = ndmFeedbackEl("ndmFeedbackOpenProjects");
+        if (footer) footer.hidden = !ndmFeedbackEnabled;
+        if (projectsBtn) projectsBtn.hidden = !ndmFeedbackEnabled;
+    }
+
+    function ndmFeedbackFillSelect(el, options, placeholder) {
+        if (!el) return;
+        el.innerHTML = "";
+        var blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = placeholder;
+        el.appendChild(blank);
+        options.forEach(function(opt) {
+            var o = document.createElement("option");
+            o.value = opt.value;
+            o.textContent = opt.label;
+            el.appendChild(o);
+        });
+        el.value = "";
+    }
+
+    function ndmFeedbackCategoryLabel(value) {
+        for (var i = 0; i < NDM_FEEDBACK_CATEGORIES.length; i++) {
+            if (NDM_FEEDBACK_CATEGORIES[i].value === value) return NDM_FEEDBACK_CATEGORIES[i].label;
+        }
+        return value || "";
+    }
+
+    function ndmFeedbackTicketPriority(category, severityOrPriority) {
+        if (!severityOrPriority) return "Low";
+        var list = category === "bug" ? NDM_FEEDBACK_SEVERITIES
+            : (category === "feature" ? NDM_FEEDBACK_PRIORITIES : []);
+        for (var i = 0; i < list.length; i++) {
+            if (list[i].value === severityOrPriority) return list[i].ticketPriority;
+        }
+        return "Low";
+    }
+
+    function ndmFeedbackSetError(msg) {
+        var el = ndmFeedbackEl("ndmFeedbackError");
+        if (!el) return;
+        el.textContent = msg || "";
+        el.hidden = !msg;
+    }
+
+    function ndmFeedbackDetailInputs() {
+        var wrap = ndmFeedbackEl("ndmFeedbackDetailFields");
+        if (!wrap) return [];
+        return Array.prototype.slice.call(wrap.querySelectorAll("[data-ndm-feedback-field]"));
+    }
+
+    function ndmFeedbackRenderDetailFields(category) {
+        var wrap = ndmFeedbackEl("ndmFeedbackDetailFields");
+        var hint = ndmFeedbackEl("ndmFeedbackMessageHint");
+        if (!wrap) return;
+        wrap.innerHTML = "";
+        var fields = NDM_FEEDBACK_DETAIL_FIELDS[category] || [];
+        if (!category || !fields.length) {
+            wrap.hidden = true;
+            if (hint) hint.hidden = false;
+            return;
+        }
+        wrap.hidden = false;
+        if (hint) hint.hidden = true;
+        fields.forEach(function(field) {
+            var row = document.createElement("div");
+            row.className = "ndm-feedback-field";
+            var inputId = "ndmFeedbackField_" + field.key;
+            var label = document.createElement("label");
+            label.className = "ndm-label";
+            label.setAttribute("for", inputId);
+            label.innerHTML = field.label +
+                ' <span class="ndm-label__req" aria-hidden="true">(required)</span>';
+            var input;
+            if (field.multiline) {
+                input = document.createElement("textarea");
+                input.className = "ndm-input ndm-feedback-textarea";
+                input.rows = 4;
+            } else {
+                input = document.createElement("input");
+                input.type = "text";
+                input.className = "ndm-input";
+            }
+            input.id = inputId;
+            input.placeholder = field.placeholder;
+            input.required = true;
+            input.setAttribute("data-ndm-feedback-field", field.key);
+            input.setAttribute("data-ndm-feedback-label", field.label);
+            input.disabled = ndmFeedbackSubmitting;
+            row.appendChild(label);
+            row.appendChild(input);
+            wrap.appendChild(row);
+        });
+    }
+
+    function ndmFeedbackCollectMessage() {
+        var parts = [];
+        var missing = null;
+        ndmFeedbackDetailInputs().forEach(function(input) {
+            var value = String(input.value || "").trim();
+            if (!value && !missing) missing = input;
+            parts.push(input.getAttribute("data-ndm-feedback-label") + ":\n" + value);
+        });
+        return { message: parts.join("\n\n"), missing: missing };
+    }
+
+    function ndmFeedbackSetBusy(busy) {
+        ndmFeedbackSubmitting = !!busy;
+        var submitBtn = ndmFeedbackEl("ndmFeedbackSubmit");
+        if (submitBtn) {
+            submitBtn.disabled = !!busy;
+            submitBtn.textContent = busy ? "Sending…" : "Send feedback";
+        }
+        ["ndmFeedbackEmail", "ndmFeedbackCategory", "ndmFeedbackSeverity",
+            "ndmFeedbackPriority", "ndmFeedbackSubject"].forEach(function(id) {
+            var el = ndmFeedbackEl(id);
+            if (el) el.disabled = !!busy;
+        });
+        ndmFeedbackDetailInputs().forEach(function(input) {
+            input.disabled = !!busy;
+        });
+        if (!busy) ndmFeedbackSyncCategoryDependentState(false);
+    }
+
+    function ndmFeedbackSyncCategoryDependentState(rebuildFields) {
+        var category = (ndmFeedbackEl("ndmFeedbackCategory") || {}).value || "";
+        var severityField = ndmFeedbackEl("ndmFeedbackSeverityField");
+        var priorityField = ndmFeedbackEl("ndmFeedbackPriorityField");
+        var subject = ndmFeedbackEl("ndmFeedbackSubject");
+
+        if (severityField) severityField.hidden = category !== "bug";
+        if (priorityField) priorityField.hidden = category !== "feature";
+        if (subject) {
+            subject.disabled = !category || ndmFeedbackSubmitting;
+            subject.placeholder = category
+                ? "Feedback - " + ndmFeedbackCategoryLabel(category)
+                : "Enter subject (optional)";
+        }
+        if (rebuildFields !== false) ndmFeedbackRenderDetailFields(category);
+    }
+
+    function ndmFeedbackOnCategoryChange() {
+        var severityEl = ndmFeedbackEl("ndmFeedbackSeverity");
+        var priorityEl = ndmFeedbackEl("ndmFeedbackPriority");
+        if (severityEl) severityEl.value = "";
+        if (priorityEl) priorityEl.value = "";
+        ndmFeedbackSyncCategoryDependentState(true);
+    }
+
+    function ndmFeedbackReset() {
+        var emailField = ndmFeedbackEl("ndmFeedbackEmailField");
+        var emailEl = ndmFeedbackEl("ndmFeedbackEmail");
+        var form = ndmFeedbackEl("ndmFeedbackForm");
+        var success = ndmFeedbackEl("ndmFeedbackSuccess");
+
+        ndmFeedbackFillSelect(ndmFeedbackEl("ndmFeedbackCategory"), NDM_FEEDBACK_CATEGORIES, "Select a category");
+        ndmFeedbackFillSelect(ndmFeedbackEl("ndmFeedbackSeverity"), NDM_FEEDBACK_SEVERITIES, "Select severity (optional)");
+        ndmFeedbackFillSelect(ndmFeedbackEl("ndmFeedbackPriority"), NDM_FEEDBACK_PRIORITIES, "Select priority (optional)");
+
+        if (ndmFeedbackEl("ndmFeedbackSubject")) ndmFeedbackEl("ndmFeedbackSubject").value = "";
+        if (emailEl) emailEl.value = "";
+        // OAuth identity wins; the editable field is only for the local
+        // no-OAuth stack, where the server has no email to attribute.
+        if (emailField) emailField.hidden = !!ndmSignedInEmail;
+
+        if (form) form.hidden = false;
+        if (success) success.hidden = true;
+        var submitBtn = ndmFeedbackEl("ndmFeedbackSubmit");
+        if (submitBtn) submitBtn.hidden = false;
+        ndmFeedbackSetError("");
+        ndmFeedbackSetBusy(false);
+        ndmFeedbackRenderDetailFields("");
+    }
+
+    function ndmFeedbackOpen(trigger) {
+        if (!ndmFeedbackEnabled) return;
+        var modal = ndmFeedbackEl("ndmFeedbackModal");
+        if (!modal) return;
+        ndmFeedbackReturnFocus = trigger || document.activeElement;
+        ndmFeedbackReset();
+        modal.hidden = false;
+        document.body.classList.add("ndm-modal-open");
+        var first = ndmFeedbackEl("ndmFeedbackEmailField") && !ndmFeedbackEl("ndmFeedbackEmailField").hidden
+            ? ndmFeedbackEl("ndmFeedbackEmail")
+            : ndmFeedbackEl("ndmFeedbackCategory");
+        if (first) first.focus();
+    }
+
+    function ndmFeedbackClose() {
+        var modal = ndmFeedbackEl("ndmFeedbackModal");
+        if (!modal || modal.hidden) return;
+        modal.hidden = true;
+        document.body.classList.remove("ndm-modal-open");
+        if (ndmFeedbackReturnFocus && ndmFeedbackReturnFocus.focus) {
+            ndmFeedbackReturnFocus.focus();
+        }
+        ndmFeedbackReturnFocus = null;
+    }
+
+    function ndmFeedbackRateLimitMessage(xhr) {
+        var seconds = parseInt(xhr && xhr.getResponseHeader && xhr.getResponseHeader("Retry-After"), 10);
+        if (!seconds && xhr && xhr.responseJSON) seconds = parseInt(xhr.responseJSON.retryAfter, 10);
+        if (!seconds || seconds < 0) {
+            return "Too many feedback submissions. Please try again later.";
+        }
+        var minutes = Math.ceil(seconds / 60);
+        return "Too many feedback submissions. Please try again in " +
+            (seconds < 60 ? seconds + " second(s)." : minutes + " minute(s).");
+    }
+
+    function ndmFeedbackSubmit() {
+        if (ndmFeedbackSubmitting) return;
+
+        var emailField = ndmFeedbackEl("ndmFeedbackEmailField");
+        var emailEl = ndmFeedbackEl("ndmFeedbackEmail");
+        var category = (ndmFeedbackEl("ndmFeedbackCategory") || {}).value || "";
+        var subject = ((ndmFeedbackEl("ndmFeedbackSubject") || {}).value || "").trim();
+        var severity = (ndmFeedbackEl("ndmFeedbackSeverity") || {}).value || "";
+        var priority = (ndmFeedbackEl("ndmFeedbackPriority") || {}).value || "";
+        var needsEmail = !!(emailField && !emailField.hidden);
+        var email = needsEmail ? ((emailEl && emailEl.value) || "").trim() : "";
+
+        if (needsEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            ndmFeedbackSetError("Enter a valid email address so we can follow up.");
+            if (emailEl) emailEl.focus();
+            return;
+        }
+        if (!category) {
+            ndmFeedbackSetError("Select a feedback category.");
+            var catEl = ndmFeedbackEl("ndmFeedbackCategory");
+            if (catEl) catEl.focus();
+            return;
+        }
+
+        var collected = ndmFeedbackCollectMessage();
+        if (collected.missing) {
+            var missingLabel = collected.missing.getAttribute("data-ndm-feedback-label") || "this field";
+            ndmFeedbackSetError("Fill in \"" + missingLabel + "\".");
+            collected.missing.focus();
+            return;
+        }
+
+        var payload = {
+            category: category,
+            subject: subject || ("Feedback - " + ndmFeedbackCategoryLabel(category)),
+            message: collected.message,
+            ticketPriority: ndmFeedbackTicketPriority(category, severity || priority)
+        };
+        if (category === "bug" && severity) payload.severity = severity;
+        if (needsEmail) payload.email = email;
+
+        var url = ndmApi("/support/feedback") + ndmTokenQs();
+        ndmFeedbackSetError("");
+        ndmFeedbackSetBusy(true);
+
+        $.ajax({
+            url: url,
+            type: "POST",
+            contentType: "application/json",
+            data: JSON.stringify(payload),
+            dataType: "json",
+            xhrFields: { withCredentials: true }
+        }).done(function(res) {
+            ndmFeedbackSetBusy(false);
+            // NodeODM's token auth answers 200 with an {error} body, so the
+            // status code alone can't tell success from a rejected request.
+            if (res && res.error) {
+                ndmFeedbackSetError(res.error);
+                return;
+            }
+            var form = ndmFeedbackEl("ndmFeedbackForm");
+            var success = ndmFeedbackEl("ndmFeedbackSuccess");
+            var submitBtn = ndmFeedbackEl("ndmFeedbackSubmit");
+            if (form) form.hidden = true;
+            if (success) success.hidden = false;
+            if (submitBtn) submitBtn.hidden = true;
+            var closeBtn = ndmFeedbackEl("ndmFeedbackCancel");
+            if (closeBtn) closeBtn.focus();
+        }).fail(function(xhr, textStatus) {
+            ndmFeedbackSetBusy(false);
+            if (xhr && xhr.status === 429) {
+                ndmFeedbackSetError(ndmFeedbackRateLimitMessage(xhr));
+                return;
+            }
+            ndmFeedbackSetError(ndmAjaxFailMessage(xhr, textStatus, url));
+        });
+    }
+
+    (function setupNdmFeedback() {
+        var modal = ndmFeedbackEl("ndmFeedbackModal");
+        if (!modal) return;
+
+        var openNav = ndmFeedbackEl("ndmFeedbackOpenNav");
+        var openProjects = ndmFeedbackEl("ndmFeedbackOpenProjects");
+        if (openNav) {
+            openNav.addEventListener("click", function() { ndmFeedbackOpen(openNav); });
+        }
+        if (openProjects) {
+            openProjects.addEventListener("click", function() { ndmFeedbackOpen(openProjects); });
+        }
+
+        ["ndmFeedbackClose", "ndmFeedbackCancel", "ndmFeedbackBackdrop"].forEach(function(id) {
+            var el = ndmFeedbackEl(id);
+            if (el) el.addEventListener("click", ndmFeedbackClose);
+        });
+
+        var categoryEl = ndmFeedbackEl("ndmFeedbackCategory");
+        if (categoryEl) categoryEl.addEventListener("change", ndmFeedbackOnCategoryChange);
+
+        var submitBtn = ndmFeedbackEl("ndmFeedbackSubmit");
+        if (submitBtn) submitBtn.addEventListener("click", ndmFeedbackSubmit);
+
+        var form = ndmFeedbackEl("ndmFeedbackForm");
+        if (form) {
+            form.addEventListener("submit", function(e) {
+                e.preventDefault();
+                ndmFeedbackSubmit();
+            });
+        }
+
+        modal.addEventListener("keydown", function(e) {
+            if (e.key === "Escape") {
+                e.stopPropagation();
+                ndmFeedbackClose();
+                return;
+            }
+            if (e.key !== "Tab") return;
+            var panel = ndmFeedbackEl("ndmFeedbackPanel");
+            if (!panel) return;
+            var focusable = Array.prototype.filter.call(
+                panel.querySelectorAll("button, input, select, textarea, [href]"),
+                function(el) { return !el.disabled && el.offsetParent !== null; }
+            );
+            if (!focusable.length) return;
+            var first = focusable[0];
+            var last = focusable[focusable.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        });
+
+        ndmFeedbackReset();
     })();
 
     function ndmGcsPersistUploadContext(uploadId, patch) {

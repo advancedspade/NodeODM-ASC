@@ -82,6 +82,7 @@ Options:
 	--session_secret <string>	Secret used to sign session cookies (use a long random string).
 	--oauth_allowed_domains <list>	Optional comma-separated email domains (e.g. example.com,other.org). If set, only Google accounts whose address is exactly user@domain for one of those domains may sign in.
 	--oauth_session_days <n>	OAuth session length in days (JWT + cookie, 1–365). Default: 30.
+	--support_api_url <url>	Base URL of the Shelby Cloud API used to forward UI feedback (e.g. https://api.advancedspadecompany.com). When unset, the feedback UI is hidden.
 	--max_images <number>	Specify the maximum number of images that this processing node supports. (default: unlimited)
 	--webhook <url>	Specify a POST URL endpoint to be invoked when a task completes processing (default: none)
 	--s3_endpoint <url>	Specify a S3 endpoint (for example, nyc3.digitaloceanspaces.com) to upload completed task results to. (default: do not upload to S3)
@@ -120,7 +121,7 @@ const allOpts = ["slice","help","config","odm_path","log_level","port","p",
 "test_skip_dems","test_drop_uploads","test_fail_tasks","test_seconds",
 "powercycle","token","oauth_google_client_id","oauth_google_client_secret",
 "oauth_google_redirect_uri","session_secret","oauth_allowed_domains",
-"max_images","webhook","s3_endpoint","s3_bucket",
+"support_api_url","max_images","webhook","s3_endpoint","s3_bucket",
 "s3_force_path_style","s3_access_key","s3_secret_key","s3_signature_version",
 "s3_acl","s3_upload_everything","s3_ignore_ssl","max_concurrency","max_runtime",
 "gcs_bucket","gcs_project_id","gcs_key_path","gcs_parallel_uploads",
@@ -213,6 +214,10 @@ config.oauthSessionDays = Math.min(
 );
 config.oauthEnabled = !!(config.oauthGoogleClientId && config.oauthGoogleClientSecret && config.oauthGoogleRedirectUri && config.sessionSecret);
 config.authorizedIps = fromConfigFile("authorizedIps", []);
+// Trailing slash stripped so callers can always append "/support/feedback/public".
+config.supportApiUrl = String(
+	argv.support_api_url || fromConfigFile("supportApiUrl", "") || process.env.SUPPORT_API_URL || ""
+).trim().replace(/\/+$/, "");
 config.maxImages = parseInt(argv.max_images || fromConfigFile("maxImages", "")) || null;
 config.webhook = argv.webhook || fromConfigFile("webhook", "");
 config.s3Endpoint = argv.s3_endpoint || fromConfigFile("s3Endpoint", "");

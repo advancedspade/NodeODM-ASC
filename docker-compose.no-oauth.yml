@@ -1,0 +1,13 @@
+# Overlay for running NodeODM standalone, without the ClusterODM gateway.
+# Blanking the client id disables the OAuth middleware, so pages load directly
+# instead of redirecting to /login.html — the redirect_uri in .env points at the
+# gateway origin and cannot complete a handshake when the gateway is not running.
+#
+#   docker compose -f docker-compose.dev.yml -f docker-compose.no-oauth.yml up
+services:
+  nodeodm:
+    environment:
+      OAUTH_GOOGLE_CLIENT_ID: ""
+      OAUTH_GOOGLE_CLIENT_SECRET: ""
+      OAUTH_GOOGLE_REDIRECT_URI: ""
+      SESSION_SECRET: ""

@@ -33,18 +33,23 @@ services:
       NODEODM_DEV_STATIC_NO_CACHE: "1"
       # CPU-friendly ODM defaults (5 cm ortho, low point cloud, no-gpu) — see libs/odmUiDefaults.js
       NODEODM_LOCAL_CPU: "1"
-      # Disable Google OAuth locally (.env would otherwise enable it and redirect to /login.html)
-      OAUTH_GOOGLE_CLIENT_ID: ""
-      OAUTH_GOOGLE_CLIENT_SECRET: ""
-      OAUTH_GOOGLE_REDIRECT_URI: ""
-      SESSION_SECRET: ""
+      # OAuth credentials come from .env. To run standalone without login, add
+      # -f docker-compose.no-oauth.yml. Local origins are http, so the session
+      # cookie must not be Secure or the browser drops it after the callback.
+      OAUTH_COOKIE_SECURE: "0"
+      # With OAuth on, /info also needs auth, and a gateway health probe carries
+      # no cookie. This token is what ClusterODM's REFERENCE_NODE_TOKEN must be,
+      # otherwise the gateway marks this node offline and serves 503.
+      NODEODM_TOKEN: "local-reference-node-token"
       # Optional — set in .env to enable GCS (requires gcs compose file for SA key mount)
       GCS_BUCKET: ${GCS_BUCKET:-}
       GCS_PROJECT_ID: ${GCS_PROJECT_ID:-}
       GCS_UPLOAD_PREFIX: ${GCS_UPLOAD_PREFIX:-outputs}
       GCS_KEY_PATH: ${GCS_KEY_PATH:-}
+      # Optional — Shelby Cloud base URL. Feedback buttons stay hidden when unset.
+      SUPPORT_API_URL: ${SUPPORT_API_URL:-}
     ports:
-      - "3000:3000"
+      - "4000:3000"
     mem_limit: 16g
     shm_size: 2gb
     entrypoint: ["/usr/bin/nodemon", "--legacy-watch"]

@@ -49,6 +49,7 @@ const authCheck = auth.getMiddleware();
 const taskNew = require('./libs/taskNew');
 const rtkApi = require('./libs/rtkApi');
 const gcsUploadApi = require('./libs/gcsUploadApi');
+const supportProxy = require('./libs/supportProxy');
 
 const formDataParser = multer().none();
 const urlEncodedBodyParser = bodyParser.urlencoded({ extended: false });
@@ -79,28 +80,6 @@ app.get('/auth/bootstrap', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     if (config.oauthEnabled && googleOAuth) {
-        let portalActiveSite = "";
-        try {
-            const ro = new URL(config.oauthGoogleRedirectUri || "").origin;
-            if (config.portalStagingEnvOrigin && ro === config.portalStagingEnvOrigin) {
-                portalActiveSite = "staging";
-            } else if (config.portalSuperEnvOrigin && ro === config.portalSuperEnvOrigin) {
-                portalActiveSite = "super";
-            }
-        } catch (e) {
-            portalActiveSite = "";
-        }
-        let crossSso = false;
-        try {
-            const ro = new URL(config.oauthGoogleRedirectUri || "").origin;
-            crossSso = !!(
-                config.portalStagingEnvOrigin &&
-                config.portalSuperEnvOrigin &&
-                (ro === config.portalStagingEnvOrigin || ro === config.portalSuperEnvOrigin)
-            );
-        } catch (e2) {
-            crossSso = false;
-        }
         const session = googleOAuth.readWebSession ? googleOAuth.readWebSession(req) : null;
         const payload = {
             oauth: true,
@@ -110,15 +89,8 @@ app.get('/auth/bootstrap', (req, res) => {
                 enabled: true,
                 directUpload: true
             } : { enabled: false },
-            portalStagingEnvOrigin: config.portalStagingEnvOrigin || "",
-            portalStagingEnvLabel: config.portalStagingEnvLabel || "dronemaps",
-            portalStagingEnvTagline: config.portalStagingEnvTagline || "",
-            portalSuperEnvOrigin: config.portalSuperEnvOrigin || "",
-            portalSuperEnvLabel: config.portalSuperEnvLabel || "superdrone",
-            portalSuperEnvTagline: config.portalSuperEnvTagline || "",
-            portalActiveSite,
-            oauthSessionDays: config.oauthSessionDays || 30,
-            crossSso
+            feedback: { enabled: supportProxy.enabled() },
+            oauthSessionDays: config.oauthSessionDays || 30
         };
         return res.json(payload);
     }
@@ -128,7 +100,8 @@ app.get('/auth/bootstrap', (req, res) => {
         gcsUpload: GCS.enabled() ? {
             enabled: true,
             directUpload: true
-        } : { enabled: false }
+        } : { enabled: false },
+        feedback: { enabled: supportProxy.enabled() }
     });
 });
 app.get('/', (req, res) => {
@@ -200,6 +173,8 @@ app.post('/rtk/session/:sessionId/upload', authCheck, rtkApi.assignSessionDir, r
 app.post('/rtk/session/:sessionId/analyze', authCheck, rtkApi.assignSessionDir, rtkApi.handleSessionAnalyze);
 app.delete('/rtk/session/:sessionId', authCheck, rtkApi.handleSessionDelete);
 app.post('/rtk/analyze', authCheck, rtkApi.assignPreviewDir, rtkApi.uploadImages, rtkApi.handleAnalyze);
+
+app.post('/support/feedback', authCheck, jsonBodyParser, supportProxy.handleFeedback);
 
 function gcsApiNoCache(req, res, next) {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");

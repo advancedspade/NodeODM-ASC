@@ -121,6 +121,10 @@ $(function() {
     }
 
     var NDM_COMMIT_BACKOFF_MS = [2000, 5000, 15000, 30000];
+    // Commit itself is a small POST that the gateway answers before autoscaling.
+    // Without a timeout a hung XHR never fires .fail(), so probe/retry never run
+    // and ndmCommitInFlight stays true forever.
+    var NDM_COMMIT_TIMEOUT_MS = 120000;
     var NDM_MAX_CLIENT_REPORTS = 12;
     var ndmCommitInFlight = false;
     var ndmCommittedForUuid = null;
@@ -290,6 +294,15 @@ $(function() {
         setTimeout(function() { ndmCommitTask(uuid, attempt + 1); }, delay);
     }
 
+    // 4xx means the server (or auth edge) answered — retrying will not help and
+    // the "connection interrupted" stranded copy would be wrong. Only transport
+    // failures and 5xx are ambiguous enough to probe/retry.
+    function ndmCommitIsTransientFail(xhr, textStatus) {
+        if (textStatus === "timeout") return true;
+        var code = (xhr && xhr.status) || 0;
+        return code === 0 || code >= 500;
+    }
+
     /**
      * Commits an upload, surviving a dropped connection.
      *
@@ -314,7 +327,7 @@ $(function() {
         app.uploading(true);
         if (attempt === 0) app.commitStatus("Starting the task…");
 
-        $.ajax(url, {type: "POST", dataType: "json"})
+        $.ajax(url, {type: "POST", dataType: "json", timeout: NDM_COMMIT_TIMEOUT_MS})
             .done(function(json) {
                 if (json && json.uuid) ndmCommitSucceeded(json.uuid);
                 else ndmCommitRejected(uuid, (json && json.error) || "Cannot start processing.");
@@ -330,6 +343,11 @@ $(function() {
                     elapsedMs: Date.now() - startedAt,
                     imagesCount: app.filesCount()
                 });
+
+                if (!ndmCommitIsTransientFail(xhr, status)) {
+                    ndmCommitRejected(uuid, ndmAjaxFailMessage(xhr, status, url));
+                    return;
+                }
 
                 app.commitStatus("Checking whether the server received the task…");
                 ndmProbeCommitLanded(uuid).done(function(landed) {
@@ -1463,7 +1481,11 @@ $(function() {
 
     setTimeout(scheduleGpsFromDropzone, 400);
 
-    $.get(ndmApi("/rtk/status") + ndmTokenQs(), ndmRtkAjaxOpts).done(function(st) {
+    $.ajax($.extend({
+        url: ndmApi("/rtk/status") + ndmTokenQs(),
+        type: "GET",
+        dataType: "json"
+    }, ndmRtkAjaxOpts)).done(function(st) {
         ndmRtkEnabled = !!(st && st.enabled && st.available);
         if (st && st.sessionUpload === false) {
             ndmRtkSessionUpload = false;
@@ -5608,7 +5630,7 @@ $(function() {
             });
         }
 
-        $.get(ndmApi("/gcs/upload/status") + ndmTokenQs(), ndmGcsAjaxOpts).done(ndmGcsApplyStatus).fail(function() {
+        ndmGcsGet(ndmApi("/gcs/upload/status") + ndmTokenQs()).done(ndmGcsApplyStatus).fail(function() {
             ndmGcsApplyStatus({ enabled: false, reason: "Could not reach GCS upload API." });
         });
     })();

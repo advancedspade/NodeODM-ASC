@@ -618,6 +618,50 @@ a:hover {
     margin-right: 0.35rem;
 }
 
+/* Recoverable state: something went wrong but the user's upload is intact and
+   there is an action to take, so this reads as a warning rather than an error. */
+.recovery-block {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    border-radius: 10px;
+    border: 1px solid rgba(245, 158, 11, 0.55);
+    background: rgba(245, 158, 11, 0.12);
+    color: #fde68a;
+    font-size: 0.9rem;
+}
+
+.recovery-block__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.625rem;
+}
+
+.recovery-block__list {
+    list-style: none;
+    margin: 0.625rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
+}
+
+.recovery-block__list li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.recovery-block__name {
+    word-break: break-word;
+}
+
+.recovery-block__list .recovery-block__actions {
+    margin-top: 0;
+}
+
 .mode-switch {
     margin-top: 0.75rem;
     font-size: 0.875rem;

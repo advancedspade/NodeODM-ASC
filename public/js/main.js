@@ -97,7 +97,15 @@ $(function() {
             if (displayUrl && displayUrl.indexOf("http") !== 0 && typeof location !== "undefined") {
                 displayUrl = location.origin + displayUrl;
             }
-            return "Cannot reach the API at " + (displayUrl || "this URL") + ". Use the same host/port as NodeODM, or set window.NDM_API_BASE (e.g. http://127.0.0.1:3000).";
+            // A configured cross-origin API root is the only case where
+            // NDM_API_BASE is plausibly at fault. Same-origin means the request
+            // died in transit, and telling people to reconfigure the API root
+            // sends them looking in entirely the wrong place.
+            if (ndmApiRoot()) {
+                return "Cannot reach the API at " + (displayUrl || "this URL") + ". Use the same host/port as NodeODM, or set window.NDM_API_BASE (e.g. http://127.0.0.1:3000).";
+            }
+            return "The connection to the server was interrupted before it answered (" +
+                   (displayUrl || "this request") + "). Your uploaded files are preserved on the server.";
         }
         if (xhr && xhr.status === 404) {
             var url404 = attemptedUrl;
@@ -112,6 +120,225 @@ $(function() {
         return (attemptedUrl || "Request") + " is unreachable.";
     }
 
+    var NDM_COMMIT_BACKOFF_MS = [2000, 5000, 15000, 30000];
+    var NDM_MAX_CLIENT_REPORTS = 12;
+    var ndmCommitInFlight = false;
+    var ndmCommittedForUuid = null;
+    var ndmUploadSessionStartedAt = 0;
+    var ndmClientReportsSent = 0;
+
+    /**
+     * Fire-and-forget diagnostics. The browser never exposes the underlying
+     * net::ERR_* string to JavaScript, so this cannot name the transport fault,
+     * but it does record whether the server answered, how long it took, and
+     * whether a retry recovered — which is what was missing during the incident.
+     */
+    function ndmReportClientError(payload) {
+        if (ndmClientReportsSent >= NDM_MAX_CLIENT_REPORTS) return;
+        ndmClientReportsSent++;
+
+        try {
+            var body = JSON.stringify($.extend({
+                userAgent: navigator.userAgent,
+                connection: (navigator.connection && navigator.connection.effectiveType) || null,
+                sessionMs: ndmUploadSessionStartedAt ? (Date.now() - ndmUploadSessionStartedAt) : null
+            }, payload || {}));
+            var url = ndmApi("/diag/client") + ndmTokenQs();
+
+            // The failures worth reporting often happen as the page goes away,
+            // so prefer the transport that outlives it.
+            if (navigator.sendBeacon) {
+                if (navigator.sendBeacon(url, new Blob([body], {type: "application/json"}))) return;
+            }
+            $.ajax(url, {type: "POST", contentType: "application/json", data: body, timeout: 10000});
+        } catch (e) { /* diagnostics must never break the page */ }
+    }
+
+    function ndmDiscardUpload(uuid) {
+        if (!uuid) return;
+        $.post(ndmApi("/task/remove") + ndmTokenQs(), {uuid: uuid});
+    }
+
+    function ndmAgeLabel(ms) {
+        var mins = Math.round((ms || 0) / 60000);
+        if (mins < 1) return "just now";
+        if (mins < 60) return mins + " min ago";
+        var hours = Math.round(mins / 60);
+        if (hours < 48) return hours + "h ago";
+        return Math.round(hours / 24) + "d ago";
+    }
+
+    function ndmFetchPendingUploads() {
+        return $.ajax(ndmApi("/task/pending") + ndmTokenQs(), {
+            type: "GET",
+            dataType: "json",
+            timeout: 20000
+        });
+    }
+
+    // Stranded uploads outlive the tab they were started in, so this runs on load
+    // as well as after a commit settles.
+    function ndmRefreshPendingUploads() {
+        ndmFetchPendingUploads().done(function(res) {
+            if (!res || !Array.isArray(res.pending)) {
+                app.pendingUploads([]);
+                return;
+            }
+            app.pendingUploads(res.pending
+                .filter(function(p) { return p.uuid !== app.uuid() && p.uuid !== ndmCommittedForUuid; })
+                .map(function(p) {
+                    return {
+                        uuid: p.uuid,
+                        name: p.name || p.uuid,
+                        imagesCount: p.imagesCount || 0,
+                        ageLabel: ndmAgeLabel(p.ageMs)
+                    };
+                }));
+        }).fail(function() {
+            // Plain NodeODM has no /task/pending; the banner simply stays hidden.
+            app.pendingUploads([]);
+        });
+    }
+
+    /**
+     * Did the commit take effect despite the failed request? `/task/pending` is
+     * the authoritative answer on a gateway: an upload still listed there was
+     * never handed to a worker. `/task/<uuid>/info` cannot answer this on its own,
+     * because the gateway also serves a queued ledger row for a task that was
+     * only initialized.
+     */
+    function ndmProbeCommitLanded(uuid) {
+        var def = $.Deferred();
+
+        ndmFetchPendingUploads().done(function(res) {
+            if (res && Array.isArray(res.pending)) {
+                def.resolve(!res.pending.some(function(p) { return p.uuid === uuid; }));
+                return;
+            }
+            ndmProbeTaskExists(uuid).always(def.resolve);
+        }).fail(function() {
+            ndmProbeTaskExists(uuid).always(def.resolve);
+        });
+
+        return def.promise();
+    }
+
+    function ndmProbeTaskExists(uuid) {
+        var def = $.Deferred();
+        $.ajax(ndmApi("/task/" + uuid + "/info") + ndmTokenQs(), {
+            type: "GET",
+            dataType: "json",
+            timeout: 20000
+        }).done(function(info) {
+            def.resolve(!!(info && !info.error && info.status));
+        }).fail(function() {
+            def.resolve(false);
+        });
+        return def.promise();
+    }
+
+    function ndmCommitSucceeded(uuid) {
+        ndmCommittedForUuid = uuid;
+        ndmCommitInFlight = false;
+
+        taskList.add(new Task(uuid));
+        ndmReprocessSanitizedName = null;
+        app.resetUpload();
+        ndmRefreshPendingUploads();
+    }
+
+    // The server answered with an error, so the upload is intact and the user can
+    // decide whether to try again.
+    function ndmCommitRejected(uuid, message) {
+        ndmCommitInFlight = false;
+        app.committing(false);
+        app.uploading(false);
+        app.error(message);
+        app.strandedUuid(uuid);
+        app.commitStatus(message + " Your uploaded files are still on the server.");
+    }
+
+    function ndmCommitStranded(uuid, xhr, status) {
+        ndmCommitInFlight = false;
+        app.committing(false);
+        app.uploading(false);
+        app.strandedUuid(uuid);
+        app.commitStatus("The connection to the server was interrupted while starting the task, " +
+            "and " + (NDM_COMMIT_BACKOFF_MS.length + 1) + " attempts did not get through. " +
+            "Your uploaded files are safe on the server — press Resume to try again.");
+
+        ndmReportClientError({
+            phase: "commit-stranded",
+            taskId: uuid,
+            endpoint: "/task/new/commit",
+            message: ndmAjaxFailMessage(xhr, status, ndmApi("/task/new/commit/" + uuid)),
+            status: (xhr && xhr.status) || 0,
+            attempt: NDM_COMMIT_BACKOFF_MS.length + 1,
+            imagesCount: app.filesCount()
+        });
+    }
+
+    function ndmScheduleCommitRetry(uuid, attempt, xhr, status) {
+        if (attempt >= NDM_COMMIT_BACKOFF_MS.length) {
+            ndmCommitStranded(uuid, xhr, status);
+            return;
+        }
+
+        var delay = NDM_COMMIT_BACKOFF_MS[attempt];
+        app.commitStatus("The connection dropped while starting the task. Retrying in " +
+                         Math.round(delay / 1000) + "s… your uploaded files are safe.");
+        setTimeout(function() { ndmCommitTask(uuid, attempt + 1); }, delay);
+    }
+
+    /**
+     * Commits an upload, surviving a dropped connection.
+     *
+     * xhr.status === 0 says nothing about whether the server acted, so a blind
+     * retry could start a second run and giving up loses the whole upload. Ask
+     * first, retry only when the commit provably did not land, and keep the upload
+     * state intact so the user can resume if every attempt fails.
+     */
+    function ndmCommitTask(uuid, attempt) {
+        attempt = attempt || 0;
+        if (!uuid) return;
+        if (ndmCommittedForUuid === uuid) return;
+
+        // Several queuecomplete events can land in one tick, and each would
+        // otherwise fire its own commit.
+        if (ndmCommitInFlight && attempt === 0) return;
+        ndmCommitInFlight = true;
+
+        var url = ndmApi("/task/new/commit/" + uuid) + ndmTokenQs();
+        var startedAt = Date.now();
+        app.committing(true);
+        app.uploading(true);
+        if (attempt === 0) app.commitStatus("Starting the task…");
+
+        $.ajax(url, {type: "POST", dataType: "json"})
+            .done(function(json) {
+                if (json && json.uuid) ndmCommitSucceeded(json.uuid);
+                else ndmCommitRejected(uuid, (json && json.error) || "Cannot start processing.");
+            })
+            .fail(function(xhr, status) {
+                ndmReportClientError({
+                    phase: "commit",
+                    taskId: uuid,
+                    endpoint: "/task/new/commit",
+                    message: ndmAjaxFailMessage(xhr, status, url),
+                    status: (xhr && xhr.status) || 0,
+                    attempt: attempt + 1,
+                    elapsedMs: Date.now() - startedAt,
+                    imagesCount: app.filesCount()
+                });
+
+                app.commitStatus("Checking whether the server received the task…");
+                ndmProbeCommitLanded(uuid).done(function(landed) {
+                    if (landed) ndmCommitSucceeded(uuid);
+                    else ndmScheduleCommitRetry(uuid, attempt, xhr, status);
+                });
+            });
+    }
+
     function App(){
         this.mode = ko.observable("file");
         this.filesCount = ko.observable(0);
@@ -123,6 +350,14 @@ $(function() {
         this.uploadedPercentage = ko.pureComputed(function(){
             return ((this.uploadedFiles() / this.filesCount()) * 100.0) + "%";
         }, this);
+
+        // Commit recovery state. strandedUuid is an upload that reached the server
+        // but never became a task, which used to be a dead end.
+        this.committing = ko.observable(false);
+        this.commitStatus = ko.observable("");
+        this.strandedUuid = ko.observable("");
+        this.failedUploads = ko.observable(0);
+        this.pendingUploads = ko.observableArray();
     }
     App.prototype.toggleMode = function(){
         if (this.mode() === 'file') this.mode('url');
@@ -138,9 +373,51 @@ $(function() {
         this.uuid("");
         this.uploadedFiles(0);
         this.fileUploadStatus.removeAll();
+        this.committing(false);
+        this.commitStatus("");
+        this.strandedUuid("");
+        this.failedUploads(0);
+        ndmCommitInFlight = false;
         clearNdmRtkState();
         ndmReprocessSanitizedName = null;
         dz.removeAllFiles(true);
+    };
+    App.prototype.retryFailedUploads = function(){
+        var errored = (dz.files || []).filter(function(f){ return f.status === Dropzone.ERROR; });
+        if (!errored.length) return;
+
+        this.error("");
+        this.failedUploads(0);
+        this.uploading(true);
+        errored.forEach(function(f){
+            f.status = Dropzone.QUEUED;
+            f.accepted = true;
+        });
+        dz.processQueue();
+    };
+    App.prototype.resumeCommit = function(){
+        var uuid = this.strandedUuid();
+        if (!uuid) return;
+
+        this.commitStatus("Resuming…");
+        ndmCommitInFlight = false;
+        ndmCommitTask(uuid, 0);
+    };
+    App.prototype.discardStranded = function(){
+        var uuid = this.strandedUuid();
+        this.strandedUuid("");
+        this.commitStatus("");
+        if (uuid) ndmDiscardUpload(uuid);
+        this.resetUpload();
+    };
+    App.prototype.resumePending = function(item){
+        app.pendingUploads.remove(item);
+        ndmCommitInFlight = false;
+        ndmCommitTask(item.uuid, 0);
+    };
+    App.prototype.discardPending = function(item){
+        app.pendingUploads.remove(item);
+        ndmDiscardUpload(item.uuid);
     };
     App.prototype.startTask = function(){
         var self = this;
@@ -166,6 +443,11 @@ $(function() {
         }
 
         this.uploading(true);
+        this.commitStatus("");
+        this.strandedUuid("");
+        this.failedUploads(0);
+        ndmUploadSessionStartedAt = Date.now();
+        ndmCommitInFlight = false;
 
         // Start upload
         var formData = new FormData();
@@ -193,7 +475,14 @@ $(function() {
                     }else{
                         die(result.error || result);
                     }
-                }).fail(function(){
+                }).fail(function(xhr, status){
+                    ndmReportClientError({
+                        phase: "init",
+                        endpoint: "/task/new/init",
+                        message: ndmAjaxFailMessage(xhr, status, ndmApi("/task/new/init")),
+                        status: (xhr && xhr.status) || 0,
+                        imagesCount: self.filesCount()
+                    });
                     die("Cannot start task. Is the server available and are you connected to the internet?");
                 });
             }else{
@@ -1111,6 +1400,14 @@ $(function() {
         if (xhr && (xhr.status === 401 || xhr.status === 403 || xhr.status === 404 || xhr.status === 0)) {
             app.error(ndmAjaxFailMessage(xhr, "error", dz.options.url || ndmApi("/task/new/upload/")));
             app.uploading(false);
+            ndmReportClientError({
+                phase: "upload",
+                taskId: app.uuid(),
+                endpoint: "/task/new/upload",
+                message: String(message || "Upload failed"),
+                status: xhr.status,
+                imagesCount: app.filesCount()
+            });
             return;
         }
         // Retry transient failures
@@ -1137,22 +1434,22 @@ $(function() {
         dz.processQueue();
     })
     .on("queuecomplete", function(files){
-        // Commit
-        $.ajax(ndmApi("/task/new/commit/" + app.uuid()) + ndmTokenQs(), {
-            type: "POST",
-        }).done(function(json){
-            if (json.uuid){
-                taskList.add(new Task(json.uuid));
-                ndmReprocessSanitizedName = null;
-                app.resetUpload();
-            }else{
-                app.error(json.error || json);
-            }
+        var uuid = app.uuid();
+        if (!uuid) return;
+
+        // queuecomplete fires whenever the queue drains, including when files ended
+        // in ERROR. Committing here would quietly process a short dataset.
+        var errored = (dz.files || []).filter(function(f){ return f.status === Dropzone.ERROR; });
+        if (errored.length){
             app.uploading(false);
-        }).fail(function(xhr, status){
-            app.error(ndmAjaxFailMessage(xhr, status, ndmApi("/task/new/commit/" + app.uuid())));
-            app.uploading(false);
-        });
+            app.failedUploads(errored.length);
+            app.error(errored.length + " of " + (dz.files || []).length +
+                      " file(s) failed to upload. The task has not been started — retry the failed files, " +
+                      "or remove them if you meant to leave them out.");
+            return;
+        }
+
+        ndmCommitTask(uuid, 0);
     })
     .on("reset", function(){
         app.filesCount(0);
@@ -1190,6 +1487,26 @@ $(function() {
     if (appRoot) {
         ko.applyBindings(app, appRoot);
     }
+
+    ndmRefreshPendingUploads();
+
+    window.addEventListener("error", function(e){
+        ndmReportClientError({
+            source: "window.onerror",
+            message: (e && e.message) || "unknown error",
+            endpoint: (e && e.filename) ? String(e.filename) + ":" + e.lineno : null,
+            taskId: app.uuid() || null
+        });
+    });
+
+    window.addEventListener("unhandledrejection", function(e){
+        var reason = e && e.reason;
+        ndmReportClientError({
+            source: "unhandledrejection",
+            message: (reason && (reason.message || reason)) || "unknown rejection",
+            taskId: app.uuid() || null
+        });
+    });
 
     $.get(ndmApi("/auth/bootstrap")).done(function (d) {
         if (d.oauth && d.signedIn) {
@@ -1550,7 +1867,7 @@ $(function() {
         if (!el || el.dataset.loaded) return;
         el.dataset.loaded = "1";
         var url = ndmApi("/gcs/projects/" + encodeURIComponent(sanitized) + "/files") + ndmTokenQs();
-        $.get(url, ndmGcsAjaxOpts).done(function(data) {
+        ndmGcsGet(url).done(function(data) {
             var files = (data && data.files) || [];
             if (!files.length) return;
             var links = [];
@@ -1859,6 +2176,13 @@ $(function() {
         cache: false,
         headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" }
     };
+
+    // jQuery 1.x reads the second $.get argument as query data, so passing
+    // ndmGcsAjaxOpts there serializes the settings into the URL instead of
+    // applying them. Every authenticated JSON GET must go through here.
+    function ndmGcsGet(url) {
+        return $.ajax($.extend({ url: url, type: "GET", dataType: "json" }, ndmGcsAjaxOpts));
+    }
     var NDM_GCS_PROJECTS_CACHE_STORAGE = "ndmGcsProjectsCacheV1";
     var NDM_GCS_PROJECTS_CACHE_TTL_MS = 5 * 60 * 1000;
     var NDM_GCS_MAX_INDIVIDUAL_FILES = 2500;
@@ -1868,6 +2192,7 @@ $(function() {
     var ndmGcsUploadStartedAt = 0;
     var ndmGcsUploadElapsedTimer = null;
     var NDM_GCS_UPLOAD_CTX_KEY = "ndmGcsUploadCtxV1";
+    var ndmGcsRecommitInFlight = false;
 
     (function setupNdmAppNav() {
         var layout = document.getElementById("ndmAppLayout");
@@ -1936,6 +2261,8 @@ $(function() {
             }
             if (name === "projects" && typeof ndmProjectsOnView === "function") {
                 ndmProjectsOnView();
+            } else if (typeof ndmProjectsStopPolling === "function") {
+                ndmProjectsStopPolling();
             }
         }
 
@@ -2421,10 +2748,21 @@ $(function() {
         }, ndmGcsAjaxOpts));
     }
 
+    // Called repeatedly from the progress poller, so it must not re-commit on top
+    // of a commit that is already running, and must not commit at all when the
+    // session could not be recovered.
     function ndmGcsTryRecoverAndCommit(uploadId) {
-        return ndmGcsRecoverUploadSession(uploadId).always(function() {
-            ndmGcsCommitUpload(uploadId);
-        });
+        if (ndmGcsRecommitInFlight) return $.Deferred().reject("recovery already running").promise();
+        ndmGcsRecommitInFlight = true;
+
+        return ndmGcsRecoverUploadSession(uploadId)
+            .then(function(res) {
+                if (res && res.error) return $.Deferred().reject(res.error).promise();
+                return ndmGcsCommitUpload(uploadId);
+            })
+            .always(function() {
+                ndmGcsRecommitInFlight = false;
+            });
     }
 
     function ndmGcsIsRemoteHost() {
@@ -2950,7 +3288,7 @@ $(function() {
             url += (url.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
         }
 
-        ndmGcsProjectsFetch = $.get(url, ndmGcsAjaxOpts).done(function(data) {
+        ndmGcsProjectsFetch = ndmGcsGet(url).done(function(data) {
             if (data && data.error) {
                 ndmGcsClearProjectsCache();
                 ndmGcsSetProjectStatus(data.error, "error");
@@ -3021,7 +3359,12 @@ $(function() {
     var ndmProjectsFilter = "all";
     var ndmProjectsSearchQuery = "";
     var ndmProjectsTimer = null;
+    var ndmProjectsPendingLoad = null;
+    var ndmProjectsLastLoadAt = 0;
     var NDM_PROJECTS_REFRESH_MS = 30 * 1000;
+    // Floor between background loads. The in-flight guard alone only prevents
+    // overlap: repeated callers still produce one saturated batch after another.
+    var NDM_PROJECTS_MIN_LOAD_GAP_MS = 2 * 1000;
     // name -> {li, signature}. Reused across re-renders so an open "Browse files"
     // or "Activity" <details> (and its scroll position) survives background polling
     // when that row's underlying data hasn't actually changed.
@@ -3266,7 +3609,7 @@ $(function() {
         container.innerHTML = '<p class="file-meta" style="padding:0.5rem 0">Loading files…</p>';
         var url = ndmApi("/gcs/projects/" + encodeURIComponent(proj.name) + "/files") + ndmTokenQs();
 
-        $.get(url, ndmGcsAjaxOpts).done(function(data) {
+        ndmGcsGet(url).done(function(data) {
             container.innerHTML = "";
             var files = (data && data.files) || [];
             if (!files.length) {
@@ -3848,6 +4191,14 @@ $(function() {
 
         if (ndmProjectsFetch) return ndmProjectsFetch;
 
+        var sinceLast = Date.now() - ndmProjectsLastLoadAt;
+        if (!forceRefresh && sinceLast < NDM_PROJECTS_MIN_LOAD_GAP_MS) {
+            ndmProjectsScheduleLoad(NDM_PROJECTS_MIN_LOAD_GAP_MS - sinceLast);
+            return $.when();
+        }
+        ndmProjectsCancelScheduledLoad();
+        ndmProjectsLastLoadAt = Date.now();
+
         if (!ndmProjectsLoaded) {
             ndmProjectsSetStatus("Loading projects…", "loading");
             if (list) list.hidden = true;
@@ -3862,17 +4213,17 @@ $(function() {
             incompleteUrl += (incompleteUrl.indexOf("?") >= 0 ? "&" : "?") + "refresh=1";
         }
 
-        var foldersReq = $.get(foldersUrl, ndmGcsAjaxOpts);
+        var foldersReq = ndmGcsGet(foldersUrl);
         // Incomplete + history enrich the list; failures must not blank folders.
         // /task/history only exists on the ClusterODM gateway, so it 404s when
         // this UI is served by a standalone NodeODM.
         var incompleteReq = ndmResolveWithFallback(
-            $.get(incompleteUrl, ndmGcsAjaxOpts),
+            ndmGcsGet(incompleteUrl),
             function(data) { return (data && data.projects) || []; },
             []
         );
         var historyReq = ndmResolveWithFallback(
-            $.ajax({ url: historyUrl, method: "GET", dataType: "json" }),
+            ndmGcsGet(historyUrl),
             function(data) {
                 return {
                     jobs: (data && data.jobs) || [],
@@ -3936,7 +4287,7 @@ $(function() {
         );
 
         var listUrl = ndmApi("/gcs/projects/" + encodeURIComponent(proj.name) + "/inputs") + ndmTokenQs();
-        $.get(listUrl, ndmGcsAjaxOpts).done(function(data) {
+        ndmGcsGet(listUrl).done(function(data) {
             if (data && data.error) {
                 ndmProjectsSetError(data.error);
                 ndmProjectsSetStatus("", "");
@@ -4013,10 +4364,34 @@ $(function() {
         });
     }
 
+    function ndmProjectsScheduleLoad(delay) {
+        if (ndmProjectsPendingLoad) return;
+        ndmProjectsPendingLoad = setTimeout(function() {
+            ndmProjectsPendingLoad = null;
+            ndmProjectsLoad(false);
+        }, delay);
+    }
+
+    function ndmProjectsCancelScheduledLoad() {
+        if (!ndmProjectsPendingLoad) return;
+        clearTimeout(ndmProjectsPendingLoad);
+        ndmProjectsPendingLoad = null;
+    }
+
     function ndmProjectsOnView() {
+        ndmProjectsStopPolling();
         ndmProjectsLoad(false);
-        if (ndmProjectsTimer) clearInterval(ndmProjectsTimer);
         ndmProjectsTimer = setInterval(function() { ndmProjectsLoad(false); }, NDM_PROJECTS_REFRESH_MS);
+    }
+
+    // Polling belongs to the Projects view only: without this the interval keeps
+    // running for the life of the page once the view has been opened.
+    function ndmProjectsStopPolling() {
+        if (ndmProjectsTimer) {
+            clearInterval(ndmProjectsTimer);
+            ndmProjectsTimer = null;
+        }
+        ndmProjectsCancelScheduledLoad();
     }
 
     function ndmProjectsApplyGcsStatus() {

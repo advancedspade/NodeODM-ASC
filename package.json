@@ -21,6 +21,7 @@
   },
   "homepage": "https://github.com/OpenDroneMap/NodeODM#readme",
   "dependencies": {
+    "@google-cloud/logging-winston": "^6.0.2",
     "@google-cloud/storage": "^7.7.0",
     "archiver": "^3.0.0",
     "async": "^2.6.1",

@@ -1861,9 +1861,47 @@ $(function() {
         };
     }
     Task.prototype.cancel = genApiCall(ndmApi("/task/cancel") + ndmTokenQs());
-    Task.prototype.restart = genApiCall(ndmApi("/task/restart") + ndmTokenQs(), function(task) {
-        task.resetOutput();
-    });
+    // Restart may proxy to a live worker ({success}), re-dispatch a gateway-held
+    // upload ({uuid}), or ask the UI to load images from cloud storage ({reprocess}).
+    Task.prototype.restart = function() {
+        var self = this;
+        var url = ndmApi("/task/restart") + ndmTokenQs();
+
+        $.post(url, { uuid: this.uuid })
+            .done(function(json) {
+                if (json && (json.success || json.uuid)) {
+                    self.resetOutput();
+                    self.startRefreshingInfo();
+                    return;
+                }
+
+                if (json && json.reprocess && json.reprocess.project) {
+                    var project = json.reprocess.project;
+                    var displayName = json.reprocess.name || project;
+                    if (!confirm(
+                        "This job's worker is gone. Load the images for \"" + displayName +
+                        "\" from cloud storage so you can start a new run?"
+                    )) {
+                        self.stopRefreshingInfo();
+                        self.info({ error: json.error || "Restart was canceled." });
+                        return;
+                    }
+                    self.stopRefreshingInfo();
+                    ndmReprocessFromCloud(project, displayName).fail(function(err) {
+                        var msg = err && err.message ? err.message : String(err || "Failed to load images from cloud storage.");
+                        self.info({ error: msg });
+                    });
+                    return;
+                }
+
+                self.stopRefreshingInfo();
+                self.info({ error: (json && json.error) || "Restart failed." });
+            })
+            .fail(function(xhr, textStatus) {
+                self.info({ error: ndmAjaxFailMessage(xhr, textStatus, url) });
+                self.stopRefreshingInfo();
+            });
+    };
     Task.prototype.downloadLink = function(){
         return ndmApi("/task/" + this.uuid + "/download/all.zip") + ndmTokenQs();
     };
@@ -4288,6 +4326,67 @@ $(function() {
         return ndmProjectsFetch;
     }
 
+    // Loads a project's cloud-stored inputs into the home dropzone for a new run.
+    // Shared by Projects → Re-process and by Restart when the worker is gone.
+    function ndmReprocessFromCloud(folderName, displayName) {
+        var def = $.Deferred();
+        if (!folderName || ndmReprocessLoading) {
+            def.reject(new Error(ndmReprocessLoading ? "A re-process load is already in progress." : "Missing project name."));
+            return def.promise();
+        }
+
+        ndmReprocessLoading = true;
+        if (typeof ndmProjectsSetError === "function") ndmProjectsSetError("");
+        if (typeof ndmProjectsSetStatus === "function") {
+            ndmProjectsSetStatus(
+                "Loading input list for \"" + (displayName || folderName) + "\"…",
+                "loading"
+            );
+        }
+
+        var listUrl = ndmApi("/gcs/projects/" + encodeURIComponent(folderName) + "/inputs") + ndmTokenQs();
+        ndmGcsGet(listUrl).done(function(data) {
+            if (data && data.error) {
+                if (typeof ndmProjectsSetError === "function") ndmProjectsSetError(data.error);
+                if (typeof ndmProjectsSetStatus === "function") ndmProjectsSetStatus("", "");
+                def.reject(new Error(data.error));
+                return;
+            }
+            var files = (data && data.files) ? data.files : [];
+            if (!files.length) {
+                var emptyMsg = "No input images found for this project.";
+                if (typeof ndmProjectsSetError === "function") ndmProjectsSetError(emptyMsg);
+                if (typeof ndmProjectsSetStatus === "function") ndmProjectsSetStatus("", "");
+                def.reject(new Error(emptyMsg));
+                return;
+            }
+            if (typeof ndmProjectsSetStatus === "function") ndmProjectsSetStatus("", "");
+            ndmReprocessLoadIntoHome({ name: folderName, displayName: displayName || folderName }, files)
+                .done(function() {
+                    app.error("");
+                    var drop = document.getElementById("images");
+                    if (drop) drop.scrollIntoView({ behavior: "smooth", block: "center" });
+                    def.resolve();
+                })
+                .fail(function(err) {
+                    var msg = err && err.message ? err.message : String(err || "Failed to load images from cloud storage.");
+                    app.error(msg);
+                    if (typeof ndmProjectsSetError === "function") ndmProjectsSetError(msg);
+                    def.reject(new Error(msg));
+                });
+        }).fail(function(xhr, status) {
+            var msg = ndmAjaxFailMessage(xhr, status, listUrl);
+            if (typeof ndmProjectsSetError === "function") ndmProjectsSetError(msg);
+            if (typeof ndmProjectsSetStatus === "function") ndmProjectsSetStatus("", "");
+            def.reject(new Error(msg));
+        }).always(function() {
+            ndmReprocessLoading = false;
+            if (typeof ndmProjectsLoad === "function") ndmProjectsLoad(false);
+        });
+
+        return def.promise();
+    }
+
     function ndmProjectsReprocess(proj) {
         if (!proj || ndmReprocessLoading) return;
 
@@ -4301,42 +4400,10 @@ $(function() {
             return;
         }
 
-        ndmReprocessLoading = true;
-        ndmProjectsSetError("");
-        ndmProjectsSetStatus(
-            "Loading input list for \"" + (proj.displayName || proj.name) + "\"…",
-            "loading"
-        );
-
-        var listUrl = ndmApi("/gcs/projects/" + encodeURIComponent(proj.name) + "/inputs") + ndmTokenQs();
-        ndmGcsGet(listUrl).done(function(data) {
-            if (data && data.error) {
-                ndmProjectsSetError(data.error);
-                ndmProjectsSetStatus("", "");
-                return;
-            }
-            var files = (data && data.files) ? data.files : [];
-            if (!files.length) {
-                ndmProjectsSetError("No input images found for this project.");
-                ndmProjectsSetStatus("", "");
-                return;
-            }
-            ndmProjectsSetStatus("", "");
-            return ndmReprocessLoadIntoHome(proj, files).done(function() {
-                app.error("");
-                var drop = document.getElementById("images");
-                if (drop) drop.scrollIntoView({ behavior: "smooth", block: "center" });
-            }).fail(function(err) {
-                var msg = err && err.message ? err.message : String(err || "Failed to load images from cloud storage.");
-                app.error(msg);
-                ndmProjectsSetError(msg);
-            });
-        }).fail(function(xhr, status) {
-            ndmProjectsSetError(ndmAjaxFailMessage(xhr, status, listUrl));
-            ndmProjectsSetStatus("", "");
-        }).always(function() {
-            ndmReprocessLoading = false;
-            ndmProjectsLoad(false);
+        ndmReprocessFromCloud(proj.name, proj.displayName || proj.name).fail(function(err) {
+            // Errors are already surfaced by ndmReprocessFromCloud; keep a
+            // reject handler so an unhandled rejection is not logged.
+            void err;
         });
     }
 

@@ -1693,11 +1693,48 @@ $(function() {
         }, this);
         this.startRefreshingInfo();
     }
+    // A poll that never reached the gateway, or that the gateway could not
+    // forward to a worker, says nothing about the job. Autoscaled workers are
+    // deleted the moment they finish, so a successful task routinely produces
+    // one of these on its last few polls.
+    var NDM_TRANSIENT_INFO_ERROR = /proxy redirect error|etimedout|econnrefused|econnreset|socket hang up|network ?error|timeout of .* exceeded|gateway time-?out|bad gateway|service unavailable/i;
+
+    function ndmIsTransientInfoError(message) {
+        return NDM_TRANSIENT_INFO_ERROR.test(String(message || ""));
+    }
+
+    function ndmIsTransientInfoFetch(xhr, textStatus, message) {
+        if (textStatus === "timeout") return true;
+        var status = (xhr && xhr.status) || 0;
+        // A gateway that drops the connection rather than answering is exactly
+        // this case: the request never got a verdict on the task.
+        if (status === 0 || status === 502 || status === 503 || status === 504) return true;
+        return ndmIsTransientInfoError(message);
+    }
+
+    // Surfaced only once the task has never reported a status and the retries
+    // have been given a chance; otherwise the last known good state stands.
+    var NDM_INFO_FAILURES_BEFORE_SURFACING = 3;
+
+    Task.prototype.handleInfoFailure = function(message) {
+        this.infoFailures = (this.infoFailures || 0) + 1;
+        if (this.info().status) return;
+        if (this.infoFailures < NDM_INFO_FAILURES_BEFORE_SURFACING) return;
+        this.info({ error: message });
+    };
+
     Task.prototype.refreshInfo = function() {
         var self = this;
         var url = ndmApi("/task/" + this.uuid + "/info") + ndmTokenQs();
         $.get(url)
             .done(function(json) {
+                if (json.error && ndmIsTransientInfoError(json.error)) {
+                    self.handleInfoFailure(json.error);
+                    return;
+                }
+
+                self.infoFailures = 0;
+
                 // Track time
 
                 if (json.processingTime && json.processingTime !== -1) {
@@ -1715,7 +1752,12 @@ $(function() {
                 }
             })
             .fail(function(xhr, textStatus) {
-                self.info({ error: ndmAjaxFailMessage(xhr, textStatus, url) });
+                var message = ndmAjaxFailMessage(xhr, textStatus, url);
+                if (ndmIsTransientInfoFetch(xhr, textStatus, message)) {
+                    self.handleInfoFailure(message);
+                } else {
+                    self.info({ error: message });
+                }
             })
             .always(function() { self.loading(false); });
     };

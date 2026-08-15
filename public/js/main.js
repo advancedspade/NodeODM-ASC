@@ -1660,9 +1660,9 @@ $(function() {
             return this.info().status &&
                 (this.info().status.code === codes.QUEUED || this.info().status.code === codes.RUNNING);
         }, this);
+        // Cancel is final: pictures are dropped and the user starts a new upload.
         this.showRestart = ko.pureComputed(function() {
-            return this.info().status &&
-                (this.info().status.code === codes.CANCELED);
+            return false;
         }, this);
         this.showRemove = ko.pureComputed(function() {
             return this.info().status &&
@@ -1903,8 +1903,9 @@ $(function() {
         };
     }
     Task.prototype.cancel = genApiCall(ndmApi("/task/cancel") + ndmTokenQs());
-    // Restart may proxy to a live worker ({success}), re-dispatch a gateway-held
-    // upload ({uuid}), or ask the UI to load images from cloud storage ({reprocess}).
+    // Restart is hidden in the UI (cancel is final). Kept for API callers and
+    // for the rare case a live worker still accepts it; the gateway refuses a
+    // canceled uuid and may return a GCS reprocess hint when images exist.
     Task.prototype.restart = function() {
         var self = this;
         var url = ndmApi("/task/restart") + ndmTokenQs();

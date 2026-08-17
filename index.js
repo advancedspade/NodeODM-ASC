@@ -188,6 +188,8 @@ app.use("/gcs", gcsApiNoCache);
 app.get('/gcs/upload/status', authCheck, gcsUploadApi.handleStatus);
 app.get('/gcs/projects', authCheck, gcsUploadApi.handleListProjects);
 app.get('/gcs/projects/incomplete', authCheck, gcsUploadApi.handleListIncompleteProjects);
+app.get('/gcs/projects/:projectName/exists', authCheck, gcsUploadApi.handleProjectExists);
+app.delete('/gcs/projects/:projectName', authCheck, gcsUploadApi.handleDeleteProject);
 app.get('/gcs/projects/:projectName/inputs', authCheck, gcsUploadApi.handleListProjectInputs);
 app.get('/gcs/projects/:projectName/files', authCheck, gcsUploadApi.handleListProjectFiles);
 app.get('/gcs/projects/:projectName/download', authCheck, gcsUploadApi.handleDownloadProjectFile);

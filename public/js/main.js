@@ -1516,7 +1516,11 @@ $(function() {
         ndmReportClientError({
             source: "window.onerror",
             message: (e && e.message) || "unknown error",
+            // Generated code (knockout binding expressions, eval) is attributed
+            // to the document at line 1, so filename on its own can point
+            // nowhere useful. The stack is what names the actual frame.
             endpoint: (e && e.filename) ? String(e.filename) + ":" + e.lineno : null,
+            stack: (e && e.error && e.error.stack) || null,
             taskId: app.uuid() || null
         });
     });
@@ -1526,6 +1530,7 @@ $(function() {
         ndmReportClientError({
             source: "unhandledrejection",
             message: (reason && (reason.message || reason)) || "unknown rejection",
+            stack: (reason && reason.stack) || null,
             taskId: app.uuid() || null
         });
     });
@@ -1771,11 +1776,26 @@ $(function() {
     Task.prototype.openInfo = function(){
         location.href = ndmApi("/task/" + this.uuid + "/info") + ndmTokenQs();
     };
+    // Nothing cached reads back as null, and the gateway answers {error:...}
+    // rather than an array once a task has no worker. Both have to come back as
+    // an empty list: this is called from a 5s poll, and a throw here escapes the
+    // jQuery callback, kills the refresh and reaches window.onerror.
+    function ndmCachedOutput(uuid) {
+        try {
+            var raw = localStorage.getItem(uuid + "_output");
+            var parsed = raw ? JSON.parse(raw) : null;
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+            return [];
+        }
+    }
+
     Task.prototype.copyOutput = function(){
         var self = this;
         var url = ndmApi("/task/" + self.uuid + "/output");
             $.get(url, { token: token })
                 .done(function(output) {
+                    if (!Array.isArray(output)) return;
                     try {
                         localStorage.setItem(self.uuid + '_output', JSON.stringify(output));
                     } catch (e) {
@@ -1792,8 +1812,8 @@ $(function() {
             $.get(url, { token: token })
                 .done(function(output) {
                     var wnd = window.open("about:blank", "", "_blank");
-                    if (output.length === 0){
-                        output = JSON.parse(localStorage.getItem(self.uuid + '_output') || []);
+                    if (!Array.isArray(output) || !output.length){
+                        output = ndmCachedOutput(self.uuid);
                     }
                     wnd.document.write(output.join("<br/>"));
                 })
@@ -1808,8 +1828,8 @@ $(function() {
             var url = ndmApi("/task/" + self.uuid + "/output");
             $.get(url, { line: -9, token: token })
                 .done(function(output) {
-                    if (output.length === 0){
-                        output = JSON.parse(localStorage.getItem(self.uuid + '_output') || []);
+                    if (!Array.isArray(output) || !output.length){
+                        output = ndmCachedOutput(self.uuid);
                     }
                     self.output(output);
                 })
@@ -1902,7 +1922,12 @@ $(function() {
                 });
         };
     }
-    Task.prototype.cancel = genApiCall(ndmApi("/task/cancel") + ndmTokenQs());
+    // Cancel frees the cloud project name, so the local list has to drop it too
+    // or the operator is told the name is taken when it no longer is.
+    Task.prototype.cancel = genApiCall(ndmApi("/task/cancel") + ndmTokenQs(), function(self) {
+        var info = self.info();
+        ndmGcsForgetProjectFromCache(info && info.name);
+    });
     // Restart is hidden in the UI (cancel is final). Kept for API callers and
     // for the rare case a live worker still accepts it; the gateway refuses a
     // canceled uuid and may return a GCS reprocess hint when images exist.
@@ -3214,6 +3239,22 @@ $(function() {
             if (ndmGcsProjectsCacheMeta.key) {
                 ndmGcsWriteProjectsSessionCache(ndmGcsProjectsCacheMeta.key, ndmGcsProjectsCache);
             }
+        }
+        ndmTaskNameRefreshHint();
+        var taskNameEl = document.getElementById("taskName");
+        ndmTaskNameUpdateGcsStatus(taskNameEl ? taskNameEl.value : "");
+    }
+
+    function ndmGcsForgetProjectFromCache(projectName) {
+        var sanitized = ndmSanitizeProjectName(projectName);
+        if (!sanitized) return;
+        var before = ndmGcsProjectsCache.length;
+        ndmGcsProjectsCache = ndmGcsProjectsCache.filter(function(p) {
+            return p.name !== sanitized;
+        });
+        if (ndmGcsProjectsCache.length === before) return;
+        if (ndmGcsProjectsCacheMeta.key) {
+            ndmGcsWriteProjectsSessionCache(ndmGcsProjectsCacheMeta.key, ndmGcsProjectsCache);
         }
         ndmTaskNameRefreshHint();
         var taskNameEl = document.getElementById("taskName");

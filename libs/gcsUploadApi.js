@@ -445,6 +445,41 @@ function handleListProjectInputs(req, res) {
     });
 }
 
+/**
+ * Authoritative name-availability check. The gateway calls this before it
+ * accepts an upload, so a stale list cache cannot let a duplicate through and
+ * strand the collision until after dispatch.
+ */
+function handleProjectExists(req, res) {
+    if (!GCS.enabled()) {
+        return res.json({ error: "GCS uploads are not available on this server." });
+    }
+
+    const projectName = String(req.params.projectName || "").trim();
+    GCS.projectExists(projectName, (err, exists, sanitized) => {
+        if (err) return res.json({ error: err.message });
+        res.json({ projectName: sanitized, exists: !!exists });
+    });
+}
+
+/** Frees a project name by deleting its folder. Refuses finished projects. */
+function handleDeleteProject(req, res) {
+    if (!GCS.enabled()) {
+        return res.status(503).json({ error: "GCS uploads are not available on this server." });
+    }
+
+    const projectName = String(req.params.projectName || "").trim();
+    const sanitized = sanitizeProjectName(projectName, "");
+    if (!sanitized || sanitized !== projectName) {
+        return res.status(400).json({ error: "Invalid project name." });
+    }
+
+    GCS.deleteProject(sanitized, (err, stats) => {
+        if (err) return res.status(409).json({ error: err.message });
+        res.json({ success: true, projectName: (stats && stats.project) || sanitized });
+    });
+}
+
 function handleListProjectFiles(req, res) {
     if (!GCS.enabled()) {
         return res.json({ error: "GCS uploads are not available on this server." });
@@ -1632,6 +1667,8 @@ module.exports = {
     handleListProjects,
     handleListIncompleteProjects,
     handleListProjectInputs,
+    handleProjectExists,
+    handleDeleteProject,
     handleListProjectFiles,
     handleDownloadProjectFile,
     handleArchiveProject,

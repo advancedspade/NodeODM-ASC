@@ -259,6 +259,32 @@ module.exports = class Task{
         });
     }
 
+    /**
+     * Frees the cloud project name this task was holding, so the operator can
+     * immediately start over under the same name.
+     *
+     * Skips a reprocess: that job was pointed at a folder someone else already
+     * filled, and its images are the only copy. Best-effort — a cancel must not
+     * fail because the bucket was unreachable.
+     */
+    releaseGcsProject(cb){
+        if (!GCS.enabled() || !this.gcsRawInputsUploaded || this.reprocessProject) return cb(null);
+
+        const projectName = this.getSanitizedProjectName();
+        if (!projectName) return cb(null);
+
+        GCS.deleteProject(projectName, err => {
+            if (err){
+                this.output.push(`Could not remove cloud project "${projectName}": ${err.message}`);
+                logger.warn(`${this.uuid}: GCS project cleanup failed: ${err.message}`);
+            }else{
+                this.gcsRawInputsUploaded = false;
+                this.output.push(`Removed cloud project "${projectName}" — the name is free to reuse.`);
+            }
+            cb(null);
+        });
+    }
+
     // Get the path of the archive where all assets
     // outputted by this task are stored.
     getAssetsArchivePath(filename){
@@ -354,7 +380,7 @@ module.exports = class Task{
             }
 
             this.stopTrackingProcessingTime(true);
-            cb(null);
+            this.releaseGcsProject(() => cb(null));
         }else{
             cb(new Error("Task already cancelled"));
         }

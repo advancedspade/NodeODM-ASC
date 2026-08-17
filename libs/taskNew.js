@@ -33,7 +33,7 @@ const ziputils = require('./ziputils');
 const statusCodes = require('./statusCodes');
 const logger = require('./logger');
 const GCS = require('./GCS');
-const { sanitizeProjectName, projectNameExists } = require('./gcsProjectName');
+const { sanitizeProjectName } = require('./gcsProjectName');
 
 /** In-flight upload sessions that reserved a project name at init (not yet in GCS). */
 const pendingProjectNames = new Map();
@@ -60,9 +60,9 @@ function assertProjectNameUnique(rawName, opts, cb) {
     }
     const taskUuid = opts.taskUuid ? String(opts.taskUuid) : "";
 
-    GCS.listProjectsCached((err, projects) => {
+    GCS.projectExists(sanitized, (err, exists) => {
         if (err) return cb(err);
-        if (projectNameExists(sanitized, projects)) {
+        if (exists) {
             if (opts.allowReprocess) {
                 // Explicit reprocess of an existing project folder (incomplete or complete).
                 return cb(null, sanitized);

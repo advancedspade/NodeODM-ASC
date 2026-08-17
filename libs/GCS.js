@@ -461,7 +461,12 @@ module.exports = {
         module.exports.projectHasOrthophoto(sanitized, (orthoErr, hasOrthophoto) => {
             if (orthoErr) return cb(orthoErr);
             if (hasOrthophoto){
-                return cb(new Error(`Project "${sanitized}" has finished results and will not be deleted.`));
+                const protectedErr = new Error(
+                    `Project "${sanitized}" has finished results and will not be deleted.`
+                );
+                // Callers map this to HTTP 409; everything else from delete is 5xx.
+                protectedErr.code = "PROJECT_PROTECTED";
+                return cb(protectedErr);
             }
             module.exports.deletePrefixWithRetry(projectFolderPrefix(sanitized), delErr => {
                 if (delErr) return cb(delErr);

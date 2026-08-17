@@ -452,12 +452,17 @@ function handleListProjectInputs(req, res) {
  */
 function handleProjectExists(req, res) {
     if (!GCS.enabled()) {
-        return res.json({ error: "GCS uploads are not available on this server." });
+        return res.status(503).json({ error: "GCS uploads are not available on this server." });
     }
 
     const projectName = String(req.params.projectName || "").trim();
-    GCS.projectExists(projectName, (err, exists, sanitized) => {
-        if (err) return res.json({ error: err.message });
+    const sanitized = sanitizeProjectName(projectName, "");
+    if (!sanitized || sanitized !== projectName) {
+        return res.status(400).json({ error: "Invalid project name." });
+    }
+
+    GCS.projectExists(sanitized, (err, exists) => {
+        if (err) return res.status(500).json({ error: err.message });
         res.json({ projectName: sanitized, exists: !!exists });
     });
 }
@@ -475,7 +480,10 @@ function handleDeleteProject(req, res) {
     }
 
     GCS.deleteProject(sanitized, (err, stats) => {
-        if (err) return res.status(409).json({ error: err.message });
+        if (err) {
+            const status = err.code === "PROJECT_PROTECTED" ? 409 : 500;
+            return res.status(status).json({ error: err.message });
+        }
         res.json({ success: true, projectName: (stats && stats.project) || sanitized });
     });
 }

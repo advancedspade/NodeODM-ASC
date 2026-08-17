@@ -25,11 +25,6 @@ function gcsDestPathForProject(sanitizedName, uploadPrefix) {
     return prefix ? `${prefix}/${sanitizedName}` : sanitizedName;
 }
 
-function projectNameExists(sanitizedName, existingNames) {
-    if (!sanitizedName) return false;
-    return (existingNames || []).some(n => n === sanitizedName);
-}
-
 /**
  * Object names are arbitrary strings, so a key under a project prefix can still
  * carry ".." or empty segments. Such a path must never reach a ZIP entry name
@@ -54,7 +49,6 @@ function isDownloadableProjectRelativePath(rel) {
 module.exports = {
     sanitizeProjectName,
     gcsDestPathForProject,
-    projectNameExists,
     isSafeProjectRelativePath,
     isDownloadableProjectRelativePath
 };

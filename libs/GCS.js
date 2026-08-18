@@ -426,6 +426,58 @@ module.exports = {
     },
 
     /**
+     * Whether a project folder exists, read straight from the bucket.
+     *
+     * Deliberately skips projectsListCache. A name is taken the moment a worker
+     * uploads its images and freed the moment a cancel deletes them, and both
+     * happen in a different process from the one answering name checks — so a
+     * cached list can be minutes behind the truth in either direction. Getting
+     * this wrong is expensive: the collision then surfaces only after the whole
+     * upload has been dispatched to a booted worker.
+     */
+    projectExists: function(projectName, cb) {
+        const sanitized = sanitizeProjectName(projectName, "");
+        if (!sanitized) return cb(new Error("Invalid project name"));
+        prefixHasAnyObjects(projectFolderPrefix(sanitized), (err, exists) => {
+            if (err) return cb(err);
+            cb(null, !!exists, sanitized);
+        });
+    },
+
+    /**
+     * Deletes a whole project folder, freeing the name for reuse.
+     *
+     * Refuses a project that has an orthophoto: the only callers are cancel
+     * paths, and a finished project reaching one means the uuid was matched to
+     * the wrong folder. Losing delivered results that way is unrecoverable.
+     */
+    deleteProject: function(projectName, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const sanitized = sanitizeProjectName(projectName, "");
+        if (!sanitized) return cb(new Error("Invalid project name"));
+
+        module.exports.projectHasOrthophoto(sanitized, (orthoErr, hasOrthophoto) => {
+            if (orthoErr) return cb(orthoErr);
+            if (hasOrthophoto){
+                const protectedErr = new Error(
+                    `Project "${sanitized}" has finished results and will not be deleted.`
+                );
+                // Callers map this to HTTP 409; everything else from delete is 5xx.
+                protectedErr.code = "PROJECT_PROTECTED";
+                return cb(protectedErr);
+            }
+            module.exports.deletePrefixWithRetry(projectFolderPrefix(sanitized), delErr => {
+                if (delErr) return cb(delErr);
+                module.exports.invalidateProjectsListCache();
+                logger.info(`GCS project deleted: ${sanitized}`);
+                cb(null, { project: sanitized });
+            });
+        });
+    },
+
+    /**
      * List re-processable input files (images/ and gcp/) for a cloud project folder.
      */
     listProjectInputFiles: function(projectName, cb) {

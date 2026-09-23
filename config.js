@@ -254,6 +254,10 @@ config.gcsSkipLocalArchive = argv.gcs_skip_local_archive === true ||
     argv.gcs_skip_local_archive === 'true' ||
     fromConfigFile("gcsSkipLocalArchive", false) === true;
 
+// Public Mapbox token for Leaflet basemaps in the web UI (URL-restrict in Mapbox dashboard).
+config.mapboxAccessToken = argv.mapbox_access_token || fromConfigFile("mapboxAccessToken", "") ||
+	process.env.MAPBOX_ACCESS_TOKEN || "";
+
 config.rtkAnalysis = argv.no_rtk_analysis
     ? false
     : (argv.rtk_analysis === false || argv.rtk_analysis === "false"

@@ -2765,3 +2765,66 @@ body.ndm-modal-open {
         padding-top: 0.5rem;
     }
 }
+
+.ndm-ortho-preview-modal__panel {
+    max-width: min(1100px, calc(100vw - 2rem));
+    width: 100%;
+    height: min(85vh, 820px);
+    max-height: calc(100vh - 2rem);
+}
+
+.ndm-ortho-preview-modal__body {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    padding-bottom: 0.75rem;
+}
+
+.ndm-ortho-preview-status {
+    margin: 0 0 0.5rem;
+    min-height: 1.25em;
+}
+
+.ndm-ortho-preview-map-wrap {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 280px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--surface-2);
+}
+
+.ndm-ortho-preview-map {
+    width: 100%;
+    height: 100%;
+    min-height: 280px;
+}
+
+.ndm-ortho-preview-map .leaflet-control-attribution {
+    font-size: 10px;
+}
+
+a.ndm-ortho-preview-link {
+    cursor: pointer;
+}
+
+.ndm-mapbox-wordmark {
+    position: absolute;
+    left: 8px;
+    bottom: 22px;
+    z-index: 500;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    font: 600 11px/1.2 system-ui, sans-serif;
+    text-decoration: none;
+    opacity: 0.9;
+}
+
+.ndm-mapbox-wordmark:hover {
+    opacity: 1;
+    color: #fff;
+}

@@ -222,6 +222,17 @@ http://www.buildsucceeded.com/2015/solved-pm2-startup-at-boot-time-centos-7-red-
 
 You can monitor the process using `pm2 status`.
 
+### Mapbox basemap (web UI)
+
+The NodeODM web UI uses Leaflet with a Mapbox dark basemap for the image GPS map and orthophoto previews. Set a **public** access token (URL-restrict it in the Mapbox dashboard):
+
+```bash
+# .env
+MAPBOX_ACCESS_TOKEN=pk.your_public_token
+```
+
+Without a token, the GPS map and orthophoto preview still open, but the basemap tiles will not load. Orthophoto overlays are served from private GCS via authenticated `/gcs/projects/:name/orthophoto-tiles/...` routes when `--tiles` produced `orthophoto_tiles/` for the project.
+
 ### Test Mode
 
 If you want to make a contribution, but don't want to setup OpenDroneMap, or perhaps you are working on a Windows machine, or if you want to run automated tests, you can turn test mode on:

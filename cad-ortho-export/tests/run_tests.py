@@ -10,6 +10,7 @@ a deliberately mis-georeferenced file and requires the checker to fail it.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -386,6 +387,76 @@ def test_paths() -> None:
         check("non-Windows paths are untouched", out == deep)
 
 
+class _StatusBlob:
+    """In-memory stand-in for a GCS blob. A mismatched generation is a 412."""
+
+    def __init__(self, doc: dict, generation: int) -> None:
+        self.doc = doc
+        self.generation = generation
+        self.uploads: list[int] = []
+
+    def reload(self) -> None:
+        return None
+
+    def download_as_bytes(self) -> bytes:
+        return json.dumps(self.doc).encode("utf-8")
+
+    def upload_from_string(self, data: str, content_type: str | None = None, if_generation_match: int | None = None) -> None:
+        if if_generation_match != self.generation:
+            err = RuntimeError("generation mismatch")
+            err.code = 412  # type: ignore[attr-defined]
+            raise err
+        self.uploads.append(if_generation_match)
+        self.generation += 1
+        self.doc = json.loads(data)
+
+
+def test_status_fence() -> None:
+    print("\n-- status fence --")
+    check("a claim owns only its own record", gcs_export.claim_owns({"claim": "a"}, "a"))
+    check("a different claim does not own the record", not gcs_export.claim_owns({"claim": "a"}, "b"))
+    check("an empty claim owns nothing", not gcs_export.claim_owns({"claim": ""}, ""))
+
+    blob = _StatusBlob({"claim": "ours", "status": "queued", "startedAt": "t0"}, 7)
+    status = gcs_export._Status("b", "k", "ours", blob=blob)
+    status.write(status="running", execution="exec-1", claim="stolen")
+    check("a matching claim writes with if_generation_match", blob.uploads == [7], str(blob.uploads))
+    check("the write cannot replace the claim", blob.doc["claim"] == "ours" and blob.doc["status"] == "running")
+    check("the execution token is recorded on the owned record", blob.doc["execution"] == "exec-1")
+
+    foreign = _StatusBlob({"claim": "replacement", "status": "queued"}, 3)
+    lost = False
+    try:
+        gcs_export._Status("b", "k", "ours", blob=foreign).write(status="succeeded", outputs=["odm_orthophoto/x.tif"])
+    except gcs_export.LeaseLost:
+        lost = True
+    check("a replaced claim is not overwritten", lost and foreign.uploads == [] and foreign.doc["status"] == "queued")
+
+    raced = _StatusBlob({"claim": "ours", "status": "running"}, 9)
+
+    def clash(data: str, content_type: str | None = None, if_generation_match: int | None = None) -> None:
+        err = RuntimeError("precondition")
+        err.code = 412  # type: ignore[attr-defined]
+        raise err
+
+    raced.upload_from_string = clash  # type: ignore[method-assign]
+    raced_lost = False
+    try:
+        gcs_export._Status("b", "k", "ours", blob=raced).write(status="failed")
+    except gcs_export.LeaseLost:
+        raced_lost = True
+    check("a generation change rejects the write", raced_lost and raced.doc["status"] == "running")
+
+    owned = gcs_export._Status("b", "k", "ours", blob=_StatusBlob({"claim": "ours"}, 1))
+    owned.assert_owns()
+    refused = False
+    try:
+        gcs_export._Status("b", "k", "ours", blob=_StatusBlob({"claim": "other"}, 1)).assert_owns()
+    except gcs_export.LeaseLost:
+        refused = True
+    check("output publish is refused when the claim changed", refused)
+
+
 def test_gcs_uri() -> None:
     print("\n-- gs:// paths --")
     bucket, key = gcs_export.parse_gs(
@@ -415,7 +486,7 @@ def main() -> int:
             (test_units, False), (test_crs_search, False), (test_plan, True),
             (test_world_file, True), (test_convert, True), (test_overview_choice, True),
             (test_verify, True), (test_reproject_verify, True), (test_paths, False),
-            (test_gcs_uri, False),
+            (test_status_fence, False), (test_gcs_uri, False),
         ):
             try:
                 fn(tmp) if needs_tmp else fn()

@@ -14,6 +14,8 @@ const {
     parseExportRequest,
     exportIsActive,
     jobResourceName,
+    newExportClaim,
+    buildQueuedExport,
     QUEUED_STALE_MS,
     RUNNING_STALE_MS
 } = require("../libs/orthoExport");
@@ -82,6 +84,16 @@ test("running export stays active until the job timeout elapses", () => {
         startedAt: new Date(now - RUNNING_STALE_MS - 1000).toISOString()
     }, now), false);
     assert.strictEqual(exportIsActive({ status: "succeeded", startedAt: new Date(now).toISOString() }, now), false);
+});
+
+test("queued export carries a claim the worker must present", () => {
+    const claim = newExportClaim();
+    assert.match(claim, /^[0-9a-f]{32}$/);
+    const queued = buildQueuedExport({ gsd: 5, unit: "cm", keepCrs: true, epsg: null }, 100, claim, "2026-09-29T00:00:00.000Z");
+    assert.strictEqual(queued.status, "queued");
+    assert.strictEqual(queued.claim, claim);
+    assert.strictEqual(queued.execution, null);
+    assert.throws(() => buildQueuedExport({}, 0, "", "2026-09-29T00:00:00.000Z"));
 });
 
 test("job resource name must be a Cloud Run jobs path", () => {

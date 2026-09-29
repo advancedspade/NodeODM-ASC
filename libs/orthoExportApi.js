@@ -22,7 +22,9 @@ const {
     exportIsActive,
     jobResourceName,
     isNotFound,
-    isPreconditionFailed
+    isPreconditionFailed,
+    newExportClaim,
+    buildQueuedExport
 } = require("./orthoExport");
 
 let cloudAuth = null;
@@ -192,28 +194,27 @@ async function handleOrthoExport(req, res) {
         });
     }
 
-    const queued = {
-        status: "queued",
+    const claim = newExportClaim();
+    const queued = buildQueuedExport(
         params,
-        startedAt: new Date().toISOString(),
-        finishedAt: null,
-        execution: null,
-        error: null,
-        verify: null,
-        outputs: [],
-        sourceBytes: Number(metadata.size) || 0,
-        outputBytes: 0,
-        seconds: 0
-    };
+        Number(metadata.size) || 0,
+        claim,
+        new Date().toISOString()
+    );
 
+    let claimed;
     try {
         await writeStatus(statusPath, queued, state.generation);
+        claimed = await readStatus(statusPath);
     } catch (err) {
         if (isPreconditionFailed(err)) {
             return res.status(409).json({ error: "A CAD export is already running for this project." });
         }
         logger.error(`CAD export status write: ${err.message}`);
         return res.status(500).json({ error: "Could not record the CAD export." });
+    }
+    if (!claimed.doc || claimed.doc.claim !== claim) {
+        return res.status(409).json({ error: "A CAD export is already running for this project." });
     }
 
     const env = {
@@ -222,7 +223,8 @@ async function handleOrthoExport(req, res) {
         CAD_EXPORT_GSD: String(params.gsd),
         CAD_EXPORT_UNIT: params.unit,
         CAD_EXPORT_KEEP_CRS: params.keepCrs ? "true" : "false",
-        CAD_EXPORT_SOURCE_BYTES: String(queued.sourceBytes || 0)
+        CAD_EXPORT_SOURCE_BYTES: String(queued.sourceBytes || 0),
+        CAD_EXPORT_CLAIM: claim
     };
     if (!params.keepCrs) env.CAD_EXPORT_EPSG = String(params.epsg);
 
@@ -247,9 +249,13 @@ async function handleOrthoExport(req, res) {
             error: message
         });
         try {
-            await writeStatus(statusPath, failed, null);
+            await writeStatus(statusPath, failed, claimed.generation);
         } catch (writeErr) {
-            logger.error(`CAD export failure status: ${writeErr.message}`);
+            if (isPreconditionFailed(writeErr)) {
+                logger.error("CAD export start failed after the queued record was replaced.");
+            } else {
+                logger.error(`CAD export failure status: ${writeErr.message}`);
+            }
         }
         if (!res.headersSent) {
             res.status(502).json({ error: message, status: failed });

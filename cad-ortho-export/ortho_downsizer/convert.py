@@ -155,7 +155,7 @@ def _profile(plan: Plan, opts: Options, band_count: int) -> dict:
     prof = dict(
         driver="GTiff",
         dtype="uint8",
-        crs=get_crs(plan.dst_epsg) if plan.dst_epsg else None,
+        crs=get_crs(plan.dst_epsg) if plan.dst_epsg else rasterio.crs.CRS.from_wkt(plan.source.crs_wkt),
         transform=plan.transform,
         width=plan.width,
         height=plan.height,

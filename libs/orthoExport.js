@@ -9,6 +9,8 @@ the Free Software Foundation, either version 3 of the License, or
 */
 "use strict";
 
+const crypto = require("crypto");
+
 // Keep in sync with cad-ortho-export/gcs_export.py.
 const UNITS_METRES = {
     "cm": 0.01,
@@ -43,7 +45,8 @@ function parseExportRequest(body) {
     const keepCrs = src.keepCrs === true || src.keepCrs === "true";
     let epsg = null;
     if (!keepCrs) {
-        epsg = parseInt(src.epsg, 10);
+        const epsgText = String(src.epsg == null ? "" : src.epsg).trim();
+        epsg = /^\d+$/.test(epsgText) ? Number(epsgText) : NaN;
         if (!Number.isInteger(epsg) || epsg < 1024 || epsg > 32767) {
             return { error: "Choose a coordinate system, or keep the source CRS." };
         }
@@ -81,6 +84,30 @@ function isPreconditionFailed(err) {
     return !!(err && (err.code === 412 || err.code === "412"));
 }
 
+function newExportClaim() {
+    return crypto.randomBytes(16).toString("hex");
+}
+
+// claim is the lease. The worker may update this object only while the live
+// generation still carries the same claim.
+function buildQueuedExport(params, sourceBytes, claim, startedAt) {
+    if (!claim) throw new Error("CAD export claim is required.");
+    return {
+        status: "queued",
+        claim: String(claim),
+        params,
+        startedAt,
+        finishedAt: null,
+        execution: null,
+        error: null,
+        verify: null,
+        outputs: [],
+        sourceBytes: Number(sourceBytes) || 0,
+        outputBytes: 0,
+        seconds: 0
+    };
+}
+
 module.exports = {
     UNITS_METRES,
     MIN_GSD_METRES,
@@ -94,5 +121,7 @@ module.exports = {
     exportIsActive,
     jobResourceName,
     isNotFound,
-    isPreconditionFailed
+    isPreconditionFailed,
+    newExportClaim,
+    buildQueuedExport
 };

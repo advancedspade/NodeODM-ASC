@@ -4,6 +4,8 @@ name: Publish NodeODM-ASC to Artifact Registry + refresh gateway (prod)
 # When NodeODM changes for the ClusterODM path:
 #   1) push nodeodm-asc:prod to asc-shared-services Artifact Registry
 #   2) on clusterodm-gateway-prod, retag NODEODM_IMAGE and recreate reference-node
+#   3) push cad-ortho-export:prod and roll that Cloud Run job (the export worker;
+#      the reference node only starts it)
 #
 # ClusterODM owns the Compose stack
 # (ClusterODM-ASC/.github/workflows/deploy-gateway-prod.yml).
@@ -28,6 +30,9 @@ env:
   AR_LOCATION: us-central1
   AR_REPOSITORY: containers
   NODEODM_IMAGE_NAME: nodeodm-asc
+  CAD_ORTHO_EXPORT_IMAGE_NAME: cad-ortho-export
+  CAD_ORTHO_EXPORT_REGION: us-central1
+  CAD_ORTHO_EXPORT_JOB_NAME: cad-ortho-export
   IMAGE_TAG: prod
   WIF_PROVIDER: projects/809964514017/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider
   SA_EMAIL: clusterodm-deployer@tools-471222.iam.gserviceaccount.com
@@ -39,7 +44,7 @@ permissions:
 
 jobs:
   build-and-push:
-    name: Build and Push nodeodm-asc
+    name: Build and push nodeodm-asc + cad-ortho-export
     runs-on: ubuntu-latest
     environment: prod
     steps:
@@ -63,7 +68,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push
+      - name: Build and push nodeodm-asc
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -74,6 +79,35 @@ jobs:
             ${{ env.AR_LOCATION }}-docker.pkg.dev/${{ env.AR_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/${{ env.NODEODM_IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build and push cad-ortho-export
+        uses: docker/build-push-action@v5
+        with:
+          context: ./cad-ortho-export
+          file: ./cad-ortho-export/Dockerfile
+          push: true
+          tags: |
+            ${{ env.AR_LOCATION }}-docker.pkg.dev/${{ env.AR_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/${{ env.CAD_ORTHO_EXPORT_IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.AR_LOCATION }}-docker.pkg.dev/${{ env.AR_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/${{ env.CAD_ORTHO_EXPORT_IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha,scope=cad-ortho-export
+          cache-to: type=gha,mode=max,scope=cad-ortho-export
+
+      - name: Roll Cloud Run job when it exists
+        run: |
+          set -euo pipefail
+          IMAGE="${AR_LOCATION}-docker.pkg.dev/${AR_PROJECT_ID}/${AR_REPOSITORY}/${CAD_ORTHO_EXPORT_IMAGE_NAME}:${IMAGE_TAG}"
+          if ! gcloud run jobs describe "${CAD_ORTHO_EXPORT_JOB_NAME}" \
+            --region="${CAD_ORTHO_EXPORT_REGION}" \
+            --project="${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+            echo "${CAD_ORTHO_EXPORT_JOB_NAME} job does not exist yet."
+            echo "Image is in Artifact Registry. Apply helmut live/prod/internal-tool, then re-run this workflow."
+            exit 0
+          fi
+          gcloud run jobs update "${CAD_ORTHO_EXPORT_JOB_NAME}" \
+            --image="${IMAGE}" \
+            --region="${CAD_ORTHO_EXPORT_REGION}" \
+            --project="${GCP_PROJECT_ID}" \
+            --quiet
 
   refresh-gateway-reference-node:
     name: Refresh reference-node on gateway

@@ -17,6 +17,10 @@ Environment (set per execution by the NodeODM reference node):
     CAD_EXPORT_CLAIM          lease minted into the queued status object. Every
                               status write and the output upload are refused
                               unless the live object still carries this claim.
+    CAD_EXPORT_STAGE_PREFIX   gs://bucket/outputs/.uploads/cad-export/<project>/<claim>
+                              Outputs land here first. Must be outside the
+                              project prefix so the file browser never lists a
+                              half-written export.
 """
 
 from __future__ import annotations
@@ -94,6 +98,15 @@ def claim_owns(doc: object, claim: str) -> bool:
     return doc.get("claim") == claim
 
 
+def publish_allowed(doc: object, claim: str) -> bool:
+    """Public files may be copied only while this claim's record is still running.
+
+    ``succeeded`` is not an active export, so writing it first lets a new
+    request start and race this execution's copy.
+    """
+    return claim_owns(doc, claim) and isinstance(doc, dict) and doc.get("status") == "running"
+
+
 def _generation_conflict(exc: BaseException) -> bool:
     code = getattr(exc, "code", None)
     return type(exc).__name__ in ("PreconditionFailed", "NotFound") or code in (404, 412, "404", "412")
@@ -131,8 +144,14 @@ class _Status:
         return payload, int(generation)
 
     def assert_owns(self) -> None:
-        """Raise ``LeaseLost`` when this execution may no longer publish output."""
+        """Raise ``LeaseLost`` when this execution may no longer update status."""
         self._live()
+
+    def assert_running(self) -> None:
+        """Raise ``LeaseLost`` unless this claim still holds the active export."""
+        payload, _generation = self._live()
+        if not publish_allowed(payload, self.claim):
+            raise LeaseLost("CAD export is no longer the active execution.")
 
     def write(self, **fields: object) -> None:
         payload, generation = self._live()
@@ -153,8 +172,15 @@ class _Status:
         self.doc = payload
 
 
-def _stage_prefix(dest_prefix: str, claim: str) -> str:
-    return f"{dest_prefix.rstrip('/')}/.cad-claim/{claim}"
+def stage_key(stage_uri: str, dest_bucket: str, dest_key: str) -> str:
+    """Object prefix for staged outputs, validated against the destination."""
+    bucket, key = split_gs_prefix(stage_uri)
+    if bucket != dest_bucket:
+        raise ValueError("Staging prefix must be in the destination bucket.")
+    project_root = dest_key.rstrip("/").rsplit("/", 1)[0] + "/"
+    if key == dest_key or (key + "/").startswith(project_root):
+        raise ValueError("Staging prefix must be outside the project prefix.")
+    return key
 
 
 def _upload_outputs(bucket_name: str, dest_prefix: str, paths: list[Path]) -> list[str]:
@@ -171,28 +197,32 @@ def _upload_outputs(bucket_name: str, dest_prefix: str, paths: list[Path]) -> li
     return written
 
 
-def _delete_staged(bucket_name: str, dest_prefix: str, claim: str, names: list[str]) -> None:
+def _delete_named(bucket_name: str, prefix: str, names: list[str]) -> None:
     from google.cloud import storage
 
     bucket = storage.Client().bucket(bucket_name)
-    stage = _stage_prefix(dest_prefix, claim)
+    base = prefix.rstrip("/")
     for name in names:
         try:
-            bucket.blob(f"{stage}/{name}").delete()
+            bucket.blob(f"{base}/{name}").delete()
         except Exception as exc:  # noqa: BLE001
             if not _generation_conflict(exc):
-                print(f"[FAIL] could not delete staged {name}: {exc}")
+                print(f"[FAIL] could not delete {base}/{name}: {exc}")
 
 
-def _publish_staged(bucket_name: str, dest_prefix: str, claim: str, names: list[str]) -> None:
-    """Copy claim-scoped uploads onto the public orthophoto names."""
+def _publish_staged(bucket_name: str, stage: str, dest_prefix: str, names: list[str], copied: list[str]) -> None:
+    """Copy claim-scoped uploads onto the public orthophoto names.
+
+    ``copied`` receives each name only after its copy succeeds, so a failed
+    publish can delete just those objects.
+    """
     from google.cloud import storage
 
     bucket = storage.Client().bucket(bucket_name)
-    stage = _stage_prefix(dest_prefix, claim)
     final = dest_prefix.rstrip("/")
     for name in names:
         bucket.copy_blob(bucket.blob(f"{stage}/{name}"), bucket, f"{final}/{name}")
+        copied.append(name)
 
 
 def _source_bytes_from_gcs(uri: str) -> int:
@@ -243,6 +273,7 @@ def main() -> int:
         dest_bucket, dest_key = split_gs_prefix(dest)
         if src_bucket != dest_bucket:
             raise ValueError("Source and destination must be in the same bucket.")
+        stage = stage_key(os.environ.get("CAD_EXPORT_STAGE_PREFIX", ""), dest_bucket, dest_key)
     except (ValueError, TypeError) as exc:
         print(f"[FAIL] {exc}")
         dest_raw = os.environ.get("CAD_EXPORT_DEST_PREFIX", "").strip()
@@ -344,11 +375,13 @@ def main() -> int:
             print(f"  [FAIL] geolocation check: {verify_doc['message']}")
 
         paths = [Path(result.output_path)] + [Path(p) for p in result.sidecars]
-        # Stage under the claim, then record success only if this execution
-        # still owns the status object. The public names are copied after that
-        # write, so a replaced execution cannot publish its TIFF.
-        names = _upload_outputs(dest_bucket, _stage_prefix(dest_key, claim), paths)
+        names = _upload_outputs(dest_bucket, stage, paths)
+        # Copy to the public names while this record is still running, so a
+        # new export is rejected. succeeded is written only after that copy.
+        copied: list[str] = []
         try:
+            status.assert_running()
+            _publish_staged(dest_bucket, stage, dest_key, names, copied)
             status.write(
                 status="succeeded",
                 finishedAt=_utcnow(),
@@ -360,11 +393,10 @@ def main() -> int:
                 seconds=result.seconds,
             )
         except LeaseLost as exc:
-            _delete_staged(dest_bucket, dest_key, claim, names)
+            _delete_named(dest_bucket, stage, names)
+            _delete_named(dest_bucket, dest_key, copied)
             print(f"[FAIL] {exc}")
             return 1
-        try:
-            _publish_staged(dest_bucket, dest_key, claim, names)
         except Exception as exc:  # noqa: BLE001
             print(f"[FAIL] could not publish CAD export: {exc}")
             _record_failure(
@@ -373,9 +405,10 @@ def main() -> int:
                 finishedAt=_utcnow(),
                 error=f"Could not publish CAD export: {exc}",
             )
-            _delete_staged(dest_bucket, dest_key, claim, names)
+            _delete_named(dest_bucket, stage, names)
+            _delete_named(dest_bucket, dest_key, copied)
             return 1
-        _delete_staged(dest_bucket, dest_key, claim, names)
+        _delete_named(dest_bucket, stage, names)
         print(f"[OK] {result.message} in {result.seconds:.1f}s")
         return 0
     except LeaseLost as exc:

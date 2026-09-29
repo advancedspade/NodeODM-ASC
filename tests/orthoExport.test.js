@@ -16,9 +16,11 @@ const {
     jobResourceName,
     newExportClaim,
     buildQueuedExport,
+    cadStagePrefix,
     QUEUED_STALE_MS,
     RUNNING_STALE_MS
 } = require("../libs/orthoExport");
+const { isDownloadableProjectRelativePath } = require("../libs/gcsProjectName");
 
 function test(name, fn) {
     try {
@@ -94,6 +96,17 @@ test("queued export carries a claim the worker must present", () => {
     assert.strictEqual(queued.claim, claim);
     assert.strictEqual(queued.execution, null);
     assert.throws(() => buildQueuedExport({}, 0, "", "2026-09-29T00:00:00.000Z"));
+});
+
+test("staged outputs live outside every project prefix", () => {
+    const stage = cadStagePrefix("outputs", "Job_A", "abc");
+    assert.strictEqual(stage, "outputs/.uploads/cad-export/Job_A/abc");
+    assert.strictEqual(cadStagePrefix("outputs/", "Job_A", "abc"), stage);
+    assert.strictEqual(cadStagePrefix("", "Job_A", "abc"), ".uploads/cad-export/Job_A/abc");
+    assert.strictEqual(cadStagePrefix("outputs", "", "abc"), "");
+    assert.strictEqual(cadStagePrefix("outputs", "Job_A", ""), "");
+    // The project file browser never lists this subtree even if it shared a prefix.
+    assert.strictEqual(isDownloadableProjectRelativePath(".uploads/cad-export/Job_A/abc/odm_orthophoto_small.tif"), false);
 });
 
 test("job resource name must be a Cloud Run jobs path", () => {

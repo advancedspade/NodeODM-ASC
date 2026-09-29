@@ -416,6 +416,8 @@ def test_status_fence() -> None:
     check("a claim owns only its own record", gcs_export.claim_owns({"claim": "a"}, "a"))
     check("a different claim does not own the record", not gcs_export.claim_owns({"claim": "a"}, "b"))
     check("an empty claim owns nothing", not gcs_export.claim_owns({"claim": ""}, ""))
+    check("a running record may publish", gcs_export.publish_allowed({"claim": "a", "status": "running"}, "a"))
+    check("a succeeded record may not publish", not gcs_export.publish_allowed({"claim": "a", "status": "succeeded"}, "a"))
 
     blob = _StatusBlob({"claim": "ours", "status": "queued", "startedAt": "t0"}, 7)
     status = gcs_export._Status("b", "k", "ours", blob=blob)
@@ -456,6 +458,14 @@ def test_status_fence() -> None:
         refused = True
     check("output publish is refused when the claim changed", refused)
 
+    gcs_export._Status("b", "k", "ours", blob=_StatusBlob({"claim": "ours", "status": "running"}, 4)).assert_running()
+    inactive = False
+    try:
+        gcs_export._Status("b", "k", "ours", blob=_StatusBlob({"claim": "ours", "status": "succeeded"}, 4)).assert_running()
+    except gcs_export.LeaseLost:
+        inactive = True
+    check("publish is refused once the record is no longer running", inactive)
+
 
 def test_gcs_uri() -> None:
     print("\n-- gs:// paths --")
@@ -476,6 +486,22 @@ def test_gcs_uri() -> None:
     except ValueError:
         raised = True
     check("parse_gs rejects a URI with no object", raised)
+
+    dest_key = "outputs/p/odm_orthophoto"
+    check("stage_key accepts the .uploads staging area",
+          gcs_export.stage_key("gs://b/outputs/.uploads/cad-export/p/claim1", "b", dest_key)
+          == "outputs/.uploads/cad-export/p/claim1")
+    for bad in ("gs://other/outputs/.uploads/cad-export/p/claim1",
+                "gs://b/outputs/p/odm_orthophoto/.cad-claim/claim1",
+                "gs://b/outputs/p/staging",
+                "gs://b/outputs/p/odm_orthophoto",
+                ""):
+        rejected = False
+        try:
+            gcs_export.stage_key(bad, "b", dest_key)
+        except ValueError:
+            rejected = True
+        check(f"stage_key rejects {bad or 'an empty prefix'!r}", rejected)
 
 
 def main() -> int:

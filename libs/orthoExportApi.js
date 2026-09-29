@@ -18,6 +18,7 @@ const {
     ORTHO_REL,
     STATUS_REL,
     OUTPUT_REL,
+    cadStagePrefix,
     parseExportRequest,
     exportIsActive,
     jobResourceName,
@@ -29,10 +30,15 @@ const {
 
 let cloudAuth = null;
 
-function projectBase(projectName) {
+function sanitizedProject(projectName) {
     const sanitized = sanitizeProjectName(projectName, "");
     if (!sanitized || sanitized !== String(projectName || "").trim()) return "";
-    return gcsDestPathForProject(sanitized, config.gcsUploadPrefix);
+    return sanitized;
+}
+
+function projectBase(projectName) {
+    const sanitized = sanitizedProject(projectName);
+    return sanitized ? gcsDestPathForProject(sanitized, config.gcsUploadPrefix) : "";
 }
 
 function objectPath(base, rel) {
@@ -217,9 +223,11 @@ async function handleOrthoExport(req, res) {
         return res.status(409).json({ error: "A CAD export is already running for this project." });
     }
 
+    const stagePrefix = cadStagePrefix(config.gcsUploadPrefix, sanitizedProject(projectName), claim);
     const env = {
         CAD_EXPORT_SOURCE: `gs://${config.gcsBucket}/${orthoPath}`,
         CAD_EXPORT_DEST_PREFIX: `gs://${config.gcsBucket}/${base}/odm_orthophoto`,
+        CAD_EXPORT_STAGE_PREFIX: `gs://${config.gcsBucket}/${stagePrefix}`,
         CAD_EXPORT_GSD: String(params.gsd),
         CAD_EXPORT_UNIT: params.unit,
         CAD_EXPORT_KEEP_CRS: params.keepCrs ? "true" : "false",

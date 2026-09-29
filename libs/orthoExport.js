@@ -30,6 +30,19 @@ const ORTHO_REL = "odm_orthophoto/odm_orthophoto.tif";
 const STATUS_REL = "odm_orthophoto/cad_export.json";
 const OUTPUT_REL = "odm_orthophoto/odm_orthophoto_small.tif";
 
+// Under .uploads, which listProjectFiles and /download already omit, and
+// outside every project prefix (project names cannot start with a dot).
+// The bucket lifecycle rule for this prefix removes staged files an
+// interrupted execution leaves behind.
+const STAGE_ROOT = ".uploads/cad-export";
+
+function cadStagePrefix(uploadPrefix, sanitizedName, claim) {
+    if (!sanitizedName || !claim) return "";
+    const prefix = String(uploadPrefix || "").replace(/\/$/, "");
+    const rel = `${STAGE_ROOT}/${sanitizedName}/${claim}`;
+    return prefix ? `${prefix}/${rel}` : rel;
+}
+
 function parseExportRequest(body) {
     const src = body && typeof body === "object" ? body : {};
     const gsd = Number(src.gsd);
@@ -117,6 +130,8 @@ module.exports = {
     ORTHO_REL,
     STATUS_REL,
     OUTPUT_REL,
+    STAGE_ROOT,
+    cadStagePrefix,
     parseExportRequest,
     exportIsActive,
     jobResourceName,

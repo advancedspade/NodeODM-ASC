@@ -2225,6 +2225,8 @@ $(function() {
                     '" style="margin-right:0.7rem;font-size:0.8125rem">Preview orthophoto</button>');
             }
             if (ortho) links.push(makeLink("Orthophoto (GeoTIFF)", ortho.path));
+            var cadOrtho = files.find(function(f) { return f.path === "odm_orthophoto/odm_orthophoto_small.tif"; });
+            if (cadOrtho) links.push(makeLink("CAD orthophoto", cadOrtho.path));
             if (pc) links.push(makeLink("Point Cloud", pc.path));
             if (report) links.push(makeLink("Report PDF", report.path));
             if (links.length) {
@@ -3967,6 +3969,242 @@ $(function() {
         return result;
     }
 
+    var NDM_CAD_EPSG = [
+        [6416, "NAD83(2011) California zone 1 (ftUS)"],
+        [6418, "NAD83(2011) California zone 2 (ftUS)"],
+        [6420, "NAD83(2011) California zone 3 (ftUS)"],
+        [6422, "NAD83(2011) California zone 4 (ftUS)"],
+        [6424, "NAD83(2011) California zone 5 (ftUS)"],
+        [6426, "NAD83(2011) California zone 6 (ftUS)"],
+        [2225, "NAD83 California zone 1 (ftUS)"],
+        [2226, "NAD83 California zone 2 (ftUS)"],
+        [2227, "NAD83 California zone 3 (ftUS)"],
+        [2228, "NAD83 California zone 4 (ftUS)"],
+        [2229, "NAD83 California zone 5 (ftUS)"],
+        [2230, "NAD83 California zone 6 (ftUS)"],
+        [32610, "WGS 84 / UTM zone 10N"],
+        [32611, "WGS 84 / UTM zone 11N"]
+    ];
+
+    function ndmCadExportUrl(projectName) {
+        return ndmApi("/gcs/projects/" + encodeURIComponent(projectName) + "/ortho-export") + ndmTokenQs();
+    }
+
+    function ndmCadExportDescribe(data) {
+        var doc = data && data.status;
+        if (!doc) return "";
+        if (doc.status === "queued") return "Queued. The export worker is starting.";
+        if (doc.status === "running") return "Export running. A large orthophoto can take a while.";
+        if (doc.status === "failed") return doc.error || "Export failed.";
+        if (doc.status === "succeeded") {
+            var verify = doc.verify && doc.verify.message ? " " + doc.verify.message : "";
+            return "CAD orthophoto is ready." + verify;
+        }
+        return "";
+    }
+
+    function ndmCadExportMount(host, projectName) {
+        if (host._ndmCadTimer) {
+            clearInterval(host._ndmCadTimer);
+            host._ndmCadTimer = null;
+        }
+        ndmGcsGet(ndmCadExportUrl(projectName)).done(function(data) {
+            if (!data || data.configured === false) return;
+            ndmCadExportRender(host, projectName, data);
+        });
+    }
+
+    function ndmCadExportRender(host, projectName, data) {
+        host.innerHTML = "";
+        var title = document.createElement("div");
+        title.textContent = "CAD orthophoto";
+        title.style.cssText = "font-size:0.8125rem;font-weight:600;margin-bottom:0.35rem";
+        host.appendChild(title);
+
+        var row = document.createElement("div");
+        row.style.cssText = "display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center";
+
+        var gsd = document.createElement("input");
+        gsd.type = "number";
+        gsd.min = "0.01";
+        gsd.step = "any";
+        gsd.value = "5";
+        gsd.className = "ndm-input";
+        gsd.style.cssText = "width:5rem";
+        gsd.setAttribute("aria-label", "Ground resolution");
+
+        var unit = document.createElement("select");
+        unit.className = "ndm-select";
+        unit.setAttribute("aria-label", "Ground resolution unit");
+        [["cm", "cm"], ["m", "m"], ["ft (US survey)", "ft (US survey)"]].forEach(function(pair) {
+            var opt = document.createElement("option");
+            opt.value = pair[0];
+            opt.textContent = pair[1];
+            unit.appendChild(opt);
+        });
+
+        var keep = document.createElement("input");
+        keep.type = "radio";
+        keep.name = "ndm-cad-crs-" + projectName + "-" + Date.now();
+        keep.checked = true;
+        var reproject = document.createElement("input");
+        reproject.type = "radio";
+        reproject.name = keep.name;
+
+        var keepLabel = document.createElement("label");
+        keepLabel.className = "checkbox-row";
+        keepLabel.appendChild(keep);
+        var keepText = document.createElement("span");
+        keepText.textContent = "Keep source CRS";
+        keepLabel.appendChild(keepText);
+
+        var reprojectLabel = document.createElement("label");
+        reprojectLabel.className = "checkbox-row";
+        reprojectLabel.appendChild(reproject);
+        var reprojectText = document.createElement("span");
+        reprojectText.textContent = "Reproject";
+        reprojectLabel.appendChild(reprojectText);
+
+        var epsg = document.createElement("select");
+        epsg.className = "ndm-select";
+        epsg.disabled = true;
+        epsg.setAttribute("aria-label", "Target coordinate system");
+        var placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Select a zone";
+        epsg.appendChild(placeholder);
+        NDM_CAD_EPSG.forEach(function(pair) {
+            var opt = document.createElement("option");
+            opt.value = String(pair[0]);
+            opt.textContent = "EPSG:" + pair[0] + " " + pair[1];
+            epsg.appendChild(opt);
+        });
+        var other = document.createElement("option");
+        other.value = "other";
+        other.textContent = "Other EPSG";
+        epsg.appendChild(other);
+
+        var epsgOther = document.createElement("input");
+        epsgOther.type = "number";
+        epsgOther.className = "ndm-input";
+        epsgOther.placeholder = "EPSG";
+        epsgOther.style.cssText = "width:6rem";
+        epsgOther.hidden = true;
+        epsgOther.setAttribute("aria-label", "Other EPSG code");
+
+        function syncCrs() {
+            var on = reproject.checked;
+            epsg.disabled = !on;
+            epsgOther.hidden = !on || epsg.value !== "other";
+            epsgOther.disabled = !on || epsg.value !== "other";
+        }
+        keep.addEventListener("change", syncCrs);
+        reproject.addEventListener("change", syncCrs);
+        epsg.addEventListener("change", syncCrs);
+
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "btn-primary";
+        button.textContent = "Export";
+        button.style.fontSize = "0.8125rem";
+
+        var note = document.createElement("div");
+        note.className = "file-meta";
+        note.style.marginTop = "0.35rem";
+        note.textContent = ndmCadExportDescribe(data);
+
+        function setBusy(busy) {
+            button.disabled = busy;
+            gsd.disabled = busy;
+            unit.disabled = busy;
+            keep.disabled = busy;
+            reproject.disabled = busy;
+            if (!busy) syncCrs();
+            else {
+                epsg.disabled = true;
+                epsgOther.disabled = true;
+            }
+        }
+        if (data && data.active) setBusy(true);
+
+        function poll() {
+            ndmGcsGet(ndmCadExportUrl(projectName)).done(function(next) {
+                if (!next) return;
+                note.textContent = ndmCadExportDescribe(next);
+                if (next.active) return;
+                if (host._ndmCadTimer) {
+                    clearInterval(host._ndmCadTimer);
+                    host._ndmCadTimer = null;
+                }
+                setBusy(false);
+                if (next.output) {
+                    var link = host.querySelector("[data-ndm-cad-download]");
+                    if (!link) {
+                        link = document.createElement("a");
+                        link.dataset.ndmCadDownload = "1";
+                        link.className = "btn-ghost";
+                        link.style.cssText = "font-size:0.8125rem;margin-left:0.5rem";
+                        link.textContent = "Download CAD orthophoto";
+                        button.parentNode.appendChild(link);
+                    }
+                    link.href = ndmProjectsDownloadFileUrl(projectName, next.output);
+                }
+            });
+        }
+        if (data && data.active) {
+            host._ndmCadTimer = setInterval(poll, 8000);
+        }
+
+        button.addEventListener("click", function() {
+            var body = {
+                gsd: Number(gsd.value),
+                unit: unit.value,
+                keepCrs: keep.checked
+            };
+            if (!keep.checked) {
+                body.epsg = epsg.value === "other" ? Number(epsgOther.value) : Number(epsg.value);
+            }
+            setBusy(true);
+            note.textContent = "Starting export…";
+            $.ajax($.extend({
+                url: ndmCadExportUrl(projectName),
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(body),
+                dataType: "json"
+            }, ndmGcsAjaxOpts)).done(function(next) {
+                note.textContent = ndmCadExportDescribe(next) || "Queued. The export worker is starting.";
+                if (next && next.active && !host._ndmCadTimer) {
+                    host._ndmCadTimer = setInterval(poll, 8000);
+                }
+            }).fail(function(xhr) {
+                setBusy(false);
+                var msg = "Could not start the export.";
+                if (xhr && xhr.responseJSON && xhr.responseJSON.error) msg = xhr.responseJSON.error;
+                note.textContent = msg;
+            });
+        });
+
+        row.appendChild(gsd);
+        row.appendChild(unit);
+        row.appendChild(keepLabel);
+        row.appendChild(reprojectLabel);
+        row.appendChild(epsg);
+        row.appendChild(epsgOther);
+        row.appendChild(button);
+        host.appendChild(row);
+        host.appendChild(note);
+        if (data && data.output && !(data.active)) {
+            var ready = document.createElement("a");
+            ready.dataset.ndmCadDownload = "1";
+            ready.className = "btn-ghost";
+            ready.style.cssText = "font-size:0.8125rem;margin-left:0.5rem";
+            ready.textContent = "Download CAD orthophoto";
+            ready.href = ndmProjectsDownloadFileUrl(projectName, data.output);
+            button.parentNode.appendChild(ready);
+        }
+    }
+
     function ndmProjectsBuildFileBrowser(proj, container) {
         container.innerHTML = '<p class="file-meta" style="padding:0.5rem 0">Loading files…</p>';
         var url = ndmApi("/gcs/projects/" + encodeURIComponent(proj.name) + "/files") + ndmTokenQs();
@@ -4005,6 +4243,16 @@ $(function() {
                     quickDiv.appendChild(a);
                     shortcuts.push(ortho.path);
                 }
+                var cadOrtho = files.find(function(f) { return f.path === "odm_orthophoto/odm_orthophoto_small.tif"; });
+                if (cadOrtho) {
+                    var cadLink = document.createElement("a");
+                    cadLink.href = ndmProjectsDownloadFileUrl(proj.name, cadOrtho.path);
+                    cadLink.className = "btn-ghost";
+                    cadLink.textContent = "CAD orthophoto";
+                    cadLink.style.fontSize = "0.8125rem";
+                    quickDiv.appendChild(cadLink);
+                    shortcuts.push(cadOrtho.path);
+                }
                 if (pointCloud) {
                     var a2 = document.createElement("a");
                     a2.href = ndmProjectsDownloadFileUrl(proj.name, pointCloud.path);
@@ -4024,6 +4272,14 @@ $(function() {
                     shortcuts.push(report.path);
                 }
                 container.appendChild(quickDiv);
+            }
+
+            if (ortho) {
+                var exportHost = document.createElement("div");
+                exportHost.className = "ndm-cad-export";
+                exportHost.style.cssText = "margin-bottom:0.75rem";
+                container.appendChild(exportHost);
+                ndmCadExportMount(exportHost, proj.name);
             }
 
             var selectedPaths = [];

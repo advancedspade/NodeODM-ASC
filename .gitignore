@@ -47,6 +47,10 @@ apps/
 nodeodm.exe
 dist/
 
+# Python bytecode from the CAD export worker
+__pycache__/
+*.pyc
+
 # Local GCS / secrets (never commit)
 .env
 .env.gcs

@@ -649,6 +649,40 @@ module.exports = {
         });
     },
 
+    readObjectText: function(objectPath, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const file = bucket.file(objectPath);
+        file.getMetadata((err, metadata) => {
+            if (err) return cb(err);
+            file.download((dlErr, contents) => {
+                if (dlErr) return cb(dlErr);
+                cb(null, {
+                    text: contents.toString("utf8"),
+                    generation: Number(metadata.generation) || 0
+                });
+            });
+        });
+    },
+
+    /**
+     * @param {number} options.ifGenerationMatch 0 creates the object only when it is absent.
+     */
+    saveObjectText: function(objectPath, text, options, cb) {
+        if (!bucket) {
+            return cb(new Error("GCS is not initialized"));
+        }
+        const opts = {
+            resumable: false,
+            contentType: (options && options.contentType) || "application/json"
+        };
+        if (options && options.ifGenerationMatch !== undefined && options.ifGenerationMatch !== null) {
+            opts.preconditionOpts = { ifGenerationMatch: Number(options.ifGenerationMatch) };
+        }
+        bucket.file(objectPath).save(Buffer.from(String(text)), opts, cb);
+    },
+
     deleteObjects: function(objectPaths, cb) {
         if (!bucket) {
             return cb(new Error("GCS is not initialized"));

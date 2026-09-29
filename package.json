@@ -4,7 +4,7 @@
   "description": "REST API to access ODM",
   "main": "index.js",
   "scripts": {
-    "test": "node tests/orthophotoTiles.test.js && node tests/orthophotoTileRoutes.test.js",
+    "test": "node tests/orthophotoTiles.test.js && node tests/orthophotoTileRoutes.test.js && node tests/orthoExport.test.js",
     "winbundle": "node scripts/winbundle.js"
   },
   "repository": {

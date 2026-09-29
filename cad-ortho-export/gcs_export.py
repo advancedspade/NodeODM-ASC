@@ -274,8 +274,10 @@ def main() -> int:
         if src_bucket != dest_bucket:
             raise ValueError("Source and destination must be in the same bucket.")
         stage = stage_key(os.environ.get("CAD_EXPORT_STAGE_PREFIX", ""), dest_bucket, dest_key)
-    except (ValueError, TypeError) as exc:
-        print(f"[FAIL] {exc}")
+    except (ValueError, TypeError, ImportError, OSError) as exc:
+        # ImportError/OSError here means the image itself is broken. Record it
+        # so the status does not sit on queued until the stale window expires.
+        print(f"[FAIL] {type(exc).__name__}: {exc}")
         dest_raw = os.environ.get("CAD_EXPORT_DEST_PREFIX", "").strip()
         try:
             fail_bucket, fail_key = split_gs_prefix(dest_raw)

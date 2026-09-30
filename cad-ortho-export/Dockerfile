@@ -17,6 +17,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# The rasterio wheel bundles GDAL but links libexpat from the OS, and the
+# slim image does not ship it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements-job.txt .
 RUN pip install --no-cache-dir -r requirements-job.txt
 

@@ -49,6 +49,7 @@ const authCheck = auth.getMiddleware();
 const taskNew = require('./libs/taskNew');
 const rtkApi = require('./libs/rtkApi');
 const gcsUploadApi = require('./libs/gcsUploadApi');
+const orthoExportApi = require('./libs/orthoExportApi');
 const supportProxy = require('./libs/supportProxy');
 
 const formDataParser = multer().none();
@@ -90,6 +91,9 @@ app.get('/auth/bootstrap', (req, res) => {
                 directUpload: true
             } : { enabled: false },
             feedback: { enabled: supportProxy.enabled() },
+            maps: {
+                mapboxAccessToken: config.mapboxAccessToken || null
+            },
             oauthSessionDays: config.oauthSessionDays || 30
         };
         return res.json(payload);
@@ -101,7 +105,10 @@ app.get('/auth/bootstrap', (req, res) => {
             enabled: true,
             directUpload: true
         } : { enabled: false },
-        feedback: { enabled: supportProxy.enabled() }
+        feedback: { enabled: supportProxy.enabled() },
+        maps: {
+            mapboxAccessToken: config.mapboxAccessToken || null
+        }
     });
 });
 app.get('/', (req, res) => {
@@ -194,6 +201,10 @@ app.get('/gcs/projects/:projectName/inputs', authCheck, gcsUploadApi.handleListP
 app.get('/gcs/projects/:projectName/files', authCheck, gcsUploadApi.handleListProjectFiles);
 app.get('/gcs/projects/:projectName/download', authCheck, gcsUploadApi.handleDownloadProjectFile);
 app.get('/gcs/projects/:projectName/archive', authCheck, gcsUploadApi.handleArchiveProject);
+app.get('/gcs/projects/:projectName/orthophoto-tiles/info', authCheck, gcsUploadApi.handleOrthophotoTilesInfo);
+app.get('/gcs/projects/:projectName/orthophoto-tiles/:z/:x/:y.png', authCheck, gcsUploadApi.handleOrthophotoTile);
+app.get('/gcs/projects/:projectName/ortho-export', authCheck, orthoExportApi.handleOrthoExportGet);
+app.post('/gcs/projects/:projectName/ortho-export', authCheck, jsonBodyParser, orthoExportApi.handleOrthoExportPost);
 app.post('/gcs/upload/init', authCheck, urlEncodedBodyParser, jsonBodyParser, gcsUploadApi.handleInit);
 app.post('/gcs/upload/:uploadId/sign', authCheck, gcsUploadApi.assignUpload, jsonBodyParser, gcsUploadApi.handleSign);
 app.post('/gcs/upload/:uploadId/complete', authCheck, gcsUploadApi.assignUpload, jsonBodyParser, gcsUploadApi.handleComplete);

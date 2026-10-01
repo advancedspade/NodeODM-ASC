@@ -568,6 +568,11 @@ $(function() {
     })();
 
     var DEFAULT_GPS_VIEW = { center: [20, 0], zoom: 2 };
+    var ndmMapboxAccessToken = null;
+    var MAPBOX_ATTR =
+        '&copy; <a href="https://www.mapbox.com/about/maps/">Mapbox</a> ' +
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
+        '<strong><a href="https://www.mapbox.com/map-feedback/" target="_blank" rel="noopener">Improve this map</a></strong>';
     var ndmGpsMap = null;
     var ndmGpsMarkers = null;
     var gpsMapTimer = null;
@@ -593,6 +598,53 @@ $(function() {
     var ndmBtnDeselectEl = null;
     var ndmBtnPolyEl = null;
     var ndmDeselectToolsAdded = false;
+    var ndmOrthoPreviewMap = null;
+    var ndmOrthoPreviewLayer = null;
+    var ndmOrthoPreviewReturnFocus = null;
+    var ndmOrthoPreviewProject = null;
+
+    function ndmMapboxToken() {
+        return (ndmMapboxAccessToken && String(ndmMapboxAccessToken).trim()) || "";
+    }
+
+    function ndmEnsureMapboxWordmark(map) {
+        if (!map || !map.getContainer) return;
+        var container = map.getContainer();
+        if (!container || container.querySelector(".ndm-mapbox-wordmark")) return;
+        var a = document.createElement("a");
+        a.className = "ndm-mapbox-wordmark";
+        a.href = "https://www.mapbox.com/about/maps/";
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = "Mapbox";
+        a.setAttribute("aria-label", "Mapbox");
+        container.appendChild(a);
+    }
+
+    /** Shared Mapbox dark raster basemap for GPS map and orthophoto preview. */
+    function ndmCreateMapboxBasemap() {
+        var token = ndmMapboxToken();
+        if (!token || typeof L === "undefined") return null;
+        return L.tileLayer(
+            "https://api.mapbox.com/styles/v1/mapbox/dark-v11/tiles/256/{z}/{x}/{y}@2x?access_token=" +
+                encodeURIComponent(token),
+            {
+                attribution: MAPBOX_ATTR,
+                tileSize: 256,
+                maxZoom: 22,
+                maxNativeZoom: 22
+            }
+        );
+    }
+
+    function ndmSetMapGpsBasemapStatus() {
+        var el = document.getElementById("mapGpsStatus");
+        if (!el || !ndmGpsMap) return;
+        if (!ndmMapboxToken()) {
+            el.textContent = "Mapbox token not configured — GPS pins still work; basemap tiles will not load.";
+            el.classList.remove("loading");
+        }
+    }
 
     function ndmPhotoKey(file) {
         if (!file) return "";
@@ -775,11 +827,13 @@ $(function() {
     function initNdmGpsMap() {
         if (ndmGpsMap || typeof L === "undefined" || !document.getElementById("mapGps")) return;
         ndmGpsMap = L.map("mapGps", { scrollWheelZoom: true }).setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
-        L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-            attribution: "&copy; OpenStreetMap &copy; CARTO",
-            subdomains: "abcd",
-            maxZoom: 20
-        }).addTo(ndmGpsMap);
+        var basemap = ndmCreateMapboxBasemap();
+        if (basemap) {
+            basemap.addTo(ndmGpsMap);
+            ndmEnsureMapboxWordmark(ndmGpsMap);
+        } else {
+            ndmSetMapGpsBasemapStatus();
+        }
         ndmGpsMarkers = L.layerGroup().addTo(ndmGpsMap);
         $(window).on("resize.ndmGps", function() {
             if (ndmGpsMap) ndmGpsMap.invalidateSize();
@@ -1552,6 +1606,9 @@ $(function() {
         if (d.gcsUpload) {
             ndmGcsApplyStatus(d.gcsUpload);
         }
+        if (d.maps && d.maps.mapboxAccessToken) {
+            ndmMapboxAccessToken = d.maps.mapboxAccessToken;
+        }
         ndmFeedbackApplyStatus(d.feedback);
     });
 
@@ -1976,6 +2033,154 @@ $(function() {
     Task.prototype.download = function() {
         location.href = this.downloadLink();
     };
+
+    function ndmOrthoPreviewEl(id) {
+        return document.getElementById(id);
+    }
+
+    function ndmOrthoPreviewSetStatus(msg) {
+        var el = ndmOrthoPreviewEl("ndmOrthoPreviewStatus");
+        if (el) el.textContent = msg || "";
+    }
+
+    function ndmOrthoTileUrlTemplate(projectName) {
+        var qs = ndmTokenQs();
+        return ndmApi("/gcs/projects/" + encodeURIComponent(projectName) + "/orthophoto-tiles/{z}/{x}/{y}.png") + qs;
+    }
+
+    function ndmOrthoClearPreviewLayer() {
+        if (ndmOrthoPreviewMap && ndmOrthoPreviewLayer) {
+            try { ndmOrthoPreviewMap.removeLayer(ndmOrthoPreviewLayer); } catch (e) { /* ignore */ }
+        }
+        ndmOrthoPreviewLayer = null;
+    }
+
+    function ndmOrthoEnsurePreviewMap() {
+        if (ndmOrthoPreviewMap || typeof L === "undefined") return ndmOrthoPreviewMap;
+        var el = ndmOrthoPreviewEl("ndmOrthoPreviewMap");
+        if (!el) return null;
+        ndmOrthoPreviewMap = L.map(el, { scrollWheelZoom: true }).setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
+        var basemap = ndmCreateMapboxBasemap();
+        if (basemap) {
+            basemap.addTo(ndmOrthoPreviewMap);
+            ndmEnsureMapboxWordmark(ndmOrthoPreviewMap);
+        }
+        return ndmOrthoPreviewMap;
+    }
+
+    function ndmOrthoPreviewClose() {
+        var modal = ndmOrthoPreviewEl("ndmOrthoPreviewModal");
+        if (modal) {
+            modal.hidden = true;
+            modal.setAttribute("aria-hidden", "true");
+        }
+        document.body.classList.remove("ndm-modal-open");
+        ndmOrthoClearPreviewLayer();
+        ndmOrthoPreviewProject = null;
+        ndmOrthoPreviewSetStatus("");
+        if (ndmOrthoPreviewReturnFocus && ndmOrthoPreviewReturnFocus.focus) {
+            ndmOrthoPreviewReturnFocus.focus();
+        }
+        ndmOrthoPreviewReturnFocus = null;
+    }
+
+    function ndmOrthoPreviewOpen(projectName, trigger) {
+        var name = String(projectName || "").trim();
+        if (!name || typeof L === "undefined") return;
+        var modal = ndmOrthoPreviewEl("ndmOrthoPreviewModal");
+        if (!modal) return;
+
+        ndmOrthoPreviewReturnFocus = trigger || document.activeElement;
+        ndmOrthoPreviewProject = name;
+        modal.hidden = false;
+        modal.setAttribute("aria-hidden", "false");
+        document.body.classList.add("ndm-modal-open");
+
+        var title = ndmOrthoPreviewEl("ndmOrthoPreviewTitle");
+        if (title) title.textContent = "Orthophoto preview — " + name;
+        ndmOrthoPreviewSetStatus("Loading orthophoto tiles…");
+
+        var map = ndmOrthoEnsurePreviewMap();
+        ndmOrthoClearPreviewLayer();
+        if (!ndmMapboxToken()) {
+            ndmOrthoPreviewSetStatus("Loading orthophoto tiles… (Mapbox basemap token not configured)");
+        }
+
+        setTimeout(function() {
+            if (map) map.invalidateSize();
+        }, 50);
+
+        var infoUrl = ndmApi("/gcs/projects/" + encodeURIComponent(name) + "/orthophoto-tiles/info") + ndmTokenQs();
+        ndmGcsGet(infoUrl).done(function(meta) {
+            if (ndmOrthoPreviewProject !== name) return;
+            if (!meta || !meta.bounds || !meta.bounds.length) {
+                ndmOrthoPreviewSetStatus("Orthophoto tiles are not available for this project.");
+                return;
+            }
+            var bounds = meta.bounds;
+            var latLngBounds = L.latLngBounds(
+                [bounds[1], bounds[0]],
+                [bounds[3], bounds[2]]
+            );
+            var layer = L.tileLayer(ndmOrthoTileUrlTemplate(name), {
+                tms: true,
+                opacity: 0.95,
+                minZoom: typeof meta.minZoom === "number" ? Math.max(0, meta.minZoom - 2) : 0,
+                maxZoom: 22,
+                maxNativeZoom: typeof meta.maxZoom === "number" ? meta.maxZoom : 22,
+                bounds: latLngBounds,
+                errorTileUrl: ""
+            });
+            var tileErrors = 0;
+            layer.on("tileerror", function() {
+                tileErrors += 1;
+                if (tileErrors === 3) {
+                    ndmOrthoPreviewSetStatus("Some orthophoto tiles failed to load. Check auth or that --tiles ran for this job.");
+                }
+            });
+            layer.addTo(map);
+            ndmOrthoPreviewLayer = layer;
+            map.fitBounds(latLngBounds, { padding: [24, 24], maxZoom: (meta.maxZoom || 18) });
+            ndmOrthoPreviewSetStatus(meta.title ? ("Showing " + meta.title) : "Orthophoto overlay ready.");
+            setTimeout(function() {
+                if (map) map.invalidateSize();
+            }, 100);
+        }).fail(function(xhr) {
+            if (ndmOrthoPreviewProject !== name) return;
+            var status = xhr && xhr.status;
+            if (status === 401 || status === 403) {
+                ndmOrthoPreviewSetStatus("Not authorized to load orthophoto tiles.");
+            } else if (status === 404) {
+                ndmOrthoPreviewSetStatus("No orthophoto tiles found (job may have run without --tiles).");
+            } else {
+                ndmOrthoPreviewSetStatus("Failed to load orthophoto preview.");
+            }
+        });
+
+        var closeBtn = ndmOrthoPreviewEl("ndmOrthoPreviewClose");
+        if (closeBtn) closeBtn.focus();
+    }
+
+    function ndmFilesHaveOrthophotoTiles(files) {
+        return !!(files || []).find(function(f) {
+            return f && f.path === "orthophoto_tiles/tilemapresource.xml";
+        });
+    }
+
+    function ndmMakeOrthoPreviewButton(projectName, className) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = className || "btn-ghost";
+        btn.textContent = "Preview orthophoto";
+        btn.style.fontSize = "0.8125rem";
+        btn.addEventListener("click", function(ev) {
+            ev.preventDefault();
+            ndmOrthoPreviewOpen(projectName, btn);
+        });
+        return btn;
+    }
+
+
     Task.prototype.populateQuickDownloads = function() {
         var self = this;
         var name = self.info() && self.info().name;
@@ -2000,6 +2205,7 @@ $(function() {
             if (!files.length) return;
             var links = [];
             var ortho = files.find(function(f) { return f.path === "odm_orthophoto/odm_orthophoto.tif"; });
+            var hasTiles = ndmFilesHaveOrthophotoTiles(files);
             var pc = files.find(function(f) {
                 return f.path === "odm_filterpoints/point_cloud.ply" ||
                     f.path === "odm_georeferencing/odm_georeferenced_model.laz" ||
@@ -2013,11 +2219,25 @@ $(function() {
                     qs + sep + "path=" + encodeURIComponent(filePath);
                 return '<a href="' + href + '" style="margin-right:0.7rem;font-size:0.8125rem">' + label + '</a>';
             }
+            if (hasTiles) {
+                links.push('<button type="button" class="ndm-ortho-preview-link btn-ghost" data-ndm-ortho-preview="' +
+                    sanitized.replace(/"/g, "") +
+                    '" style="margin-right:0.7rem;font-size:0.8125rem">Preview orthophoto</button>');
+            }
             if (ortho) links.push(makeLink("Orthophoto (GeoTIFF)", ortho.path));
+            var cadOrtho = files.find(function(f) { return f.path === "odm_orthophoto/odm_orthophoto_small.tif"; });
+            if (cadOrtho) links.push(makeLink("CAD orthophoto", cadOrtho.path));
             if (pc) links.push(makeLink("Point Cloud", pc.path));
             if (report) links.push(makeLink("Report PDF", report.path));
             if (links.length) {
                 el.innerHTML = '<strong style="display:block;margin-top:0.25rem">Quick:</strong> ' + links.join("");
+                var previewBtn = el.querySelector("[data-ndm-ortho-preview]");
+                if (previewBtn) {
+                    previewBtn.addEventListener("click", function(ev) {
+                        ev.preventDefault();
+                        ndmOrthoPreviewOpen(previewBtn.getAttribute("data-ndm-ortho-preview"), previewBtn);
+                    });
+                }
             }
         });
     };
@@ -3749,6 +3969,242 @@ $(function() {
         return result;
     }
 
+    var NDM_CAD_EPSG = [
+        [6416, "NAD83(2011) California zone 1 (ftUS)"],
+        [6418, "NAD83(2011) California zone 2 (ftUS)"],
+        [6420, "NAD83(2011) California zone 3 (ftUS)"],
+        [6422, "NAD83(2011) California zone 4 (ftUS)"],
+        [6424, "NAD83(2011) California zone 5 (ftUS)"],
+        [6426, "NAD83(2011) California zone 6 (ftUS)"],
+        [2225, "NAD83 California zone 1 (ftUS)"],
+        [2226, "NAD83 California zone 2 (ftUS)"],
+        [2227, "NAD83 California zone 3 (ftUS)"],
+        [2228, "NAD83 California zone 4 (ftUS)"],
+        [2229, "NAD83 California zone 5 (ftUS)"],
+        [2230, "NAD83 California zone 6 (ftUS)"],
+        [32610, "WGS 84 / UTM zone 10N"],
+        [32611, "WGS 84 / UTM zone 11N"]
+    ];
+
+    function ndmCadExportUrl(projectName) {
+        return ndmApi("/gcs/projects/" + encodeURIComponent(projectName) + "/ortho-export") + ndmTokenQs();
+    }
+
+    function ndmCadExportDescribe(data) {
+        var doc = data && data.status;
+        if (!doc) return "";
+        if (doc.status === "queued") return "Queued. The export worker is starting.";
+        if (doc.status === "running") return "Export running. A large orthophoto can take a while.";
+        if (doc.status === "failed") return doc.error || "Export failed.";
+        if (doc.status === "succeeded") {
+            var verify = doc.verify && doc.verify.message ? " " + doc.verify.message : "";
+            return "CAD orthophoto is ready." + verify;
+        }
+        return "";
+    }
+
+    function ndmCadExportMount(host, projectName) {
+        if (host._ndmCadTimer) {
+            clearInterval(host._ndmCadTimer);
+            host._ndmCadTimer = null;
+        }
+        ndmGcsGet(ndmCadExportUrl(projectName)).done(function(data) {
+            if (!data || data.configured === false) return;
+            ndmCadExportRender(host, projectName, data);
+        });
+    }
+
+    function ndmCadExportRender(host, projectName, data) {
+        host.innerHTML = "";
+        var title = document.createElement("div");
+        title.textContent = "CAD orthophoto";
+        title.style.cssText = "font-size:0.8125rem;font-weight:600;margin-bottom:0.35rem";
+        host.appendChild(title);
+
+        var row = document.createElement("div");
+        row.style.cssText = "display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center";
+
+        var gsd = document.createElement("input");
+        gsd.type = "number";
+        gsd.min = "0.01";
+        gsd.step = "any";
+        gsd.value = "5";
+        gsd.className = "ndm-input";
+        gsd.style.cssText = "width:5rem";
+        gsd.setAttribute("aria-label", "Ground resolution");
+
+        var unit = document.createElement("select");
+        unit.className = "ndm-select";
+        unit.setAttribute("aria-label", "Ground resolution unit");
+        [["cm", "cm"], ["m", "m"], ["ft (US survey)", "ft (US survey)"]].forEach(function(pair) {
+            var opt = document.createElement("option");
+            opt.value = pair[0];
+            opt.textContent = pair[1];
+            unit.appendChild(opt);
+        });
+
+        var keep = document.createElement("input");
+        keep.type = "radio";
+        keep.name = "ndm-cad-crs-" + projectName + "-" + Date.now();
+        keep.checked = true;
+        var reproject = document.createElement("input");
+        reproject.type = "radio";
+        reproject.name = keep.name;
+
+        var keepLabel = document.createElement("label");
+        keepLabel.className = "checkbox-row";
+        keepLabel.appendChild(keep);
+        var keepText = document.createElement("span");
+        keepText.textContent = "Keep source CRS";
+        keepLabel.appendChild(keepText);
+
+        var reprojectLabel = document.createElement("label");
+        reprojectLabel.className = "checkbox-row";
+        reprojectLabel.appendChild(reproject);
+        var reprojectText = document.createElement("span");
+        reprojectText.textContent = "Reproject";
+        reprojectLabel.appendChild(reprojectText);
+
+        var epsg = document.createElement("select");
+        epsg.className = "ndm-select";
+        epsg.disabled = true;
+        epsg.setAttribute("aria-label", "Target coordinate system");
+        var placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "Select a zone";
+        epsg.appendChild(placeholder);
+        NDM_CAD_EPSG.forEach(function(pair) {
+            var opt = document.createElement("option");
+            opt.value = String(pair[0]);
+            opt.textContent = "EPSG:" + pair[0] + " " + pair[1];
+            epsg.appendChild(opt);
+        });
+        var other = document.createElement("option");
+        other.value = "other";
+        other.textContent = "Other EPSG";
+        epsg.appendChild(other);
+
+        var epsgOther = document.createElement("input");
+        epsgOther.type = "number";
+        epsgOther.className = "ndm-input";
+        epsgOther.placeholder = "EPSG";
+        epsgOther.style.cssText = "width:6rem";
+        epsgOther.hidden = true;
+        epsgOther.setAttribute("aria-label", "Other EPSG code");
+
+        function syncCrs() {
+            var on = reproject.checked;
+            epsg.disabled = !on;
+            epsgOther.hidden = !on || epsg.value !== "other";
+            epsgOther.disabled = !on || epsg.value !== "other";
+        }
+        keep.addEventListener("change", syncCrs);
+        reproject.addEventListener("change", syncCrs);
+        epsg.addEventListener("change", syncCrs);
+
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "btn-primary";
+        button.textContent = "Export";
+        button.style.fontSize = "0.8125rem";
+
+        var note = document.createElement("div");
+        note.className = "file-meta";
+        note.style.marginTop = "0.35rem";
+        note.textContent = ndmCadExportDescribe(data);
+
+        function setBusy(busy) {
+            button.disabled = busy;
+            gsd.disabled = busy;
+            unit.disabled = busy;
+            keep.disabled = busy;
+            reproject.disabled = busy;
+            if (!busy) syncCrs();
+            else {
+                epsg.disabled = true;
+                epsgOther.disabled = true;
+            }
+        }
+        if (data && data.active) setBusy(true);
+
+        function poll() {
+            ndmGcsGet(ndmCadExportUrl(projectName)).done(function(next) {
+                if (!next) return;
+                note.textContent = ndmCadExportDescribe(next);
+                if (next.active) return;
+                if (host._ndmCadTimer) {
+                    clearInterval(host._ndmCadTimer);
+                    host._ndmCadTimer = null;
+                }
+                setBusy(false);
+                if (next.output) {
+                    var link = host.querySelector("[data-ndm-cad-download]");
+                    if (!link) {
+                        link = document.createElement("a");
+                        link.dataset.ndmCadDownload = "1";
+                        link.className = "btn-ghost";
+                        link.style.cssText = "font-size:0.8125rem;margin-left:0.5rem";
+                        link.textContent = "Download CAD orthophoto";
+                        button.parentNode.appendChild(link);
+                    }
+                    link.href = ndmProjectsDownloadFileUrl(projectName, next.output);
+                }
+            });
+        }
+        if (data && data.active) {
+            host._ndmCadTimer = setInterval(poll, 8000);
+        }
+
+        button.addEventListener("click", function() {
+            var body = {
+                gsd: Number(gsd.value),
+                unit: unit.value,
+                keepCrs: keep.checked
+            };
+            if (!keep.checked) {
+                body.epsg = epsg.value === "other" ? Number(epsgOther.value) : Number(epsg.value);
+            }
+            setBusy(true);
+            note.textContent = "Starting export…";
+            $.ajax($.extend({
+                url: ndmCadExportUrl(projectName),
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(body),
+                dataType: "json"
+            }, ndmGcsAjaxOpts)).done(function(next) {
+                note.textContent = ndmCadExportDescribe(next) || "Queued. The export worker is starting.";
+                if (next && next.active && !host._ndmCadTimer) {
+                    host._ndmCadTimer = setInterval(poll, 8000);
+                }
+            }).fail(function(xhr) {
+                setBusy(false);
+                var msg = "Could not start the export.";
+                if (xhr && xhr.responseJSON && xhr.responseJSON.error) msg = xhr.responseJSON.error;
+                note.textContent = msg;
+            });
+        });
+
+        row.appendChild(gsd);
+        row.appendChild(unit);
+        row.appendChild(keepLabel);
+        row.appendChild(reprojectLabel);
+        row.appendChild(epsg);
+        row.appendChild(epsgOther);
+        row.appendChild(button);
+        host.appendChild(row);
+        host.appendChild(note);
+        if (data && data.output && !(data.active)) {
+            var ready = document.createElement("a");
+            ready.dataset.ndmCadDownload = "1";
+            ready.className = "btn-ghost";
+            ready.style.cssText = "font-size:0.8125rem;margin-left:0.5rem";
+            ready.textContent = "Download CAD orthophoto";
+            ready.href = ndmProjectsDownloadFileUrl(projectName, data.output);
+            button.parentNode.appendChild(ready);
+        }
+    }
+
     function ndmProjectsBuildFileBrowser(proj, container) {
         container.innerHTML = '<p class="file-meta" style="padding:0.5rem 0">Loading files…</p>';
         var url = ndmApi("/gcs/projects/" + encodeURIComponent(proj.name) + "/files") + ndmTokenQs();
@@ -3770,10 +4226,14 @@ $(function() {
             });
             var report = files.find(function(f) { return f.path === "odm_report/report.pdf"; });
 
-            if (ortho || pointCloud || report) {
+            var hasTiles = ndmFilesHaveOrthophotoTiles(files);
+            if (ortho || pointCloud || report || hasTiles) {
                 var quickDiv = document.createElement("div");
                 quickDiv.className = "ndm-projects-quick-links";
                 quickDiv.style.cssText = "margin-bottom:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap";
+                if (hasTiles) {
+                    quickDiv.appendChild(ndmMakeOrthoPreviewButton(proj.name));
+                }
                 if (ortho) {
                     var a = document.createElement("a");
                     a.href = ndmProjectsDownloadFileUrl(proj.name, ortho.path);
@@ -3782,6 +4242,16 @@ $(function() {
                     a.style.fontSize = "0.8125rem";
                     quickDiv.appendChild(a);
                     shortcuts.push(ortho.path);
+                }
+                var cadOrtho = files.find(function(f) { return f.path === "odm_orthophoto/odm_orthophoto_small.tif"; });
+                if (cadOrtho) {
+                    var cadLink = document.createElement("a");
+                    cadLink.href = ndmProjectsDownloadFileUrl(proj.name, cadOrtho.path);
+                    cadLink.className = "btn-ghost";
+                    cadLink.textContent = "CAD orthophoto";
+                    cadLink.style.fontSize = "0.8125rem";
+                    quickDiv.appendChild(cadLink);
+                    shortcuts.push(cadOrtho.path);
                 }
                 if (pointCloud) {
                     var a2 = document.createElement("a");
@@ -3802,6 +4272,14 @@ $(function() {
                     shortcuts.push(report.path);
                 }
                 container.appendChild(quickDiv);
+            }
+
+            if (ortho) {
+                var exportHost = document.createElement("div");
+                exportHost.className = "ndm-cad-export";
+                exportHost.style.cssText = "margin-bottom:0.75rem";
+                container.appendChild(exportHost);
+                ndmCadExportMount(exportHost, proj.name);
             }
 
             var selectedPaths = [];
@@ -5785,4 +6263,28 @@ $(function() {
             ndmGcsApplyStatus({ enabled: false, reason: "Could not reach GCS upload API." });
         });
     })();
+
+    (function ndmOrthoPreviewBindUi() {
+        var closeIds = ["ndmOrthoPreviewClose", "ndmOrthoPreviewDone", "ndmOrthoPreviewBackdrop"];
+        closeIds.forEach(function(id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            el.addEventListener("click", function(ev) {
+                ev.preventDefault();
+                ndmOrthoPreviewClose();
+            });
+        });
+        document.addEventListener("keydown", function(ev) {
+            if (ev.key !== "Escape") return;
+            var modal = document.getElementById("ndmOrthoPreviewModal");
+            if (modal && !modal.hidden) ndmOrthoPreviewClose();
+        });
+        $(window).on("resize.ndmOrthoPreview", function() {
+            var modal = document.getElementById("ndmOrthoPreviewModal");
+            if (ndmOrthoPreviewMap && modal && !modal.hidden) {
+                ndmOrthoPreviewMap.invalidateSize();
+            }
+        });
+    })();
+
 });

@@ -22,6 +22,11 @@ const GCS = require("./GCS");
 const ziputils = require("./ziputils");
 const logger = require("./logger");
 const { sanitizeProjectName, gcsDestPathForProject, isDownloadableProjectRelativePath } = require("./gcsProjectName");
+const {
+    TILEMAP_REL,
+    parseTilemapResourceXml,
+    orthophotoTileRelativePath
+} = require("./orthophotoTiles");
 
 const UPLOAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-7][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ZIP_EXT = /\.zip$/i;
@@ -535,6 +540,90 @@ function handleDownloadProjectFile(req, res) {
         stream.on("error", () => {
             if (!res.headersSent) {
                 res.status(500).json({ error: "Failed to read file from cloud storage." });
+            }
+        });
+        stream.pipe(res);
+    });
+}
+
+function readGcsObjectUtf8(objectPath, cb) {
+    const stream = GCS.createReadStream(objectPath);
+    if (!stream) return cb(new Error("GCS is not initialized"));
+    const chunks = [];
+    stream.on("data", chunk => chunks.push(chunk));
+    stream.on("error", err => cb(err));
+    stream.on("end", () => {
+        cb(null, Buffer.concat(chunks).toString("utf8"));
+    });
+}
+
+function handleOrthophotoTilesInfo(req, res) {
+    if (!GCS.enabled()) {
+        return res.status(503).json({ error: "GCS uploads are not available on this server." });
+    }
+
+    const projectName = String(req.params.projectName || "").trim();
+    const objectPath = resolveProjectObjectPath(projectName, TILEMAP_REL);
+    if (!objectPath) {
+        return res.status(400).json({ error: "Invalid project name." });
+    }
+
+    readGcsObjectUtf8(objectPath, (err, xml) => {
+        if (err) {
+            return res.status(404).json({ error: "Orthophoto tiles are not available for this project." });
+        }
+        const meta = parseTilemapResourceXml(xml);
+        if (!meta) {
+            return res.status(422).json({ error: "Could not parse orthophoto tile metadata." });
+        }
+        res.setHeader("Cache-Control", "private, max-age=60");
+        res.json({
+            projectName,
+            displayName: projectDisplayName(projectName),
+            title: meta.title,
+            bounds: meta.bounds,
+            minZoom: meta.minZoom,
+            maxZoom: meta.maxZoom,
+            scheme: meta.scheme,
+            tileUrlTemplate: `/gcs/projects/${encodeURIComponent(projectName)}/orthophoto-tiles/{z}/{x}/{y}.png`
+        });
+    });
+}
+
+function handleOrthophotoTile(req, res) {
+    if (!GCS.enabled()) {
+        return res.status(503).json({ error: "GCS uploads are not available on this server." });
+    }
+
+    const projectName = String(req.params.projectName || "").trim();
+    const rel = orthophotoTileRelativePath(req.params.z, req.params.x, req.params.y);
+    if (!rel) {
+        return res.status(400).json({ error: "Invalid tile coordinates." });
+    }
+
+    const objectPath = resolveProjectObjectPath(projectName, rel);
+    if (!objectPath) {
+        return res.status(400).json({ error: "Invalid project name." });
+    }
+
+    GCS.getObjectMetadata(objectPath, (err, metadata) => {
+        if (err) {
+            return res.status(404).end();
+        }
+        res.setHeader("Content-Type", "image/png");
+        res.setHeader("Cache-Control", "private, max-age=3600");
+        if (metadata && metadata.size) {
+            res.setHeader("Content-Length", String(metadata.size));
+        }
+        const stream = GCS.createReadStream(objectPath);
+        if (!stream) {
+            return res.status(503).json({ error: "GCS is not initialized" });
+        }
+        stream.on("error", () => {
+            if (!res.headersSent) {
+                res.status(500).end();
+            } else {
+                res.destroy();
             }
         });
         stream.pipe(res);
@@ -1679,6 +1768,8 @@ module.exports = {
     handleDeleteProject,
     handleListProjectFiles,
     handleDownloadProjectFile,
+    handleOrthophotoTilesInfo,
+    handleOrthophotoTile,
     handleArchiveProject,
     handleInit,
     handleSign,

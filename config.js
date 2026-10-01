@@ -108,6 +108,7 @@ GCS (Google Cloud Storage) Options:
 	--gcs_cleanup_after_upload	Delete local files after successful GCS upload. (default: false)
 	--gcs_task_archive	Also upload all.zip to <task-uuid>/all.zip for ClusterODM post-teardown downloads. (default: false)
 	--gcs_skip_local_archive	Skip building/uploading all.zip locally. Use when ClusterODM builds the download zip on demand from outputs/<name>/. (default: false)
+	--cad_ortho_export_job <resource>	Cloud Run job resource (projects/P/locations/R/jobs/cad-ortho-export) started for CAD orthophoto export. (default: CAD_ORTHO_EXPORT_JOB env)
 
 Log Levels: 
 error | debug | info | verbose | debug | silly 
@@ -126,6 +127,7 @@ const allOpts = ["slice","help","config","odm_path","log_level","port","p",
 "s3_acl","s3_upload_everything","s3_ignore_ssl","max_concurrency","max_runtime",
 "gcs_bucket","gcs_project_id","gcs_key_path","gcs_parallel_uploads",
 "gcs_upload_paths","gcs_upload_prefix","gcs_cleanup_after_upload","gcs_task_archive","gcs_skip_local_archive",
+"cad_ortho_export_job",
 "portal_staging_env_url","portal_staging_env_label","portal_staging_env_tagline","portal_super_env_url","portal_super_env_label","portal_super_env_tagline","oauth_session_days"];
 
 // Support for "-" or "_" style params syntax
@@ -253,6 +255,15 @@ config.gcsTaskArchive = argv.gcs_task_archive === true ||
 config.gcsSkipLocalArchive = argv.gcs_skip_local_archive === true ||
     argv.gcs_skip_local_archive === 'true' ||
     fromConfigFile("gcsSkipLocalArchive", false) === true;
+
+// Cloud Run job resource the reference node executes for opt-in CAD exports.
+// Empty disables the feature (the projects UI hides the form).
+config.cadOrthoExportJob = argv.cad_ortho_export_job || fromConfigFile("cadOrthoExportJob", "") ||
+	process.env.CAD_ORTHO_EXPORT_JOB || "";
+
+// Public Mapbox token for Leaflet basemaps in the web UI (URL-restrict in Mapbox dashboard).
+config.mapboxAccessToken = argv.mapbox_access_token || fromConfigFile("mapboxAccessToken", "") ||
+	process.env.MAPBOX_ACCESS_TOKEN || "";
 
 config.rtkAnalysis = argv.no_rtk_analysis
     ? false

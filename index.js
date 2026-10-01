@@ -204,6 +204,7 @@ app.get('/gcs/projects/:projectName/archive', authCheck, gcsUploadApi.handleArch
 app.get('/gcs/projects/:projectName/orthophoto-tiles/info', authCheck, gcsUploadApi.handleOrthophotoTilesInfo);
 app.get('/gcs/projects/:projectName/orthophoto-tiles/:z/:x/:y.png', authCheck, gcsUploadApi.handleOrthophotoTile);
 app.get('/gcs/projects/:projectName/ortho-export', authCheck, orthoExportApi.handleOrthoExportGet);
+app.post('/gcs/projects/:projectName/ortho-export/estimate', authCheck, jsonBodyParser, orthoExportApi.handleOrthoExportEstimatePost);
 app.post('/gcs/projects/:projectName/ortho-export', authCheck, jsonBodyParser, orthoExportApi.handleOrthoExportPost);
 app.post('/gcs/upload/init', authCheck, urlEncodedBodyParser, jsonBodyParser, gcsUploadApi.handleInit);
 app.post('/gcs/upload/:uploadId/sign', authCheck, gcsUploadApi.assignUpload, jsonBodyParser, gcsUploadApi.handleSign);

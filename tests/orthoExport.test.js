@@ -17,6 +17,11 @@ const {
     newExportClaim,
     buildQueuedExport,
     cadStagePrefix,
+    outputRelFor,
+    succeededOutputRel,
+    estimateJpegBytes,
+    WARN_OUTPUT_BYTES,
+    OUTPUT_REL,
     QUEUED_STALE_MS,
     RUNNING_STALE_MS
 } = require("../libs/orthoExport");
@@ -107,6 +112,36 @@ test("staged outputs live outside every project prefix", () => {
     assert.strictEqual(cadStagePrefix("outputs", "Job_A", ""), "");
     // The project file browser never lists this subtree even if it shared a prefix.
     assert.strictEqual(isDownloadableProjectRelativePath(".uploads/cad-export/Job_A/abc/odm_orthophoto_small.tif"), false);
+});
+
+test("reprojected export is named by EPSG and keep-CRS stays small", () => {
+    assert.strictEqual(outputRelFor({ keepCrs: false, epsg: 2225 }), "odm_orthophoto/odm_orthophoto_2225.tif");
+    assert.strictEqual(outputRelFor({ keepCrs: true, epsg: 2225 }), OUTPUT_REL);
+    assert.strictEqual(outputRelFor({ keepCrs: false, epsg: 12 }), OUTPUT_REL);
+    assert.strictEqual(
+        succeededOutputRel({
+            status: "succeeded",
+            outputs: ["odm_orthophoto/odm_orthophoto_2225.tfw", "odm_orthophoto/odm_orthophoto_2225.tif"],
+            params: { keepCrs: false, epsg: 2225 }
+        }),
+        "odm_orthophoto/odm_orthophoto_2225.tif"
+    );
+    assert.strictEqual(
+        succeededOutputRel({ status: "succeeded", outputs: [], params: { keepCrs: true } }),
+        OUTPUT_REL
+    );
+    assert.strictEqual(succeededOutputRel({ status: "running", outputs: ["odm_orthophoto/odm_orthophoto_2225.tif"] }), null);
+});
+
+test("JPEG estimate warns above 300 MB", () => {
+    const { resultFor } = require("../libs/orthoExportEstimate");
+    const large = estimateJpegBytes(20000, 15000, 0);
+    assert.strictEqual(large, 318733650);
+    assert.ok(large > WARN_OUTPUT_BYTES);
+    assert.strictEqual(resultFor({ width: 20000, height: 15000, transparentFraction: 0 }).warn, true);
+    const small = resultFor({ width: 1000, height: 1000, transparentFraction: 0.5 });
+    assert.strictEqual(small.estimateBytes, 531222);
+    assert.strictEqual(small.warn, false);
 });
 
 test("job resource name must be a Cloud Run jobs path", () => {

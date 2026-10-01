@@ -573,6 +573,11 @@ $(function() {
         '&copy; <a href="https://www.mapbox.com/about/maps/">Mapbox</a> ' +
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
         '<strong><a href="https://www.mapbox.com/map-feedback/" target="_blank" rel="noopener">Improve this map</a></strong>';
+    var MAPBOX_SATELLITE_ATTR =
+        '&copy; <a href="https://www.mapbox.com/about/maps/">Mapbox</a> ' +
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
+        '&copy; <a href="https://www.maxar.com/" target="_blank" rel="noopener">Maxar</a> ' +
+        '<strong><a href="https://www.mapbox.com/map-feedback/" target="_blank" rel="noopener">Improve this map</a></strong>';
     var ndmGpsMap = null;
     var ndmGpsMarkers = null;
     var gpsMapTimer = null;
@@ -621,20 +626,73 @@ $(function() {
         container.appendChild(a);
     }
 
-    /** Shared Mapbox dark raster basemap for GPS map and orthophoto preview. */
-    function ndmCreateMapboxBasemap() {
-        var token = ndmMapboxToken();
-        if (!token || typeof L === "undefined") return null;
+    // Credits stay in the control. The bar starts as an info button so it does not cover the map.
+    function ndmApplyCollapsedAttribution(box) {
+        if (!box || box.querySelector(".ndm-attr-toggle")) return;
+        var credits = document.createElement("span");
+        credits.className = "ndm-attr-credits";
+        while (box.firstChild) credits.appendChild(box.firstChild);
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ndm-attr-toggle";
+        btn.setAttribute("aria-expanded", "false");
+        btn.setAttribute("aria-label", "Map credits");
+        btn.textContent = "i";
+        box.appendChild(credits);
+        box.appendChild(btn);
+        box.classList.add("ndm-attr-collapsed");
+    }
+
+    function ndmCollapseMapAttribution(map) {
+        var ctrl = map && map.attributionControl;
+        if (!ctrl || !ctrl._container || ctrl._ndmCollapsed) return;
+        ctrl._ndmCollapsed = true;
+        var box = ctrl._container;
+        if (typeof ctrl._update === "function") {
+            var orig = ctrl._update;
+            ctrl._update = function() {
+                orig.call(ctrl);
+                ndmApplyCollapsedAttribution(box);
+            };
+        }
+        box.addEventListener("click", function(ev) {
+            var btn = ev.target && ev.target.closest ? ev.target.closest(".ndm-attr-toggle") : null;
+            if (!btn || !box.contains(btn)) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            var open = box.classList.contains("ndm-attr-collapsed");
+            box.classList.toggle("ndm-attr-collapsed", !open);
+            btn.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+        ndmApplyCollapsedAttribution(box);
+    }
+
+    function ndmMapboxTileLayer(style, attribution) {
         return L.tileLayer(
-            "https://api.mapbox.com/styles/v1/mapbox/dark-v11/tiles/256/{z}/{x}/{y}@2x?access_token=" +
-                encodeURIComponent(token),
+            "https://api.mapbox.com/styles/v1/" + style + "/tiles/256/{z}/{x}/{y}@2x?access_token=" +
+                encodeURIComponent(ndmMapboxToken()),
             {
-                attribution: MAPBOX_ATTR,
+                attribution: attribution,
                 tileSize: 256,
                 maxZoom: 22,
                 maxNativeZoom: 22
             }
         );
+    }
+
+    // Dark stays the default. Satellite Streets keeps road labels; Maxar is in that layer's credits.
+    function ndmAddMapboxBasemaps(map) {
+        if (!map || !ndmMapboxToken() || typeof L === "undefined") return false;
+        var dark = ndmMapboxTileLayer("mapbox/dark-v11", MAPBOX_ATTR);
+        var satellite = ndmMapboxTileLayer("mapbox/satellite-streets-v12", MAPBOX_SATELLITE_ATTR);
+        dark.addTo(map);
+        L.control.layers(
+            { "Dark": dark, "Satellite": satellite },
+            null,
+            { position: "topleft", collapsed: true }
+        ).addTo(map);
+        ndmEnsureMapboxWordmark(map);
+        return true;
     }
 
     function ndmSetMapGpsBasemapStatus() {
@@ -827,13 +885,8 @@ $(function() {
     function initNdmGpsMap() {
         if (ndmGpsMap || typeof L === "undefined" || !document.getElementById("mapGps")) return;
         ndmGpsMap = L.map("mapGps", { scrollWheelZoom: true }).setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
-        var basemap = ndmCreateMapboxBasemap();
-        if (basemap) {
-            basemap.addTo(ndmGpsMap);
-            ndmEnsureMapboxWordmark(ndmGpsMap);
-        } else {
-            ndmSetMapGpsBasemapStatus();
-        }
+        if (!ndmAddMapboxBasemaps(ndmGpsMap)) ndmSetMapGpsBasemapStatus();
+        ndmCollapseMapAttribution(ndmGpsMap);
         ndmGpsMarkers = L.layerGroup().addTo(ndmGpsMap);
         $(window).on("resize.ndmGps", function() {
             if (ndmGpsMap) ndmGpsMap.invalidateSize();
@@ -2060,11 +2113,8 @@ $(function() {
         var el = ndmOrthoPreviewEl("ndmOrthoPreviewMap");
         if (!el) return null;
         ndmOrthoPreviewMap = L.map(el, { scrollWheelZoom: true }).setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
-        var basemap = ndmCreateMapboxBasemap();
-        if (basemap) {
-            basemap.addTo(ndmOrthoPreviewMap);
-            ndmEnsureMapboxWordmark(ndmOrthoPreviewMap);
-        }
+        ndmAddMapboxBasemaps(ndmOrthoPreviewMap);
+        ndmCollapseMapAttribution(ndmOrthoPreviewMap);
         return ndmOrthoPreviewMap;
     }
 
@@ -2225,8 +2275,9 @@ $(function() {
                     '" style="margin-right:0.7rem;font-size:0.8125rem">Preview orthophoto</button>');
             }
             if (ortho) links.push(makeLink("Orthophoto (GeoTIFF)", ortho.path));
-            var cadOrtho = files.find(function(f) { return f.path === "odm_orthophoto/odm_orthophoto_small.tif"; });
-            if (cadOrtho) links.push(makeLink("CAD orthophoto", cadOrtho.path));
+            ndmCadOrthoFiles(files).forEach(function(cadOrtho) {
+                links.push(makeLink(ndmCadOrthoLabel(cadOrtho.path), cadOrtho.path));
+            });
             if (pc) links.push(makeLink("Point Cloud", pc.path));
             if (report) links.push(makeLink("Report PDF", report.path));
             if (links.length) {
@@ -3986,8 +4037,24 @@ $(function() {
         [32611, "WGS 84 / UTM zone 11N"]
     ];
 
+    function ndmCadOrthoFiles(files) {
+        return (files || []).filter(function(f) {
+            return f && /^odm_orthophoto\/odm_orthophoto_(small|\d+)\.tif$/.test(f.path);
+        });
+    }
+
+    function ndmCadOrthoLabel(path) {
+        var match = /odm_orthophoto_(\d+)\.tif$/.exec(path || "");
+        if (match) return "CAD orthophoto (EPSG:" + match[1] + ")";
+        return "CAD orthophoto (source CRS)";
+    }
+
     function ndmCadExportUrl(projectName) {
         return ndmApi("/gcs/projects/" + encodeURIComponent(projectName) + "/ortho-export") + ndmTokenQs();
+    }
+
+    function ndmCadExportEstimateUrl(projectName) {
+        return ndmApi("/gcs/projects/" + encodeURIComponent(projectName) + "/ortho-export/estimate") + ndmTokenQs();
     }
 
     function ndmCadExportDescribe(data) {
@@ -4003,18 +4070,22 @@ $(function() {
         return "";
     }
 
-    function ndmCadExportMount(host, projectName) {
+    function ndmCadExportMount(host, projectName, onFinished) {
         if (host._ndmCadTimer) {
             clearInterval(host._ndmCadTimer);
             host._ndmCadTimer = null;
         }
+        if (host._ndmEstimateTimer) {
+            clearTimeout(host._ndmEstimateTimer);
+            host._ndmEstimateTimer = null;
+        }
         ndmGcsGet(ndmCadExportUrl(projectName)).done(function(data) {
             if (!data || data.configured === false) return;
-            ndmCadExportRender(host, projectName, data);
+            ndmCadExportRender(host, projectName, data, onFinished);
         });
     }
 
-    function ndmCadExportRender(host, projectName, data) {
+    function ndmCadExportRender(host, projectName, data, onFinished) {
         host.innerHTML = "";
         var title = document.createElement("div");
         title.textContent = "CAD orthophoto";
@@ -4102,6 +4173,61 @@ $(function() {
         reproject.addEventListener("change", syncCrs);
         epsg.addEventListener("change", syncCrs);
 
+        var warnEl = document.createElement("div");
+        warnEl.className = "file-meta";
+        warnEl.style.cssText = "margin-top:0.25rem;color:#ffb020";
+        var estimateSeq = 0;
+
+        function exportBody() {
+            var body = {
+                gsd: Number(gsd.value),
+                unit: unit.value,
+                keepCrs: keep.checked
+            };
+            if (!keep.checked) {
+                body.epsg = epsg.value === "other" ? Number(epsgOther.value) : Number(epsg.value);
+            }
+            if (!Number.isFinite(body.gsd) || body.gsd <= 0) return null;
+            if (!body.keepCrs && !Number.isInteger(body.epsg)) return null;
+            return body;
+        }
+
+        function runEstimate() {
+            if (host._ndmCadBusy) return;
+            var seq = estimateSeq;
+            var body = exportBody();
+            if (!body) {
+                warnEl.textContent = "";
+                return;
+            }
+            $.ajax($.extend({
+                url: ndmCadExportEstimateUrl(projectName),
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(body),
+                dataType: "json"
+            }, ndmGcsAjaxOpts)).done(function(res) {
+                if (seq !== estimateSeq) return;
+                if (res && res.warn && res.estimateMb) {
+                    warnEl.textContent = "Estimated size is about " + res.estimateMb + " MB. Files over 300 MB are large for CAD.";
+                } else {
+                    warnEl.textContent = "";
+                }
+            }).fail(function() {
+                if (seq === estimateSeq) warnEl.textContent = "";
+            });
+        }
+
+        function scheduleEstimate() {
+            if (host._ndmCadBusy) return;
+            if (host._ndmEstimateTimer) clearTimeout(host._ndmEstimateTimer);
+            // Drop any response already in flight before the debounce. runEstimate
+            // returns without sending when the new values are invalid, so the
+            // sequence has to move here or that late reply still matches.
+            estimateSeq++;
+            host._ndmEstimateTimer = setTimeout(runEstimate, 700);
+        }
+
         var button = document.createElement("button");
         button.type = "button";
         button.className = "btn-primary";
@@ -4114,13 +4240,16 @@ $(function() {
         note.textContent = ndmCadExportDescribe(data);
 
         function setBusy(busy) {
+            host._ndmCadBusy = busy;
             button.disabled = busy;
             gsd.disabled = busy;
             unit.disabled = busy;
             keep.disabled = busy;
             reproject.disabled = busy;
-            if (!busy) syncCrs();
-            else {
+            if (!busy) {
+                syncCrs();
+                scheduleEstimate();
+            } else {
                 epsg.disabled = true;
                 epsgOther.disabled = true;
             }
@@ -4135,6 +4264,15 @@ $(function() {
                 if (host._ndmCadTimer) {
                     clearInterval(host._ndmCadTimer);
                     host._ndmCadTimer = null;
+                }
+                if (host._ndmEstimateTimer) {
+                    clearTimeout(host._ndmEstimateTimer);
+                    host._ndmEstimateTimer = null;
+                }
+                var finished = next.status && next.status.status === "succeeded";
+                if (finished && typeof onFinished === "function") {
+                    onFinished();
+                    return;
                 }
                 setBusy(false);
                 if (next.output) {
@@ -4155,14 +4293,16 @@ $(function() {
             host._ndmCadTimer = setInterval(poll, 8000);
         }
 
+        [gsd, unit, keep, reproject, epsg, epsgOther].forEach(function(el) {
+            el.addEventListener("input", scheduleEstimate);
+            el.addEventListener("change", scheduleEstimate);
+        });
+
         button.addEventListener("click", function() {
-            var body = {
-                gsd: Number(gsd.value),
-                unit: unit.value,
-                keepCrs: keep.checked
-            };
-            if (!keep.checked) {
-                body.epsg = epsg.value === "other" ? Number(epsgOther.value) : Number(epsg.value);
+            var body = exportBody();
+            if (!body) {
+                note.textContent = "Choose a ground resolution and a coordinate system.";
+                return;
             }
             setBusy(true);
             note.textContent = "Starting export…";
@@ -4194,6 +4334,8 @@ $(function() {
         row.appendChild(button);
         host.appendChild(row);
         host.appendChild(note);
+        host.appendChild(warnEl);
+        if (!(data && data.active)) scheduleEstimate();
         if (data && data.output && !(data.active)) {
             var ready = document.createElement("a");
             ready.dataset.ndmCadDownload = "1";
@@ -4227,7 +4369,8 @@ $(function() {
             var report = files.find(function(f) { return f.path === "odm_report/report.pdf"; });
 
             var hasTiles = ndmFilesHaveOrthophotoTiles(files);
-            if (ortho || pointCloud || report || hasTiles) {
+            var cadOrthos = ndmCadOrthoFiles(files);
+            if (ortho || pointCloud || report || hasTiles || cadOrthos.length) {
                 var quickDiv = document.createElement("div");
                 quickDiv.className = "ndm-projects-quick-links";
                 quickDiv.style.cssText = "margin-bottom:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap";
@@ -4243,16 +4386,15 @@ $(function() {
                     quickDiv.appendChild(a);
                     shortcuts.push(ortho.path);
                 }
-                var cadOrtho = files.find(function(f) { return f.path === "odm_orthophoto/odm_orthophoto_small.tif"; });
-                if (cadOrtho) {
+                cadOrthos.forEach(function(cadOrtho) {
                     var cadLink = document.createElement("a");
                     cadLink.href = ndmProjectsDownloadFileUrl(proj.name, cadOrtho.path);
                     cadLink.className = "btn-ghost";
-                    cadLink.textContent = "CAD orthophoto";
+                    cadLink.textContent = ndmCadOrthoLabel(cadOrtho.path);
                     cadLink.style.fontSize = "0.8125rem";
                     quickDiv.appendChild(cadLink);
                     shortcuts.push(cadOrtho.path);
-                }
+                });
                 if (pointCloud) {
                     var a2 = document.createElement("a");
                     a2.href = ndmProjectsDownloadFileUrl(proj.name, pointCloud.path);
@@ -4279,7 +4421,9 @@ $(function() {
                 exportHost.className = "ndm-cad-export";
                 exportHost.style.cssText = "margin-bottom:0.75rem";
                 container.appendChild(exportHost);
-                ndmCadExportMount(exportHost, proj.name);
+                ndmCadExportMount(exportHost, proj.name, function() {
+                    ndmProjectsBuildFileBrowser(proj, container);
+                });
             }
 
             var selectedPaths = [];

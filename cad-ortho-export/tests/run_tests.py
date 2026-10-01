@@ -411,6 +411,13 @@ class _StatusBlob:
         self.doc = json.loads(data)
 
 
+def test_output_suffix() -> None:
+    print("\n-- output suffix --")
+    check("reproject names the file by EPSG", gcs_export.output_suffix(False, 2225) == "_2225")
+    check("keep-CRS keeps the small suffix", gcs_export.output_suffix(True, 2225) == "_small")
+    check("missing EPSG keeps the small suffix", gcs_export.output_suffix(False, None) == "_small")
+
+
 def test_status_fence() -> None:
     print("\n-- status fence --")
     check("a claim owns only its own record", gcs_export.claim_owns({"claim": "a"}, "a"))
@@ -512,7 +519,7 @@ def main() -> int:
             (test_units, False), (test_crs_search, False), (test_plan, True),
             (test_world_file, True), (test_convert, True), (test_overview_choice, True),
             (test_verify, True), (test_reproject_verify, True), (test_paths, False),
-            (test_status_fence, False), (test_gcs_uri, False),
+            (test_output_suffix, False), (test_status_fence, False), (test_gcs_uri, False),
         ):
             try:
                 fn(tmp) if needs_tmp else fn()

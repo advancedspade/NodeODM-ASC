@@ -87,6 +87,13 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
 
 
+def output_suffix(keep: bool, epsg: int | None) -> str:
+    """Reprojected exports are named by EPSG so several CRS copies can coexist."""
+    if keep or epsg is None:
+        return "_small"
+    return f"_{int(epsg)}"
+
+
 class LeaseLost(Exception):
     """This execution no longer owns the queued status object."""
 
@@ -340,7 +347,7 @@ def main() -> int:
             sidecars=True,
             resampling="average",
             output_dir=str(out_dir),
-            suffix="_small",
+            suffix=output_suffix(keep, epsg),
             overwrite=True,
             fast=True,
         )

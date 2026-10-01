@@ -21,6 +21,23 @@ const UNITS_METRES = {
 const MIN_GSD_METRES = 0.01;
 const MAX_GSD_METRES = 10;
 
+// JPEG q90 with overviews, same constants as Plan.estimate_bytes in
+// cad-ortho-export/ortho_downsizer/plan.py. Scene content moves the result
+// by about 2x; this is only the pre-run warning.
+const JPEG_A = 0.01974;
+const JPEG_K = 0.0411;
+const JPEG_QUALITY = 90;
+const OVERVIEW_GROWTH = 1.332;
+const WARN_OUTPUT_BYTES = 300 * 1e6;
+
+function estimateJpegBytes(width, height, transparentFraction) {
+    const pixels = Math.max(0, Number(width) || 0) * Math.max(0, Number(height) || 0);
+    const fraction = Math.min(1, Math.max(0, Number(transparentFraction) || 0));
+    const solid = pixels * Math.max(1 - fraction, 0.02);
+    const raw = solid * JPEG_A * Math.exp(JPEG_K * JPEG_QUALITY) * OVERVIEW_GROWTH;
+    return Math.trunc(Math.max(raw, 4096));
+}
+
 // A queued row that never becomes running is a start that did not land.
 // Running past the Cloud Run timeout plus a grace period is a dead execution.
 const QUEUED_STALE_MS = 20 * 60 * 1000;
@@ -29,6 +46,24 @@ const RUNNING_STALE_MS = (2 * 60 + 15) * 60 * 1000;
 const ORTHO_REL = "odm_orthophoto/odm_orthophoto.tif";
 const STATUS_REL = "odm_orthophoto/cad_export.json";
 const OUTPUT_REL = "odm_orthophoto/odm_orthophoto_small.tif";
+
+function outputRelFor(params) {
+    const src = params && typeof params === "object" ? params : {};
+    const keep = src.keepCrs === true || src.keepCrs === "true";
+    const epsg = Number(src.epsg);
+    if (!keep && Number.isInteger(epsg) && epsg >= 1024 && epsg <= 32767) {
+        return `odm_orthophoto/odm_orthophoto_${epsg}.tif`;
+    }
+    return OUTPUT_REL;
+}
+
+function succeededOutputRel(doc) {
+    if (!doc || doc.status !== "succeeded") return null;
+    const listed = Array.isArray(doc.outputs)
+        ? doc.outputs.find(path => typeof path === "string" && path.endsWith(".tif"))
+        : null;
+    return listed || outputRelFor(doc.params);
+}
 
 // Under .uploads, which listProjectFiles and /download already omit, and
 // outside every project prefix (project names cannot start with a dot).
@@ -125,11 +160,15 @@ module.exports = {
     UNITS_METRES,
     MIN_GSD_METRES,
     MAX_GSD_METRES,
+    WARN_OUTPUT_BYTES,
+    estimateJpegBytes,
     QUEUED_STALE_MS,
     RUNNING_STALE_MS,
     ORTHO_REL,
     STATUS_REL,
     OUTPUT_REL,
+    outputRelFor,
+    succeededOutputRel,
     STAGE_ROOT,
     cadStagePrefix,
     parseExportRequest,

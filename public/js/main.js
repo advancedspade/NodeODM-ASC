@@ -191,11 +191,20 @@ $(function() {
             app.pendingUploads(res.pending
                 .filter(function(p) { return p.uuid !== app.uuid() && p.uuid !== ndmCommittedForUuid; })
                 .map(function(p) {
+                    var name = p.name || p.uuid;
+                    var count = p.imagesCount || 0;
+                    var expected = Number(p.expectedImages) || 0;
+                    var partial = expected > 0 && count < expected;
+                    var detail = partial
+                        ? name + " — " + count + " of " + expected + " files reached the server, " + ndmAgeLabel(p.ageMs)
+                        : name + " — " + count + " file(s) on the server, processing never started, " + ndmAgeLabel(p.ageMs);
                     return {
                         uuid: p.uuid,
-                        name: p.name || p.uuid,
-                        imagesCount: p.imagesCount || 0,
-                        ageLabel: ndmAgeLabel(p.ageMs)
+                        name: name,
+                        imagesCount: count,
+                        partial: partial,
+                        detail: detail,
+                        resumeLabel: partial ? ("Process " + count + " files") : "Resume"
                     };
                 }));
         }).fail(function() {
@@ -470,6 +479,12 @@ $(function() {
         // Start upload
         var formData = new FormData();
         formData.append("name", projectName);
+        if (this.mode() === "file") {
+            var expectedImages = (dz.files || []).filter(function(f) {
+                return !(ndmIsImageFile(f) && ndmDeselectedIds.has(ndmPhotoKey(f)));
+            }).length;
+            formData.append("expectedImages", String(expectedImages));
+        }
         if (ndmReprocessSanitizedName &&
             ndmSanitizeProjectName(projectName) === ndmReprocessSanitizedName) {
             formData.append("reprocessProject", "true");
@@ -533,7 +548,7 @@ $(function() {
     var dz = new Dropzone("div#images", {
         paramName: function(){ return "images"; },
         url : ndmApi("/task/new/upload/"),
-        parallelUploads: 8, // http://blog.olamisan.com/max-parallel-http-connections-in-a-browser max parallel connections
+        parallelUploads: 4,
         uploadMultiple: false,
         acceptedFiles: "image/*,text/*,application/*,.las,.laz,video/*,.srt",
         autoProcessQueue: false,
@@ -542,7 +557,7 @@ $(function() {
         clickable: true,
         dictDefaultMessage: "Drop files here or click to browse<br><span class=\"dz-hint\">Images, GCP, or other supported inputs.</span>",
         chunkSize: 2147483647,
-        timeout: 2147483647
+        timeout: 0
     });
 
     (function() {
@@ -1542,9 +1557,17 @@ $(function() {
 
     dz.on("processing", function(file){
         this.options.url = ndmApi("/task/new/upload/") + app.uuid() + ndmTokenQs();
+        file._ndmStallSent = 0;
+        file._ndmStallAt = Date.now();
         app.fileUploadStatus.set(file.name, 0);
     })
     .on("error", function(file, message, xhr){
+        // abort() can emit error with status 0. The stall watchdog already
+        // requeued or failed the file; status 0 here would stop every upload.
+        if (file._ndmStallHandled) {
+            file._ndmStallHandled = false;
+            return;
+        }
         if (xhr && xhr.responseJSON && xhr.responseJSON.noRetry) {
             app.error(message || xhr.responseJSON.error || "Upload failed.");
             app.uploading(false);
@@ -1571,6 +1594,8 @@ $(function() {
         dz.processQueue();
     })
     .on("uploadprogress", function(file, progress){
+        file._ndmStallSent = (file.upload && file.upload.bytesSent) || 0;
+        file._ndmStallAt = Date.now();
         app.fileUploadStatus.set(file.name, progress);
     })
     .on("addedfile", function() {
@@ -1613,6 +1638,39 @@ $(function() {
         scheduleGpsFromDropzone();
         scheduleRtkFromDropzone();
     });
+
+    // Dropzone never hears xhr.abort(). 15s with no new bytes requeues the
+    // file here. Two retries, then it is an error and the task is not committed.
+    var NDM_UPLOAD_STALL_MS = 15000;
+    setInterval(function() {
+        if (!dz.getUploadingFiles) return;
+        var now = Date.now();
+        var stalled = false;
+        dz.getUploadingFiles().forEach(function(file) {
+            var sent = (file.upload && file.upload.bytesSent) || 0;
+            if (file._ndmStallSent !== sent) {
+                file._ndmStallSent = sent;
+                file._ndmStallAt = now;
+                return;
+            }
+            if (!file._ndmStallAt) file._ndmStallAt = now;
+            if (now - file._ndmStallAt < NDM_UPLOAD_STALL_MS) return;
+            file._ndmStallRetries = (file._ndmStallRetries || 0) + 1;
+            file._ndmStallAt = now;
+            file._ndmStallHandled = true;
+            if (file.xhr && file.xhr.readyState !== 4) file.xhr.abort();
+            app.fileUploadStatus.remove(file.name);
+            if (file._ndmStallRetries <= 2) {
+                file.status = Dropzone.QUEUED;
+                app.error("Upload of " + file.name + " stalled, retrying…");
+            } else {
+                file.status = Dropzone.ERROR;
+                app.error(file.name + " stalled and was not uploaded.");
+            }
+            stalled = true;
+        });
+        if (stalled) dz.processQueue();
+    }, 2000);
 
     setTimeout(scheduleGpsFromDropzone, 400);
 

@@ -680,8 +680,15 @@ $(function() {
         );
     }
 
+    // Tile layers above the basemaps. The layers control gives each basemap
+    // its own z-index as it is added, so a plain overlay ends up underneath
+    // whichever basemap is picked next.
+    var NDM_OVERLAY_TILE_ZINDEX = 10;
+
     // Dark stays the default. Satellite Streets keeps road labels; Maxar is in that layer's credits.
-    function ndmAddMapboxBasemaps(map) {
+    // onBaseChange runs after every basemap switch so the caller can put its
+    // overlays back on top.
+    function ndmAddMapboxBasemaps(map, onBaseChange) {
         if (!map || !ndmMapboxToken() || typeof L === "undefined") return false;
         var dark = ndmMapboxTileLayer("mapbox/dark-v11", MAPBOX_ATTR);
         var satellite = ndmMapboxTileLayer("mapbox/satellite-streets-v12", MAPBOX_SATELLITE_ATTR);
@@ -692,7 +699,28 @@ $(function() {
             { position: "topleft", collapsed: true }
         ).addTo(map);
         ndmEnsureMapboxWordmark(map);
+        if (typeof onBaseChange === "function") {
+            map.on("baselayerchange", function() {
+                onBaseChange(map);
+            });
+        }
         return true;
+    }
+
+    function ndmReapplyGpsOverlays() {
+        if (!ndmGpsMap) return;
+        if (ndmGpsMarkers) {
+            if (ndmGpsMap.hasLayer(ndmGpsMarkers)) ndmGpsMap.removeLayer(ndmGpsMarkers);
+            ndmGpsMarkers.addTo(ndmGpsMap);
+        }
+        if (ndmDrawPolyline && ndmDrawPolyline.bringToFront) ndmDrawPolyline.bringToFront();
+    }
+
+    function ndmReapplyOrthoPreviewOverlay() {
+        if (!ndmOrthoPreviewMap || !ndmOrthoPreviewLayer) return;
+        if (!ndmOrthoPreviewMap.hasLayer(ndmOrthoPreviewLayer)) ndmOrthoPreviewLayer.addTo(ndmOrthoPreviewMap);
+        ndmOrthoPreviewLayer.setZIndex(NDM_OVERLAY_TILE_ZINDEX);
+        ndmOrthoPreviewLayer.bringToFront();
     }
 
     function ndmSetMapGpsBasemapStatus() {
@@ -885,7 +913,7 @@ $(function() {
     function initNdmGpsMap() {
         if (ndmGpsMap || typeof L === "undefined" || !document.getElementById("mapGps")) return;
         ndmGpsMap = L.map("mapGps", { scrollWheelZoom: true }).setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
-        if (!ndmAddMapboxBasemaps(ndmGpsMap)) ndmSetMapGpsBasemapStatus();
+        if (!ndmAddMapboxBasemaps(ndmGpsMap, ndmReapplyGpsOverlays)) ndmSetMapGpsBasemapStatus();
         ndmCollapseMapAttribution(ndmGpsMap);
         ndmGpsMarkers = L.layerGroup().addTo(ndmGpsMap);
         $(window).on("resize.ndmGps", function() {
@@ -2113,7 +2141,7 @@ $(function() {
         var el = ndmOrthoPreviewEl("ndmOrthoPreviewMap");
         if (!el) return null;
         ndmOrthoPreviewMap = L.map(el, { scrollWheelZoom: true }).setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
-        ndmAddMapboxBasemaps(ndmOrthoPreviewMap);
+        ndmAddMapboxBasemaps(ndmOrthoPreviewMap, ndmReapplyOrthoPreviewOverlay);
         ndmCollapseMapAttribution(ndmOrthoPreviewMap);
         return ndmOrthoPreviewMap;
     }
@@ -2175,6 +2203,7 @@ $(function() {
             var layer = L.tileLayer(ndmOrthoTileUrlTemplate(name), {
                 tms: true,
                 opacity: 0.95,
+                zIndex: NDM_OVERLAY_TILE_ZINDEX,
                 minZoom: typeof meta.minZoom === "number" ? Math.max(0, meta.minZoom - 2) : 0,
                 maxZoom: 22,
                 maxNativeZoom: typeof meta.maxZoom === "number" ? meta.maxZoom : 22,
@@ -4060,9 +4089,9 @@ $(function() {
     function ndmCadExportDescribe(data) {
         var doc = data && data.status;
         if (!doc) return "";
-        if (doc.status === "queued") return "Queued. The export worker is starting.";
-        if (doc.status === "running") return "Export running. A large orthophoto can take a while.";
-        if (doc.status === "failed") return doc.error || "Export failed.";
+        if (doc.status === "queued") return "Queued. The CAD orthophoto job is starting.";
+        if (doc.status === "running") return "CAD orthophoto job running. A large orthophoto can take a while.";
+        if (doc.status === "failed") return doc.error || "CAD orthophoto job failed.";
         if (doc.status === "succeeded") {
             var verify = doc.verify && doc.verify.message ? " " + doc.verify.message : "";
             return "CAD orthophoto is ready." + verify;
@@ -4175,8 +4204,29 @@ $(function() {
 
         var warnEl = document.createElement("div");
         warnEl.className = "file-meta";
-        warnEl.style.cssText = "margin-top:0.25rem;color:#ffb020";
+        warnEl.style.cssText = "margin-top:0.25rem";
         var estimateSeq = 0;
+
+        var ESTIMATE_COLOR = "";
+        var WARN_COLOR = "#ffb020";
+
+        function setEstimateText(text, warn) {
+            warnEl.textContent = text || "";
+            warnEl.style.color = warn ? WARN_COLOR : ESTIMATE_COLOR;
+        }
+
+        function estimateText(res) {
+            if (!res || res.unavailable || res.estimateBytes == null) {
+                return { text: "Size estimate unavailable for these settings.", warn: false };
+            }
+            var mb = Math.max(1, Math.round(res.estimateBytes / 1e6));
+            var size = mb >= 1000 ? (mb / 1000).toFixed(1) + " GB" : mb + " MB";
+            var dims = res.width && res.height ? " (" + res.width.toLocaleString() + " x " + res.height.toLocaleString() + " px)" : "";
+            if (res.warn) {
+                return { text: "Expected TIF size: about " + size + dims + ". Over 300 MB is large for CAD; try a coarser resolution.", warn: true };
+            }
+            return { text: "Expected TIF size: about " + size + dims + ".", warn: false };
+        }
 
         function exportBody() {
             var body = {
@@ -4197,9 +4247,10 @@ $(function() {
             var seq = estimateSeq;
             var body = exportBody();
             if (!body) {
-                warnEl.textContent = "";
+                setEstimateText("Choose a ground resolution and a coordinate system to see the expected size.", false);
                 return;
             }
+            setEstimateText("Estimating TIF size…", false);
             $.ajax($.extend({
                 url: ndmCadExportEstimateUrl(projectName),
                 type: "POST",
@@ -4208,13 +4259,10 @@ $(function() {
                 dataType: "json"
             }, ndmGcsAjaxOpts)).done(function(res) {
                 if (seq !== estimateSeq) return;
-                if (res && res.warn && res.estimateMb) {
-                    warnEl.textContent = "Estimated size is about " + res.estimateMb + " MB. Files over 300 MB are large for CAD.";
-                } else {
-                    warnEl.textContent = "";
-                }
+                var out = estimateText(res);
+                setEstimateText(out.text, out.warn);
             }).fail(function() {
-                if (seq === estimateSeq) warnEl.textContent = "";
+                if (seq === estimateSeq) setEstimateText("Size estimate unavailable right now.", false);
             });
         }
 
@@ -4231,7 +4279,8 @@ $(function() {
         var button = document.createElement("button");
         button.type = "button";
         button.className = "btn-primary";
-        button.textContent = "Export";
+        button.textContent = "Create CAD orthophoto";
+        button.title = "Starts a background job that writes a smaller GeoTIFF for CAD.";
         button.style.fontSize = "0.8125rem";
 
         var note = document.createElement("div");
@@ -4305,7 +4354,7 @@ $(function() {
                 return;
             }
             setBusy(true);
-            note.textContent = "Starting export…";
+            note.textContent = "Starting the CAD orthophoto job…";
             $.ajax($.extend({
                 url: ndmCadExportUrl(projectName),
                 type: "POST",
@@ -4313,13 +4362,13 @@ $(function() {
                 data: JSON.stringify(body),
                 dataType: "json"
             }, ndmGcsAjaxOpts)).done(function(next) {
-                note.textContent = ndmCadExportDescribe(next) || "Queued. The export worker is starting.";
+                note.textContent = ndmCadExportDescribe(next) || "Queued. The CAD orthophoto job is starting.";
                 if (next && next.active && !host._ndmCadTimer) {
                     host._ndmCadTimer = setInterval(poll, 8000);
                 }
             }).fail(function(xhr) {
                 setBusy(false);
-                var msg = "Could not start the export.";
+                var msg = "Could not start the CAD orthophoto job.";
                 if (xhr && xhr.responseJSON && xhr.responseJSON.error) msg = xhr.responseJSON.error;
                 note.textContent = msg;
             });

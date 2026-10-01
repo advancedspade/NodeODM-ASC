@@ -4194,12 +4194,12 @@ $(function() {
 
         function runEstimate() {
             if (host._ndmCadBusy) return;
+            var seq = estimateSeq;
             var body = exportBody();
             if (!body) {
                 warnEl.textContent = "";
                 return;
             }
-            var seq = ++estimateSeq;
             $.ajax($.extend({
                 url: ndmCadExportEstimateUrl(projectName),
                 type: "POST",
@@ -4221,6 +4221,10 @@ $(function() {
         function scheduleEstimate() {
             if (host._ndmCadBusy) return;
             if (host._ndmEstimateTimer) clearTimeout(host._ndmEstimateTimer);
+            // Drop any response already in flight before the debounce. runEstimate
+            // returns without sending when the new values are invalid, so the
+            // sequence has to move here or that late reply still matches.
+            estimateSeq++;
             host._ndmEstimateTimer = setTimeout(runEstimate, 700);
         }
 

@@ -48,6 +48,55 @@ def _transparent_fraction(ds: gdal.Dataset) -> float:
     return transparent / len(data)
 
 
+def estimate(path: str, metres: float, epsg_text: str) -> dict:
+    """Width, height, and transparent fraction at one ground resolution.
+
+    ``path`` is any GDAL-openable path, including a local fixture. An empty
+    ``epsg_text`` keeps the source CRS.
+    """
+    if metres <= 0:
+        raise ValueError("ground resolution must be positive")
+
+    ds = gdal.Open(path)
+    if ds is None:
+        raise ValueError(f"could not open {path}")
+    try:
+        src = ds.GetSpatialRef()
+        if src is None:
+            raise ValueError("orthophoto has no CRS")
+        src = src.Clone()
+        if epsg_text.strip():
+            dst = osr.SpatialReference()
+            dst.ImportFromEPSG(int(epsg_text))
+        else:
+            dst = src.Clone()
+        dst = _projected(dst)
+        res = metres / dst.GetLinearUnits()
+        warped = None
+        try:
+            warped = gdal.Warp(
+                "/vsimem/cad_export_estimate.vrt",
+                ds,
+                format="VRT",
+                dstSRS=dst.ExportToWkt(),
+                xRes=res,
+                yRes=res,
+                resampleAlg=gdal.GRA_NearestNeighbour,
+            )
+            if warped is None or warped.RasterXSize < 1 or warped.RasterYSize < 1:
+                raise ValueError("could not resolve the output grid")
+            return {
+                "width": int(warped.RasterXSize),
+                "height": int(warped.RasterYSize),
+                "transparentFraction": _transparent_fraction(ds),
+            }
+        finally:
+            warped = None
+            gdal.Unlink("/vsimem/cad_export_estimate.vrt")
+    finally:
+        ds = None
+
+
 def main() -> int:
     if len(sys.argv) != 4:
         print("usage: estimate_grid.py VSI_PATH GSD_METRES EPSG", file=sys.stderr)
@@ -56,45 +105,19 @@ def main() -> int:
     if not path.startswith("/vsigs/"):
         print("source must be a /vsigs/ path", file=sys.stderr)
         return 2
-    metres = float(metres_text)
+    try:
+        metres = float(metres_text)
+    except ValueError:
+        print("ground resolution must be positive", file=sys.stderr)
+        return 2
     if metres <= 0:
         print("ground resolution must be positive", file=sys.stderr)
         return 2
-
-    ds = gdal.Open(path)
-    if ds is None:
-        print(f"could not open {path}", file=sys.stderr)
+    try:
+        payload = estimate(path, metres, epsg_text)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
-    src = ds.GetSpatialRef()
-    if src is None:
-        print("orthophoto has no CRS", file=sys.stderr)
-        return 1
-    src = src.Clone()
-    if epsg_text.strip():
-        dst = osr.SpatialReference()
-        dst.ImportFromEPSG(int(epsg_text))
-    else:
-        dst = src.Clone()
-    dst = _projected(dst)
-    res = metres / dst.GetLinearUnits()
-    warped = gdal.Warp(
-        "/vsimem/cad_export_estimate.vrt",
-        ds,
-        format="VRT",
-        dstSRS=dst.ExportToWkt(),
-        xRes=res,
-        yRes=res,
-        resampleAlg=gdal.GRA_NearestNeighbour,
-    )
-    if warped is None or warped.RasterXSize < 1 or warped.RasterYSize < 1:
-        print("could not resolve the output grid", file=sys.stderr)
-        return 1
-    payload = {
-        "width": int(warped.RasterXSize),
-        "height": int(warped.RasterYSize),
-        "transparentFraction": _transparent_fraction(ds),
-    }
-    gdal.Unlink("/vsimem/cad_export_estimate.vrt")
     print(json.dumps(payload))
     return 0
 

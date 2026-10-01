@@ -474,6 +474,87 @@ def test_status_fence() -> None:
     check("publish is refused once the record is no longer running", inactive)
 
 
+def test_estimate_grid(tmp: Path) -> None:
+    print("\n[estimate grid]")
+    import estimate_grid
+
+    width, height, res = 1024, 768, 0.05
+    src = tmp / "grid.tif"
+    rgb = np.zeros((3, height, width), np.uint8)
+    alpha = np.full((height, width), 255, np.uint8)
+    alpha[:, : width // 4] = 100
+    transform = Affine(res, 0, 600000.0, 0, -res, 4255000.0)
+    prof = dict(driver="GTiff", dtype="uint8", width=width, height=height, count=4,
+                crs="EPSG:32610", transform=transform, tiled=True,
+                blockxsize=256, blockysize=256, compress="deflate")
+    with rasterio.open(src, "w", **prof) as ds:
+        ds.write(rgb, [1, 2, 3])
+        ds.write(alpha, 4)
+        ds.colorinterp = [ColorInterp.red, ColorInterp.green,
+                          ColorInterp.blue, ColorInterp.alpha]
+    # Same alpha, no overviews: the sampler must skip the read and assume solid.
+    plain = tmp / "grid_no_ovr.tif"
+    shutil.copy(src, plain)
+    with rasterio.open(src, "r+") as ds:
+        ds.build_overviews([2], rasterio.enums.Resampling.average)
+
+    info = od.inspect(src)
+    kept = od.build_plan(info, 0.10, "m", target_epsg=None)
+    grid = estimate_grid.estimate(str(src), 0.10, "")
+    check("keep-CRS width matches the export planner",
+          near(grid["width"], kept.width, 1), f"{grid['width']} vs {kept.width}")
+    check("keep-CRS height matches the export planner",
+          near(grid["height"], kept.height, 1), f"{grid['height']} vs {kept.height}")
+    check("keep-CRS width is 1024 * 0.05 / 0.10",
+          near(grid["width"], 512, 1), f"{grid['width']}")
+    check("keep-CRS height is 768 * 0.05 / 0.10",
+          near(grid["height"], 384, 1), f"{grid['height']}")
+    frac = grid["transparentFraction"]
+    check("alpha sample is about a quarter transparent",
+          near(frac, 0.25, 0.03), f"{frac}")
+    check("alpha sample is not an inverted mask",
+          abs(frac - 0.25) < abs(frac - 0.75), f"{frac}")
+
+    planned = od.build_plan(info, 0.10, "m", target_epsg=6418)
+    feet = estimate_grid.estimate(str(src), 0.10, "6418")
+    check("reprojected width matches the export planner",
+          near(feet["width"], planned.width, 2), f"{feet['width']} vs {planned.width}")
+    check("reprojected height matches the export planner",
+          near(feet["height"], planned.height, 2), f"{feet['height']} vs {planned.height}")
+    check("reprojected width stays near the metre grid",
+          near(feet["width"], grid["width"], 8), f"{feet['width']} vs {grid['width']}")
+    slipped = grid["width"] / crs_util.US_SURVEY_FOOT
+    check("reprojected width is not a missed foot conversion",
+          abs(feet["width"] - slipped) > 100, f"{feet['width']} vs slipped {slipped:.1f}")
+    check("reprojected alpha is still sampled from the source",
+          near(feet["transparentFraction"], 0.25, 0.03), f"{feet['transparentFraction']}")
+
+    solid = estimate_grid.estimate(str(plain), 0.10, "")
+    check("no overviews assumes a solid image", solid["transparentFraction"] == 0.0,
+          str(solid["transparentFraction"]))
+
+    rgb_path = tmp / "grid_rgb.tif"
+    rgb_prof = dict(prof, count=3)
+    with rasterio.open(rgb_path, "w", **rgb_prof) as ds:
+        ds.write(rgb, [1, 2, 3])
+        ds.colorinterp = [ColorInterp.red, ColorInterp.green, ColorInterp.blue]
+    with rasterio.open(rgb_path, "r+") as ds:
+        ds.build_overviews([2], rasterio.enums.Resampling.average)
+    rgb_grid = estimate_grid.estimate(str(rgb_path), 0.10, "")
+    check("a 3-band source with overviews reports no transparency",
+          rgb_grid["transparentFraction"] == 0.0, str(rgb_grid["transparentFraction"]))
+
+    refused = False
+    message = ""
+    try:
+        estimate_grid.estimate(str(src), 0.10, "4326")
+    except ValueError as exc:
+        refused = True
+        message = str(exc)
+    check("a geographic target CRS is refused",
+          refused and "projected" in message.lower(), message)
+
+
 def test_gcs_uri() -> None:
     print("\n-- gs:// paths --")
     bucket, key = gcs_export.parse_gs(
@@ -518,7 +599,8 @@ def main() -> int:
         for fn, needs_tmp in (
             (test_units, False), (test_crs_search, False), (test_plan, True),
             (test_world_file, True), (test_convert, True), (test_overview_choice, True),
-            (test_verify, True), (test_reproject_verify, True), (test_paths, False),
+            (test_verify, True), (test_reproject_verify, True), (test_estimate_grid, True),
+            (test_paths, False),
             (test_output_suffix, False), (test_status_fence, False), (test_gcs_uri, False),
         ):
             try:

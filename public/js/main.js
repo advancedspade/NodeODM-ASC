@@ -121,6 +121,13 @@ $(function() {
     }
 
     var NDM_COMMIT_BACKOFF_MS = [2000, 5000, 15000, 30000];
+    var NDM_UPLOAD_SEND_STALL_MS = 20000;
+    var NDM_UPLOAD_REPLY_MS = 45000;
+    var NDM_UPLOAD_MAX_ATTEMPTS = 6;
+    var NDM_UPLOAD_BACKOFF_MS = [2000, 4000, 8000, 16000, 30000];
+    var ndmCommitAllowPartial = false;
+    var ndmResumeUploadUuid = null;
+    var ndmVerifyPasses = 0;
     // Commit itself is a small POST that the gateway answers before autoscaling.
     // Without a timeout a hung XHR never fires .fail(), so probe/retry never run
     // and ndmCommitInFlight stays true forever.
@@ -331,6 +338,7 @@ $(function() {
         ndmCommitInFlight = true;
 
         var url = ndmApi("/task/new/commit/" + uuid) + ndmTokenQs();
+        if (ndmCommitAllowPartial) url += (url.indexOf("?") === -1 ? "?" : "&") + "allowPartial=1";
         var startedAt = Date.now();
         app.committing(true);
         app.uploading(true);
@@ -364,6 +372,125 @@ $(function() {
                     else ndmScheduleCommitRetry(uuid, attempt, xhr, status);
                 });
             });
+    }
+
+    function ndmSelectedUploadFiles() {
+        return (dz.files || []).filter(function(f) {
+            return !(ndmIsImageFile(f) && ndmDeselectedIds.has(ndmPhotoKey(f)));
+        });
+    }
+
+    function ndmUploadErrorCount() {
+        return (dz.files || []).filter(function(f) { return f.status === Dropzone.ERROR; }).length;
+    }
+
+    // bytesSent stops as soon as the photo has left the browser, so a request
+    // that is only waiting for the reply must not be counted as a stall.
+    function ndmFailUploadAttempt(file, retryMessage) {
+        file._ndmAttempts = (file._ndmAttempts || 0) + 1;
+        file._ndmBodySent = false;
+        file._ndmStallSent = 0;
+        file._ndmStallAt = Date.now();
+        app.fileUploadStatus.remove(file.name);
+        if (file._ndmAttempts >= NDM_UPLOAD_MAX_ATTEMPTS) {
+            file.status = Dropzone.ERROR;
+            app.uploading(false);
+            app.failedUploads(ndmUploadErrorCount());
+            app.error(file.name + " stalled and was not uploaded.");
+            return;
+        }
+        var delay = NDM_UPLOAD_BACKOFF_MS[Math.min(file._ndmAttempts - 1, NDM_UPLOAD_BACKOFF_MS.length - 1)];
+        file.status = "ndm-backoff";
+        app.error(retryMessage || ("Upload of " + file.name + " stalled, retrying…"));
+        window.setTimeout(function() {
+            if (file.status !== "ndm-backoff") return;
+            file.status = Dropzone.QUEUED;
+            file.accepted = true;
+            dz.processQueue();
+        }, delay);
+    }
+
+    function ndmVerifyUploadsThenCommit(uuid) {
+        $.ajax(ndmApi("/task/new/upload/" + uuid) + ndmTokenQs(), {
+            type: "GET",
+            dataType: "json",
+            timeout: 20000
+        }).done(function(list) {
+            if (!list || !Array.isArray(list.files)) {
+                app.uploading(false);
+                app.error("Could not confirm the uploaded files. Nothing has been processed yet.");
+                return;
+            }
+            var onServer = {};
+            list.files.forEach(function(f) { onServer[f.name] = f.size; });
+            var missing = ndmSelectedUploadFiles().filter(function(f) {
+                return onServer[f.name] !== f.size;
+            });
+            if (!missing.length) {
+                ndmVerifyPasses = 0;
+                ndmCommitTask(uuid, 0);
+                return;
+            }
+            ndmVerifyPasses++;
+            if (ndmVerifyPasses > 2) {
+                missing.forEach(function(f) { f.status = Dropzone.ERROR; });
+                app.uploading(false);
+                app.failedUploads(ndmUploadErrorCount());
+                app.error(missing.length + " file(s) are still missing on the server. Nothing has been processed yet.");
+                return;
+            }
+            missing.forEach(function(f) {
+                f.status = Dropzone.QUEUED;
+                f.accepted = true;
+                f._ndmAttempts = 0;
+                f._ndmBodySent = false;
+            });
+            app.uploading(true);
+            dz.processQueue();
+        }).fail(function() {
+            app.uploading(false);
+            app.error("Could not confirm the uploaded files. Nothing has been processed yet.");
+        });
+    }
+
+    function ndmBeginRemainingUploads(uuid) {
+        $.ajax(ndmApi("/task/new/upload/" + uuid) + ndmTokenQs(), {
+            type: "GET",
+            dataType: "json",
+            timeout: 20000
+        }).done(function(list) {
+            if (!list || !Array.isArray(list.files)) {
+                app.uploading(false);
+                app.error("Could not read the files already on the server. Nothing has been processed yet.");
+                return;
+            }
+            var onServer = {};
+            list.files.forEach(function(f) { onServer[f.name] = f.size; });
+            var pending = 0;
+            ndmSelectedUploadFiles().forEach(function(f) {
+                if (onServer[f.name] === f.size) {
+                    f.status = Dropzone.SUCCESS;
+                    f.accepted = true;
+                    if (!f.upload) f.upload = { progress: 100, total: f.size, bytesSent: f.size };
+                    else {
+                        f.upload.progress = 100;
+                        f.upload.bytesSent = f.size;
+                        f.upload.total = f.size;
+                    }
+                } else {
+                    f.status = Dropzone.QUEUED;
+                    f.accepted = true;
+                    f._ndmAttempts = 0;
+                    f._ndmBodySent = false;
+                    pending++;
+                }
+            });
+            if (!pending) ndmVerifyUploadsThenCommit(uuid);
+            else dz.processQueue();
+        }).fail(function() {
+            app.uploading(false);
+            app.error("Could not read the files already on the server. Nothing has been processed yet.");
+        });
     }
 
     function App(){
@@ -405,6 +532,9 @@ $(function() {
         this.strandedUuid("");
         this.failedUploads(0);
         ndmCommitInFlight = false;
+        ndmCommitAllowPartial = false;
+        ndmResumeUploadUuid = null;
+        ndmVerifyPasses = 0;
         clearNdmRtkState();
         ndmReprocessSanitizedName = null;
         dz.removeAllFiles(true);
@@ -419,7 +549,11 @@ $(function() {
         errored.forEach(function(f){
             f.status = Dropzone.QUEUED;
             f.accepted = true;
+            f._ndmAttempts = 0;
+            f._ndmBodySent = false;
+            f._ndmStallHandled = false;
         });
+        ndmVerifyPasses = 0;
         dz.processQueue();
     };
     App.prototype.resumeCommit = function(){
@@ -440,7 +574,16 @@ $(function() {
     App.prototype.resumePending = function(item){
         app.pendingUploads.remove(item);
         ndmCommitInFlight = false;
+        ndmCommitAllowPartial = !!item.partial;
         ndmCommitTask(item.uuid, 0);
+    };
+    App.prototype.addRemainingFiles = function(item){
+        ndmResumeUploadUuid = item.uuid;
+        this.uuid(item.uuid);
+        this.error("");
+        this.commitStatus("Drop the same folder, then start. Files already on the server will be skipped.");
+        var nameInput = document.getElementById("taskName");
+        if (nameInput && !nameInput.value && item.name && item.name !== item.uuid) nameInput.value = item.name;
     };
     App.prototype.discardPending = function(item){
         app.pendingUploads.remove(item);
@@ -448,8 +591,9 @@ $(function() {
     };
     App.prototype.startTask = function(){
         var self = this;
+        var resumeUuid = ndmResumeUploadUuid;
         this.error("");
-        this.uuid("");
+        if (!resumeUuid) this.uuid("");
 
         var die = function(err){
             self.error(err);
@@ -457,12 +601,12 @@ $(function() {
         };
 
         var projectName = ($("#taskName").val() || "").trim();
-        if (!projectName) {
+        if (!resumeUuid && !projectName) {
             die("Please enter a project name before starting a task.");
             $("#taskName").focus();
             return;
         }
-        if (ndmGcsEnabled && ndmTaskNameGcsIsDuplicate(projectName)) {
+        if (!resumeUuid && ndmGcsEnabled && ndmTaskNameGcsIsDuplicate(projectName)) {
             die(ndmTaskNameGcsDuplicateMessage(projectName));
             $("#taskName").focus();
             ndmTaskNameUpdateGcsStatus(projectName);
@@ -475,6 +619,8 @@ $(function() {
         this.failedUploads(0);
         ndmUploadSessionStartedAt = Date.now();
         ndmCommitInFlight = false;
+        ndmVerifyPasses = 0;
+        if (!resumeUuid) ndmCommitAllowPartial = false;
 
         // Start upload
         var formData = new FormData();
@@ -496,6 +642,13 @@ $(function() {
 
         if (this.mode() === 'file'){
             if (this.filesCount() > 0){
+                if (resumeUuid) {
+                    ndmResumeUploadUuid = null;
+                    ndmCommitAllowPartial = false;
+                    self.uuid(resumeUuid);
+                    ndmBeginRemainingUploads(resumeUuid);
+                    return;
+                }
                 $.ajax(ndmApi("/task/new/init") + ndmTokenQs(), {
                     type: "POST",
                     data: formData,
@@ -548,6 +701,7 @@ $(function() {
     var dz = new Dropzone("div#images", {
         paramName: function(){ return "images"; },
         url : ndmApi("/task/new/upload/"),
+        method: "PUT",
         parallelUploads: 4,
         uploadMultiple: false,
         acceptedFiles: "image/*,text/*,application/*,.las,.laz,video/*,.srt",
@@ -561,7 +715,6 @@ $(function() {
     });
 
     (function() {
-        var origSubmit = Dropzone.prototype.submitRequest;
         dz.submitRequest = function(xhr, formData, files) {
             var f = files && files[0];
             if (f && ndmIsImageFile(f) && ndmDeselectedIds.has(ndmPhotoKey(f))) {
@@ -578,7 +731,7 @@ $(function() {
                 }, 0);
                 return;
             }
-            return origSubmit.call(this, xhr, formData, files);
+            xhr.send(f);
         };
     })();
 
@@ -1556,7 +1709,9 @@ $(function() {
     }
 
     dz.on("processing", function(file){
-        this.options.url = ndmApi("/task/new/upload/") + app.uuid() + ndmTokenQs();
+        this.options.method = "PUT";
+        this.options.url = ndmApi("/task/new/upload/" + app.uuid() + "/" + encodeURIComponent(file.name)) + ndmTokenQs();
+        file._ndmBodySent = false;
         file._ndmStallSent = 0;
         file._ndmStallAt = Date.now();
         app.fileUploadStatus.set(file.name, 0);
@@ -1573,7 +1728,7 @@ $(function() {
             app.uploading(false);
             return;
         }
-        if (xhr && (xhr.status === 401 || xhr.status === 403 || xhr.status === 404 || xhr.status === 0)) {
+        if (xhr && (xhr.status === 401 || xhr.status === 403 || xhr.status === 404)) {
             app.error(ndmAjaxFailMessage(xhr, "error", dz.options.url || ndmApi("/task/new/upload/")));
             app.uploading(false);
             ndmReportClientError({
@@ -1586,12 +1741,7 @@ $(function() {
             });
             return;
         }
-        // Retry transient failures
-        console.log("Error uploading ", file, " put back in queue...");
-        app.error("Upload of " + file.name + " failed, retrying...");
-        file.status = Dropzone.QUEUED;
-        app.fileUploadStatus.remove(file.name);
-        dz.processQueue();
+        ndmFailUploadAttempt(file, "Upload of " + file.name + " failed, retrying...");
     })
     .on("uploadprogress", function(file, progress){
         file._ndmStallSent = (file.upload && file.upload.bytesSent) || 0;
@@ -1614,6 +1764,7 @@ $(function() {
     .on("queuecomplete", function(files){
         var uuid = app.uuid();
         if (!uuid) return;
+        if ((dz.files || []).some(function(f){ return f.status === "ndm-backoff"; })) return;
 
         // queuecomplete fires whenever the queue drains, including when files ended
         // in ERROR. Committing here would quietly process a short dataset.
@@ -1627,7 +1778,7 @@ $(function() {
             return;
         }
 
-        ndmCommitTask(uuid, 0);
+        ndmVerifyUploadsThenCommit(uuid);
     })
     .on("reset", function(){
         app.filesCount(0);
@@ -1639,34 +1790,33 @@ $(function() {
         scheduleRtkFromDropzone();
     });
 
-    // Dropzone never hears xhr.abort(). 15s with no new bytes requeues the
-    // file here. Two retries, then it is an error and the task is not committed.
-    var NDM_UPLOAD_STALL_MS = 15000;
+    // Dropzone never hears xhr.abort(). While bytes are still leaving, 20s
+    // of silence aborts the request. Once the body is out, wait 45s for the
+    // reply — bytesSent stops growing as soon as the photo has been sent.
     setInterval(function() {
         if (!dz.getUploadingFiles) return;
         var now = Date.now();
         var stalled = false;
         dz.getUploadingFiles().forEach(function(file) {
             var sent = (file.upload && file.upload.bytesSent) || 0;
+            var total = (file.upload && file.upload.total) || file.size || 0;
+            if (!file._ndmBodySent && total > 0 && sent >= total) {
+                file._ndmBodySent = true;
+                file._ndmStallSent = sent;
+                file._ndmStallAt = now;
+                return;
+            }
             if (file._ndmStallSent !== sent) {
                 file._ndmStallSent = sent;
                 file._ndmStallAt = now;
                 return;
             }
             if (!file._ndmStallAt) file._ndmStallAt = now;
-            if (now - file._ndmStallAt < NDM_UPLOAD_STALL_MS) return;
-            file._ndmStallRetries = (file._ndmStallRetries || 0) + 1;
-            file._ndmStallAt = now;
+            var limit = file._ndmBodySent ? NDM_UPLOAD_REPLY_MS : NDM_UPLOAD_SEND_STALL_MS;
+            if (now - file._ndmStallAt < limit) return;
             file._ndmStallHandled = true;
             if (file.xhr && file.xhr.readyState !== 4) file.xhr.abort();
-            app.fileUploadStatus.remove(file.name);
-            if (file._ndmStallRetries <= 2) {
-                file.status = Dropzone.QUEUED;
-                app.error("Upload of " + file.name + " stalled, retrying…");
-            } else {
-                file.status = Dropzone.ERROR;
-                app.error(file.name + " stalled and was not uploaded.");
-            }
+            ndmFailUploadAttempt(file, "Upload of " + file.name + " stalled, retrying…");
             stalled = true;
         });
         if (stalled) dz.processQueue();

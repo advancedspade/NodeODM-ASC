@@ -2806,6 +2806,28 @@ body.ndm-modal-open {
     font-size: 10px;
 }
 
+.leaflet-control-attribution .ndm-attr-toggle {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.85);
+    color: #333;
+    font: italic 700 12px/18px Georgia, serif;
+    cursor: pointer;
+}
+
+.leaflet-control-attribution.ndm-attr-collapsed {
+    background: transparent;
+    padding: 0;
+}
+
+.leaflet-control-attribution.ndm-attr-collapsed .ndm-attr-credits {
+    display: none;
+}
+
 a.ndm-ortho-preview-link {
     cursor: pointer;
 }

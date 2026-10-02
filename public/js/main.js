@@ -121,6 +121,13 @@ $(function() {
     }
 
     var NDM_COMMIT_BACKOFF_MS = [2000, 5000, 15000, 30000];
+    var NDM_UPLOAD_SEND_STALL_MS = 20000;
+    var NDM_UPLOAD_REPLY_MS = 45000;
+    var NDM_UPLOAD_MAX_ATTEMPTS = 6;
+    var NDM_UPLOAD_BACKOFF_MS = [2000, 4000, 8000, 16000, 30000];
+    var ndmCommitAllowPartial = false;
+    var ndmResumeUploadUuid = null;
+    var ndmVerifyPasses = 0;
     // Commit itself is a small POST that the gateway answers before autoscaling.
     // Without a timeout a hung XHR never fires .fail(), so probe/retry never run
     // and ndmCommitInFlight stays true forever.
@@ -191,11 +198,20 @@ $(function() {
             app.pendingUploads(res.pending
                 .filter(function(p) { return p.uuid !== app.uuid() && p.uuid !== ndmCommittedForUuid; })
                 .map(function(p) {
+                    var name = p.name || p.uuid;
+                    var count = p.imagesCount || 0;
+                    var expected = Number(p.expectedImages) || 0;
+                    var partial = expected > 0 && count < expected;
+                    var detail = partial
+                        ? name + " — " + count + " of " + expected + " files reached the server, " + ndmAgeLabel(p.ageMs)
+                        : name + " — " + count + " file(s) on the server, processing never started, " + ndmAgeLabel(p.ageMs);
                     return {
                         uuid: p.uuid,
-                        name: p.name || p.uuid,
-                        imagesCount: p.imagesCount || 0,
-                        ageLabel: ndmAgeLabel(p.ageMs)
+                        name: name,
+                        imagesCount: count,
+                        partial: partial,
+                        detail: detail,
+                        resumeLabel: partial ? ("Process " + count + " files") : "Resume"
                     };
                 }));
         }).fail(function() {
@@ -322,6 +338,7 @@ $(function() {
         ndmCommitInFlight = true;
 
         var url = ndmApi("/task/new/commit/" + uuid) + ndmTokenQs();
+        if (ndmCommitAllowPartial) url += (url.indexOf("?") === -1 ? "?" : "&") + "allowPartial=1";
         var startedAt = Date.now();
         app.committing(true);
         app.uploading(true);
@@ -355,6 +372,125 @@ $(function() {
                     else ndmScheduleCommitRetry(uuid, attempt, xhr, status);
                 });
             });
+    }
+
+    function ndmSelectedUploadFiles() {
+        return (dz.files || []).filter(function(f) {
+            return !(ndmIsImageFile(f) && ndmDeselectedIds.has(ndmPhotoKey(f)));
+        });
+    }
+
+    function ndmUploadErrorCount() {
+        return (dz.files || []).filter(function(f) { return f.status === Dropzone.ERROR; }).length;
+    }
+
+    // bytesSent stops as soon as the photo has left the browser, so a request
+    // that is only waiting for the reply must not be counted as a stall.
+    function ndmFailUploadAttempt(file, retryMessage) {
+        file._ndmAttempts = (file._ndmAttempts || 0) + 1;
+        file._ndmBodySent = false;
+        file._ndmStallSent = 0;
+        file._ndmStallAt = Date.now();
+        app.fileUploadStatus.remove(file.name);
+        if (file._ndmAttempts >= NDM_UPLOAD_MAX_ATTEMPTS) {
+            file.status = Dropzone.ERROR;
+            app.uploading(false);
+            app.failedUploads(ndmUploadErrorCount());
+            app.error(file.name + " stalled and was not uploaded.");
+            return;
+        }
+        var delay = NDM_UPLOAD_BACKOFF_MS[Math.min(file._ndmAttempts - 1, NDM_UPLOAD_BACKOFF_MS.length - 1)];
+        file.status = "ndm-backoff";
+        app.error(retryMessage || ("Upload of " + file.name + " stalled, retrying…"));
+        window.setTimeout(function() {
+            if (file.status !== "ndm-backoff") return;
+            file.status = Dropzone.QUEUED;
+            file.accepted = true;
+            dz.processQueue();
+        }, delay);
+    }
+
+    function ndmVerifyUploadsThenCommit(uuid) {
+        $.ajax(ndmApi("/task/new/upload/" + uuid) + ndmTokenQs(), {
+            type: "GET",
+            dataType: "json",
+            timeout: 20000
+        }).done(function(list) {
+            if (!list || !Array.isArray(list.files)) {
+                app.uploading(false);
+                app.error("Could not confirm the uploaded files. Nothing has been processed yet.");
+                return;
+            }
+            var onServer = {};
+            list.files.forEach(function(f) { onServer[f.name] = f.size; });
+            var missing = ndmSelectedUploadFiles().filter(function(f) {
+                return onServer[f.name] !== f.size;
+            });
+            if (!missing.length) {
+                ndmVerifyPasses = 0;
+                ndmCommitTask(uuid, 0);
+                return;
+            }
+            ndmVerifyPasses++;
+            if (ndmVerifyPasses > 2) {
+                missing.forEach(function(f) { f.status = Dropzone.ERROR; });
+                app.uploading(false);
+                app.failedUploads(ndmUploadErrorCount());
+                app.error(missing.length + " file(s) are still missing on the server. Nothing has been processed yet.");
+                return;
+            }
+            missing.forEach(function(f) {
+                f.status = Dropzone.QUEUED;
+                f.accepted = true;
+                f._ndmAttempts = 0;
+                f._ndmBodySent = false;
+            });
+            app.uploading(true);
+            dz.processQueue();
+        }).fail(function() {
+            app.uploading(false);
+            app.error("Could not confirm the uploaded files. Nothing has been processed yet.");
+        });
+    }
+
+    function ndmBeginRemainingUploads(uuid) {
+        $.ajax(ndmApi("/task/new/upload/" + uuid) + ndmTokenQs(), {
+            type: "GET",
+            dataType: "json",
+            timeout: 20000
+        }).done(function(list) {
+            if (!list || !Array.isArray(list.files)) {
+                app.uploading(false);
+                app.error("Could not read the files already on the server. Nothing has been processed yet.");
+                return;
+            }
+            var onServer = {};
+            list.files.forEach(function(f) { onServer[f.name] = f.size; });
+            var pending = 0;
+            ndmSelectedUploadFiles().forEach(function(f) {
+                if (onServer[f.name] === f.size) {
+                    f.status = Dropzone.SUCCESS;
+                    f.accepted = true;
+                    if (!f.upload) f.upload = { progress: 100, total: f.size, bytesSent: f.size };
+                    else {
+                        f.upload.progress = 100;
+                        f.upload.bytesSent = f.size;
+                        f.upload.total = f.size;
+                    }
+                } else {
+                    f.status = Dropzone.QUEUED;
+                    f.accepted = true;
+                    f._ndmAttempts = 0;
+                    f._ndmBodySent = false;
+                    pending++;
+                }
+            });
+            if (!pending) ndmVerifyUploadsThenCommit(uuid);
+            else dz.processQueue();
+        }).fail(function() {
+            app.uploading(false);
+            app.error("Could not read the files already on the server. Nothing has been processed yet.");
+        });
     }
 
     function App(){
@@ -396,6 +532,9 @@ $(function() {
         this.strandedUuid("");
         this.failedUploads(0);
         ndmCommitInFlight = false;
+        ndmCommitAllowPartial = false;
+        ndmResumeUploadUuid = null;
+        ndmVerifyPasses = 0;
         clearNdmRtkState();
         ndmReprocessSanitizedName = null;
         dz.removeAllFiles(true);
@@ -410,7 +549,11 @@ $(function() {
         errored.forEach(function(f){
             f.status = Dropzone.QUEUED;
             f.accepted = true;
+            f._ndmAttempts = 0;
+            f._ndmBodySent = false;
+            f._ndmStallHandled = false;
         });
+        ndmVerifyPasses = 0;
         dz.processQueue();
     };
     App.prototype.resumeCommit = function(){
@@ -431,7 +574,16 @@ $(function() {
     App.prototype.resumePending = function(item){
         app.pendingUploads.remove(item);
         ndmCommitInFlight = false;
+        ndmCommitAllowPartial = !!item.partial;
         ndmCommitTask(item.uuid, 0);
+    };
+    App.prototype.addRemainingFiles = function(item){
+        ndmResumeUploadUuid = item.uuid;
+        this.uuid(item.uuid);
+        this.error("");
+        this.commitStatus("Drop the same folder, then start. Files already on the server will be skipped.");
+        var nameInput = document.getElementById("taskName");
+        if (nameInput && !nameInput.value && item.name && item.name !== item.uuid) nameInput.value = item.name;
     };
     App.prototype.discardPending = function(item){
         app.pendingUploads.remove(item);
@@ -439,8 +591,9 @@ $(function() {
     };
     App.prototype.startTask = function(){
         var self = this;
+        var resumeUuid = ndmResumeUploadUuid;
         this.error("");
-        this.uuid("");
+        if (!resumeUuid) this.uuid("");
 
         var die = function(err){
             self.error(err);
@@ -448,12 +601,12 @@ $(function() {
         };
 
         var projectName = ($("#taskName").val() || "").trim();
-        if (!projectName) {
+        if (!resumeUuid && !projectName) {
             die("Please enter a project name before starting a task.");
             $("#taskName").focus();
             return;
         }
-        if (ndmGcsEnabled && ndmTaskNameGcsIsDuplicate(projectName)) {
+        if (!resumeUuid && ndmGcsEnabled && ndmTaskNameGcsIsDuplicate(projectName)) {
             die(ndmTaskNameGcsDuplicateMessage(projectName));
             $("#taskName").focus();
             ndmTaskNameUpdateGcsStatus(projectName);
@@ -466,10 +619,18 @@ $(function() {
         this.failedUploads(0);
         ndmUploadSessionStartedAt = Date.now();
         ndmCommitInFlight = false;
+        ndmVerifyPasses = 0;
+        if (!resumeUuid) ndmCommitAllowPartial = false;
 
         // Start upload
         var formData = new FormData();
         formData.append("name", projectName);
+        if (this.mode() === "file") {
+            var expectedImages = (dz.files || []).filter(function(f) {
+                return !(ndmIsImageFile(f) && ndmDeselectedIds.has(ndmPhotoKey(f)));
+            }).length;
+            formData.append("expectedImages", String(expectedImages));
+        }
         if (ndmReprocessSanitizedName &&
             ndmSanitizeProjectName(projectName) === ndmReprocessSanitizedName) {
             formData.append("reprocessProject", "true");
@@ -481,6 +642,13 @@ $(function() {
 
         if (this.mode() === 'file'){
             if (this.filesCount() > 0){
+                if (resumeUuid) {
+                    ndmResumeUploadUuid = null;
+                    ndmCommitAllowPartial = false;
+                    self.uuid(resumeUuid);
+                    ndmBeginRemainingUploads(resumeUuid);
+                    return;
+                }
                 $.ajax(ndmApi("/task/new/init") + ndmTokenQs(), {
                     type: "POST",
                     data: formData,
@@ -533,7 +701,8 @@ $(function() {
     var dz = new Dropzone("div#images", {
         paramName: function(){ return "images"; },
         url : ndmApi("/task/new/upload/"),
-        parallelUploads: 8, // http://blog.olamisan.com/max-parallel-http-connections-in-a-browser max parallel connections
+        method: "PUT",
+        parallelUploads: 4,
         uploadMultiple: false,
         acceptedFiles: "image/*,text/*,application/*,.las,.laz,video/*,.srt",
         autoProcessQueue: false,
@@ -542,11 +711,10 @@ $(function() {
         clickable: true,
         dictDefaultMessage: "Drop files here or click to browse<br><span class=\"dz-hint\">Images, GCP, or other supported inputs.</span>",
         chunkSize: 2147483647,
-        timeout: 2147483647
+        timeout: 0
     });
 
     (function() {
-        var origSubmit = Dropzone.prototype.submitRequest;
         dz.submitRequest = function(xhr, formData, files) {
             var f = files && files[0];
             if (f && ndmIsImageFile(f) && ndmDeselectedIds.has(ndmPhotoKey(f))) {
@@ -563,7 +731,7 @@ $(function() {
                 }, 0);
                 return;
             }
-            return origSubmit.call(this, xhr, formData, files);
+            xhr.send(f);
         };
     })();
 
@@ -572,6 +740,11 @@ $(function() {
     var MAPBOX_ATTR =
         '&copy; <a href="https://www.mapbox.com/about/maps/">Mapbox</a> ' +
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
+        '<strong><a href="https://www.mapbox.com/map-feedback/" target="_blank" rel="noopener">Improve this map</a></strong>';
+    var MAPBOX_SATELLITE_ATTR =
+        '&copy; <a href="https://www.mapbox.com/about/maps/">Mapbox</a> ' +
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> ' +
+        '&copy; <a href="https://www.maxar.com/" target="_blank" rel="noopener">Maxar</a> ' +
         '<strong><a href="https://www.mapbox.com/map-feedback/" target="_blank" rel="noopener">Improve this map</a></strong>';
     var ndmGpsMap = null;
     var ndmGpsMarkers = null;
@@ -621,20 +794,101 @@ $(function() {
         container.appendChild(a);
     }
 
-    /** Shared Mapbox dark raster basemap for GPS map and orthophoto preview. */
-    function ndmCreateMapboxBasemap() {
-        var token = ndmMapboxToken();
-        if (!token || typeof L === "undefined") return null;
+    // Credits stay in the control. The bar starts as an info button so it does not cover the map.
+    function ndmApplyCollapsedAttribution(box) {
+        if (!box || box.querySelector(".ndm-attr-toggle")) return;
+        var credits = document.createElement("span");
+        credits.className = "ndm-attr-credits";
+        while (box.firstChild) credits.appendChild(box.firstChild);
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ndm-attr-toggle";
+        btn.setAttribute("aria-expanded", "false");
+        btn.setAttribute("aria-label", "Map credits");
+        btn.textContent = "i";
+        box.appendChild(credits);
+        box.appendChild(btn);
+        box.classList.add("ndm-attr-collapsed");
+    }
+
+    function ndmCollapseMapAttribution(map) {
+        var ctrl = map && map.attributionControl;
+        if (!ctrl || !ctrl._container || ctrl._ndmCollapsed) return;
+        ctrl._ndmCollapsed = true;
+        var box = ctrl._container;
+        if (typeof ctrl._update === "function") {
+            var orig = ctrl._update;
+            ctrl._update = function() {
+                orig.call(ctrl);
+                ndmApplyCollapsedAttribution(box);
+            };
+        }
+        box.addEventListener("click", function(ev) {
+            var btn = ev.target && ev.target.closest ? ev.target.closest(".ndm-attr-toggle") : null;
+            if (!btn || !box.contains(btn)) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            var open = box.classList.contains("ndm-attr-collapsed");
+            box.classList.toggle("ndm-attr-collapsed", !open);
+            btn.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+        ndmApplyCollapsedAttribution(box);
+    }
+
+    function ndmMapboxTileLayer(style, attribution) {
         return L.tileLayer(
-            "https://api.mapbox.com/styles/v1/mapbox/dark-v11/tiles/256/{z}/{x}/{y}@2x?access_token=" +
-                encodeURIComponent(token),
+            "https://api.mapbox.com/styles/v1/" + style + "/tiles/256/{z}/{x}/{y}@2x?access_token=" +
+                encodeURIComponent(ndmMapboxToken()),
             {
-                attribution: MAPBOX_ATTR,
+                attribution: attribution,
                 tileSize: 256,
                 maxZoom: 22,
                 maxNativeZoom: 22
             }
         );
+    }
+
+    // Tile layers above the basemaps. The layers control gives each basemap
+    // its own z-index as it is added, so a plain overlay ends up underneath
+    // whichever basemap is picked next.
+    var NDM_OVERLAY_TILE_ZINDEX = 10;
+
+    // Dark stays the default. Satellite Streets keeps road labels; Maxar is in that layer's credits.
+    // onBaseChange runs after every basemap switch so the caller can put its
+    // overlays back on top.
+    function ndmAddMapboxBasemaps(map, onBaseChange) {
+        if (!map || !ndmMapboxToken() || typeof L === "undefined") return false;
+        var dark = ndmMapboxTileLayer("mapbox/dark-v11", MAPBOX_ATTR);
+        var satellite = ndmMapboxTileLayer("mapbox/satellite-streets-v12", MAPBOX_SATELLITE_ATTR);
+        dark.addTo(map);
+        L.control.layers(
+            { "Dark": dark, "Satellite": satellite },
+            null,
+            { position: "topleft", collapsed: true }
+        ).addTo(map);
+        ndmEnsureMapboxWordmark(map);
+        if (typeof onBaseChange === "function") {
+            map.on("baselayerchange", function() {
+                onBaseChange(map);
+            });
+        }
+        return true;
+    }
+
+    function ndmReapplyGpsOverlays() {
+        if (!ndmGpsMap) return;
+        if (ndmGpsMarkers) {
+            if (ndmGpsMap.hasLayer(ndmGpsMarkers)) ndmGpsMap.removeLayer(ndmGpsMarkers);
+            ndmGpsMarkers.addTo(ndmGpsMap);
+        }
+        if (ndmDrawPolyline && ndmDrawPolyline.bringToFront) ndmDrawPolyline.bringToFront();
+    }
+
+    function ndmReapplyOrthoPreviewOverlay() {
+        if (!ndmOrthoPreviewMap || !ndmOrthoPreviewLayer) return;
+        if (!ndmOrthoPreviewMap.hasLayer(ndmOrthoPreviewLayer)) ndmOrthoPreviewLayer.addTo(ndmOrthoPreviewMap);
+        ndmOrthoPreviewLayer.setZIndex(NDM_OVERLAY_TILE_ZINDEX);
+        ndmOrthoPreviewLayer.bringToFront();
     }
 
     function ndmSetMapGpsBasemapStatus() {
@@ -827,13 +1081,8 @@ $(function() {
     function initNdmGpsMap() {
         if (ndmGpsMap || typeof L === "undefined" || !document.getElementById("mapGps")) return;
         ndmGpsMap = L.map("mapGps", { scrollWheelZoom: true }).setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
-        var basemap = ndmCreateMapboxBasemap();
-        if (basemap) {
-            basemap.addTo(ndmGpsMap);
-            ndmEnsureMapboxWordmark(ndmGpsMap);
-        } else {
-            ndmSetMapGpsBasemapStatus();
-        }
+        if (!ndmAddMapboxBasemaps(ndmGpsMap, ndmReapplyGpsOverlays)) ndmSetMapGpsBasemapStatus();
+        ndmCollapseMapAttribution(ndmGpsMap);
         ndmGpsMarkers = L.layerGroup().addTo(ndmGpsMap);
         $(window).on("resize.ndmGps", function() {
             if (ndmGpsMap) ndmGpsMap.invalidateSize();
@@ -1460,16 +1709,26 @@ $(function() {
     }
 
     dz.on("processing", function(file){
-        this.options.url = ndmApi("/task/new/upload/") + app.uuid() + ndmTokenQs();
+        this.options.method = "PUT";
+        this.options.url = ndmApi("/task/new/upload/" + app.uuid() + "/" + encodeURIComponent(file.name)) + ndmTokenQs();
+        file._ndmBodySent = false;
+        file._ndmStallSent = 0;
+        file._ndmStallAt = Date.now();
         app.fileUploadStatus.set(file.name, 0);
     })
     .on("error", function(file, message, xhr){
+        // abort() can emit error with status 0. The stall watchdog already
+        // requeued or failed the file; status 0 here would stop every upload.
+        if (file._ndmStallHandled) {
+            file._ndmStallHandled = false;
+            return;
+        }
         if (xhr && xhr.responseJSON && xhr.responseJSON.noRetry) {
             app.error(message || xhr.responseJSON.error || "Upload failed.");
             app.uploading(false);
             return;
         }
-        if (xhr && (xhr.status === 401 || xhr.status === 403 || xhr.status === 404 || xhr.status === 0)) {
+        if (xhr && (xhr.status === 401 || xhr.status === 403 || xhr.status === 404)) {
             app.error(ndmAjaxFailMessage(xhr, "error", dz.options.url || ndmApi("/task/new/upload/")));
             app.uploading(false);
             ndmReportClientError({
@@ -1482,14 +1741,11 @@ $(function() {
             });
             return;
         }
-        // Retry transient failures
-        console.log("Error uploading ", file, " put back in queue...");
-        app.error("Upload of " + file.name + " failed, retrying...");
-        file.status = Dropzone.QUEUED;
-        app.fileUploadStatus.remove(file.name);
-        dz.processQueue();
+        ndmFailUploadAttempt(file, "Upload of " + file.name + " failed, retrying...");
     })
     .on("uploadprogress", function(file, progress){
+        file._ndmStallSent = (file.upload && file.upload.bytesSent) || 0;
+        file._ndmStallAt = Date.now();
         app.fileUploadStatus.set(file.name, progress);
     })
     .on("addedfile", function() {
@@ -1508,6 +1764,7 @@ $(function() {
     .on("queuecomplete", function(files){
         var uuid = app.uuid();
         if (!uuid) return;
+        if ((dz.files || []).some(function(f){ return f.status === "ndm-backoff"; })) return;
 
         // queuecomplete fires whenever the queue drains, including when files ended
         // in ERROR. Committing here would quietly process a short dataset.
@@ -1521,7 +1778,7 @@ $(function() {
             return;
         }
 
-        ndmCommitTask(uuid, 0);
+        ndmVerifyUploadsThenCommit(uuid);
     })
     .on("reset", function(){
         app.filesCount(0);
@@ -1532,6 +1789,38 @@ $(function() {
         scheduleGpsFromDropzone();
         scheduleRtkFromDropzone();
     });
+
+    // Dropzone never hears xhr.abort(). While bytes are still leaving, 20s
+    // of silence aborts the request. Once the body is out, wait 45s for the
+    // reply — bytesSent stops growing as soon as the photo has been sent.
+    setInterval(function() {
+        if (!dz.getUploadingFiles) return;
+        var now = Date.now();
+        var stalled = false;
+        dz.getUploadingFiles().forEach(function(file) {
+            var sent = (file.upload && file.upload.bytesSent) || 0;
+            var total = (file.upload && file.upload.total) || file.size || 0;
+            if (!file._ndmBodySent && total > 0 && sent >= total) {
+                file._ndmBodySent = true;
+                file._ndmStallSent = sent;
+                file._ndmStallAt = now;
+                return;
+            }
+            if (file._ndmStallSent !== sent) {
+                file._ndmStallSent = sent;
+                file._ndmStallAt = now;
+                return;
+            }
+            if (!file._ndmStallAt) file._ndmStallAt = now;
+            var limit = file._ndmBodySent ? NDM_UPLOAD_REPLY_MS : NDM_UPLOAD_SEND_STALL_MS;
+            if (now - file._ndmStallAt < limit) return;
+            file._ndmStallHandled = true;
+            if (file.xhr && file.xhr.readyState !== 4) file.xhr.abort();
+            ndmFailUploadAttempt(file, "Upload of " + file.name + " stalled, retrying…");
+            stalled = true;
+        });
+        if (stalled) dz.processQueue();
+    }, 2000);
 
     setTimeout(scheduleGpsFromDropzone, 400);
 
@@ -2060,11 +2349,8 @@ $(function() {
         var el = ndmOrthoPreviewEl("ndmOrthoPreviewMap");
         if (!el) return null;
         ndmOrthoPreviewMap = L.map(el, { scrollWheelZoom: true }).setView(DEFAULT_GPS_VIEW.center, DEFAULT_GPS_VIEW.zoom);
-        var basemap = ndmCreateMapboxBasemap();
-        if (basemap) {
-            basemap.addTo(ndmOrthoPreviewMap);
-            ndmEnsureMapboxWordmark(ndmOrthoPreviewMap);
-        }
+        ndmAddMapboxBasemaps(ndmOrthoPreviewMap, ndmReapplyOrthoPreviewOverlay);
+        ndmCollapseMapAttribution(ndmOrthoPreviewMap);
         return ndmOrthoPreviewMap;
     }
 
@@ -2125,6 +2411,7 @@ $(function() {
             var layer = L.tileLayer(ndmOrthoTileUrlTemplate(name), {
                 tms: true,
                 opacity: 0.95,
+                zIndex: NDM_OVERLAY_TILE_ZINDEX,
                 minZoom: typeof meta.minZoom === "number" ? Math.max(0, meta.minZoom - 2) : 0,
                 maxZoom: 22,
                 maxNativeZoom: typeof meta.maxZoom === "number" ? meta.maxZoom : 22,
@@ -2225,8 +2512,9 @@ $(function() {
                     '" style="margin-right:0.7rem;font-size:0.8125rem">Preview orthophoto</button>');
             }
             if (ortho) links.push(makeLink("Orthophoto (GeoTIFF)", ortho.path));
-            var cadOrtho = files.find(function(f) { return f.path === "odm_orthophoto/odm_orthophoto_small.tif"; });
-            if (cadOrtho) links.push(makeLink("CAD orthophoto", cadOrtho.path));
+            ndmCadOrthoFiles(files).forEach(function(cadOrtho) {
+                links.push(makeLink(ndmCadOrthoLabel(cadOrtho.path), cadOrtho.path));
+            });
             if (pc) links.push(makeLink("Point Cloud", pc.path));
             if (report) links.push(makeLink("Report PDF", report.path));
             if (links.length) {
@@ -3986,16 +4274,32 @@ $(function() {
         [32611, "WGS 84 / UTM zone 11N"]
     ];
 
+    function ndmCadOrthoFiles(files) {
+        return (files || []).filter(function(f) {
+            return f && /^odm_orthophoto\/odm_orthophoto_(small|\d+)\.tif$/.test(f.path);
+        });
+    }
+
+    function ndmCadOrthoLabel(path) {
+        var match = /odm_orthophoto_(\d+)\.tif$/.exec(path || "");
+        if (match) return "CAD orthophoto (EPSG:" + match[1] + ")";
+        return "CAD orthophoto (source CRS)";
+    }
+
     function ndmCadExportUrl(projectName) {
         return ndmApi("/gcs/projects/" + encodeURIComponent(projectName) + "/ortho-export") + ndmTokenQs();
+    }
+
+    function ndmCadExportEstimateUrl(projectName) {
+        return ndmApi("/gcs/projects/" + encodeURIComponent(projectName) + "/ortho-export/estimate") + ndmTokenQs();
     }
 
     function ndmCadExportDescribe(data) {
         var doc = data && data.status;
         if (!doc) return "";
-        if (doc.status === "queued") return "Queued. The export worker is starting.";
-        if (doc.status === "running") return "Export running. A large orthophoto can take a while.";
-        if (doc.status === "failed") return doc.error || "Export failed.";
+        if (doc.status === "queued") return "Queued. The CAD orthophoto job is starting.";
+        if (doc.status === "running") return "CAD orthophoto job running. A large orthophoto can take a while.";
+        if (doc.status === "failed") return doc.error || "CAD orthophoto job failed.";
         if (doc.status === "succeeded") {
             var verify = doc.verify && doc.verify.message ? " " + doc.verify.message : "";
             return "CAD orthophoto is ready." + verify;
@@ -4003,18 +4307,22 @@ $(function() {
         return "";
     }
 
-    function ndmCadExportMount(host, projectName) {
+    function ndmCadExportMount(host, projectName, onFinished) {
         if (host._ndmCadTimer) {
             clearInterval(host._ndmCadTimer);
             host._ndmCadTimer = null;
         }
+        if (host._ndmEstimateTimer) {
+            clearTimeout(host._ndmEstimateTimer);
+            host._ndmEstimateTimer = null;
+        }
         ndmGcsGet(ndmCadExportUrl(projectName)).done(function(data) {
             if (!data || data.configured === false) return;
-            ndmCadExportRender(host, projectName, data);
+            ndmCadExportRender(host, projectName, data, onFinished);
         });
     }
 
-    function ndmCadExportRender(host, projectName, data) {
+    function ndmCadExportRender(host, projectName, data, onFinished) {
         host.innerHTML = "";
         var title = document.createElement("div");
         title.textContent = "CAD orthophoto";
@@ -4102,10 +4410,85 @@ $(function() {
         reproject.addEventListener("change", syncCrs);
         epsg.addEventListener("change", syncCrs);
 
+        var warnEl = document.createElement("div");
+        warnEl.className = "file-meta";
+        warnEl.style.cssText = "margin-top:0.25rem";
+        var estimateSeq = 0;
+
+        var ESTIMATE_COLOR = "";
+        var WARN_COLOR = "#ffb020";
+
+        function setEstimateText(text, warn) {
+            warnEl.textContent = text || "";
+            warnEl.style.color = warn ? WARN_COLOR : ESTIMATE_COLOR;
+        }
+
+        function estimateText(res) {
+            if (!res || res.unavailable || res.estimateBytes == null) {
+                return { text: "Size estimate unavailable for these settings.", warn: false };
+            }
+            var mb = Math.max(1, Math.round(res.estimateBytes / 1e6));
+            var size = mb >= 1000 ? (mb / 1000).toFixed(1) + " GB" : mb + " MB";
+            var dims = res.width && res.height ? " (" + res.width.toLocaleString() + " x " + res.height.toLocaleString() + " px)" : "";
+            if (res.warn) {
+                return { text: "Expected TIF size: about " + size + dims + ". Over 300 MB is large for CAD; try a coarser resolution.", warn: true };
+            }
+            return { text: "Expected TIF size: about " + size + dims + ".", warn: false };
+        }
+
+        function exportBody() {
+            var body = {
+                gsd: Number(gsd.value),
+                unit: unit.value,
+                keepCrs: keep.checked
+            };
+            if (!keep.checked) {
+                body.epsg = epsg.value === "other" ? Number(epsgOther.value) : Number(epsg.value);
+            }
+            if (!Number.isFinite(body.gsd) || body.gsd <= 0) return null;
+            if (!body.keepCrs && !Number.isInteger(body.epsg)) return null;
+            return body;
+        }
+
+        function runEstimate() {
+            if (host._ndmCadBusy) return;
+            var seq = estimateSeq;
+            var body = exportBody();
+            if (!body) {
+                setEstimateText("Choose a ground resolution and a coordinate system to see the expected size.", false);
+                return;
+            }
+            setEstimateText("Estimating TIF size…", false);
+            $.ajax($.extend({
+                url: ndmCadExportEstimateUrl(projectName),
+                type: "POST",
+                contentType: "application/json",
+                data: JSON.stringify(body),
+                dataType: "json"
+            }, ndmGcsAjaxOpts)).done(function(res) {
+                if (seq !== estimateSeq) return;
+                var out = estimateText(res);
+                setEstimateText(out.text, out.warn);
+            }).fail(function() {
+                if (seq === estimateSeq) setEstimateText("Size estimate unavailable right now.", false);
+            });
+        }
+
+        function scheduleEstimate() {
+            if (host._ndmCadBusy) return;
+            if (host._ndmEstimateTimer) clearTimeout(host._ndmEstimateTimer);
+            // Drop any response already in flight before the debounce. runEstimate
+            // returns without sending when the new values are invalid, so the
+            // sequence has to move here or that late reply still matches.
+            estimateSeq++;
+            host._ndmEstimateTimer = setTimeout(runEstimate, 700);
+        }
+
         var button = document.createElement("button");
         button.type = "button";
         button.className = "btn-primary";
-        button.textContent = "Export";
+        button.textContent = "Create CAD orthophoto";
+        button.title = "Starts a background job that writes a smaller GeoTIFF for CAD.";
         button.style.fontSize = "0.8125rem";
 
         var note = document.createElement("div");
@@ -4114,13 +4497,16 @@ $(function() {
         note.textContent = ndmCadExportDescribe(data);
 
         function setBusy(busy) {
+            host._ndmCadBusy = busy;
             button.disabled = busy;
             gsd.disabled = busy;
             unit.disabled = busy;
             keep.disabled = busy;
             reproject.disabled = busy;
-            if (!busy) syncCrs();
-            else {
+            if (!busy) {
+                syncCrs();
+                scheduleEstimate();
+            } else {
                 epsg.disabled = true;
                 epsgOther.disabled = true;
             }
@@ -4135,6 +4521,15 @@ $(function() {
                 if (host._ndmCadTimer) {
                     clearInterval(host._ndmCadTimer);
                     host._ndmCadTimer = null;
+                }
+                if (host._ndmEstimateTimer) {
+                    clearTimeout(host._ndmEstimateTimer);
+                    host._ndmEstimateTimer = null;
+                }
+                var finished = next.status && next.status.status === "succeeded";
+                if (finished && typeof onFinished === "function") {
+                    onFinished();
+                    return;
                 }
                 setBusy(false);
                 if (next.output) {
@@ -4155,17 +4550,19 @@ $(function() {
             host._ndmCadTimer = setInterval(poll, 8000);
         }
 
+        [gsd, unit, keep, reproject, epsg, epsgOther].forEach(function(el) {
+            el.addEventListener("input", scheduleEstimate);
+            el.addEventListener("change", scheduleEstimate);
+        });
+
         button.addEventListener("click", function() {
-            var body = {
-                gsd: Number(gsd.value),
-                unit: unit.value,
-                keepCrs: keep.checked
-            };
-            if (!keep.checked) {
-                body.epsg = epsg.value === "other" ? Number(epsgOther.value) : Number(epsg.value);
+            var body = exportBody();
+            if (!body) {
+                note.textContent = "Choose a ground resolution and a coordinate system.";
+                return;
             }
             setBusy(true);
-            note.textContent = "Starting export…";
+            note.textContent = "Starting the CAD orthophoto job…";
             $.ajax($.extend({
                 url: ndmCadExportUrl(projectName),
                 type: "POST",
@@ -4173,13 +4570,13 @@ $(function() {
                 data: JSON.stringify(body),
                 dataType: "json"
             }, ndmGcsAjaxOpts)).done(function(next) {
-                note.textContent = ndmCadExportDescribe(next) || "Queued. The export worker is starting.";
+                note.textContent = ndmCadExportDescribe(next) || "Queued. The CAD orthophoto job is starting.";
                 if (next && next.active && !host._ndmCadTimer) {
                     host._ndmCadTimer = setInterval(poll, 8000);
                 }
             }).fail(function(xhr) {
                 setBusy(false);
-                var msg = "Could not start the export.";
+                var msg = "Could not start the CAD orthophoto job.";
                 if (xhr && xhr.responseJSON && xhr.responseJSON.error) msg = xhr.responseJSON.error;
                 note.textContent = msg;
             });
@@ -4194,6 +4591,8 @@ $(function() {
         row.appendChild(button);
         host.appendChild(row);
         host.appendChild(note);
+        host.appendChild(warnEl);
+        if (!(data && data.active)) scheduleEstimate();
         if (data && data.output && !(data.active)) {
             var ready = document.createElement("a");
             ready.dataset.ndmCadDownload = "1";
@@ -4227,7 +4626,8 @@ $(function() {
             var report = files.find(function(f) { return f.path === "odm_report/report.pdf"; });
 
             var hasTiles = ndmFilesHaveOrthophotoTiles(files);
-            if (ortho || pointCloud || report || hasTiles) {
+            var cadOrthos = ndmCadOrthoFiles(files);
+            if (ortho || pointCloud || report || hasTiles || cadOrthos.length) {
                 var quickDiv = document.createElement("div");
                 quickDiv.className = "ndm-projects-quick-links";
                 quickDiv.style.cssText = "margin-bottom:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap";
@@ -4243,16 +4643,15 @@ $(function() {
                     quickDiv.appendChild(a);
                     shortcuts.push(ortho.path);
                 }
-                var cadOrtho = files.find(function(f) { return f.path === "odm_orthophoto/odm_orthophoto_small.tif"; });
-                if (cadOrtho) {
+                cadOrthos.forEach(function(cadOrtho) {
                     var cadLink = document.createElement("a");
                     cadLink.href = ndmProjectsDownloadFileUrl(proj.name, cadOrtho.path);
                     cadLink.className = "btn-ghost";
-                    cadLink.textContent = "CAD orthophoto";
+                    cadLink.textContent = ndmCadOrthoLabel(cadOrtho.path);
                     cadLink.style.fontSize = "0.8125rem";
                     quickDiv.appendChild(cadLink);
                     shortcuts.push(cadOrtho.path);
-                }
+                });
                 if (pointCloud) {
                     var a2 = document.createElement("a");
                     a2.href = ndmProjectsDownloadFileUrl(proj.name, pointCloud.path);
@@ -4279,7 +4678,9 @@ $(function() {
                 exportHost.className = "ndm-cad-export";
                 exportHost.style.cssText = "margin-bottom:0.75rem";
                 container.appendChild(exportHost);
-                ndmCadExportMount(exportHost, proj.name);
+                ndmCadExportMount(exportHost, proj.name, function() {
+                    ndmProjectsBuildFileBrowser(proj, container);
+                });
             }
 
             var selectedPaths = [];

@@ -17,7 +17,8 @@ const { sanitizeProjectName, gcsDestPathForProject } = require("./gcsProjectName
 const {
     ORTHO_REL,
     STATUS_REL,
-    OUTPUT_REL,
+    UNITS_METRES,
+    succeededOutputRel,
     cadStagePrefix,
     parseExportRequest,
     exportIsActive,
@@ -27,6 +28,7 @@ const {
     newExportClaim,
     buildQueuedExport
 } = require("./orthoExport");
+const { estimateOrthoSize } = require("./orthoExportEstimate");
 
 let cloudAuth = null;
 
@@ -119,12 +121,12 @@ async function startJob(jobName, envMap) {
     };
 }
 
-function publicStatus(doc, hasOutput) {
+function publicStatus(doc, outputRel) {
     return {
         configured: true,
         status: doc || null,
         active: exportIsActive(doc, Date.now()),
-        output: hasOutput ? OUTPUT_REL : null
+        output: outputRel || null
     };
 }
 
@@ -141,11 +143,10 @@ async function handleOrthoExportStatus(req, res) {
     }
 
     try {
-        const [state, hasOutput] = await Promise.all([
-            readStatus(objectPath(base, STATUS_REL)),
-            outputExists(objectPath(base, OUTPUT_REL))
-        ]);
-        res.json(publicStatus(state.doc, hasOutput));
+        const state = await readStatus(objectPath(base, STATUS_REL));
+        const rel = succeededOutputRel(state.doc);
+        const exists = rel ? await outputExists(objectPath(base, rel)) : false;
+        res.json(publicStatus(state.doc, exists ? rel : null));
     } catch (err) {
         logger.error(`CAD export status: ${err.message}`);
         res.status(500).json({ error: "Could not read CAD export status." });
@@ -271,6 +272,50 @@ async function handleOrthoExport(req, res) {
     }
 }
 
+async function handleOrthoExportEstimate(req, res) {
+    if (!GCS.enabled()) {
+        return res.status(503).json({ error: "GCS uploads are not available on this server." });
+    }
+    const base = projectBase(req.params.projectName);
+    if (!base) return res.status(400).json({ error: "Invalid project name." });
+    if (!jobResourceName(config.cadOrthoExportJob)) {
+        return res.json({ configured: false, warn: false, estimateBytes: null });
+    }
+    if (!config.gcsBucket) {
+        return res.status(503).json({ error: "GCS bucket is not configured." });
+    }
+
+    const parsed = parseExportRequest(req.body);
+    if (parsed.error) return res.status(400).json({ error: parsed.error });
+    const params = parsed.value;
+    const orthoPath = objectPath(base, ORTHO_REL);
+
+    let metadata;
+    try {
+        metadata = await orthoMetadata(orthoPath);
+    } catch (err) {
+        if (isNotFound(err)) {
+            return res.status(404).json({ error: "This project has no orthophoto to export." });
+        }
+        logger.error(`CAD export estimate lookup: ${err.message}`);
+        return res.status(500).json({ error: "Could not read the orthophoto." });
+    }
+
+    const metres = params.gsd * UNITS_METRES[params.unit];
+    try {
+        const estimate = await estimateOrthoSize({
+            vsiPath: `/vsigs/${config.gcsBucket}/${orthoPath}`,
+            gsdMetres: metres,
+            epsg: params.keepCrs ? null : params.epsg,
+            cacheKey: [orthoPath, metadata.generation, metres, params.keepCrs ? "keep" : params.epsg].join(":")
+        });
+        res.json(Object.assign({ configured: true }, estimate));
+    } catch (err) {
+        logger.warn(`CAD export estimate: ${err.message}`);
+        res.json({ configured: true, warn: false, estimateBytes: null, unavailable: true });
+    }
+}
+
 function handleOrthoExportGet(req, res) {
     handleOrthoExportStatus(req, res).catch(err => {
         logger.error(`CAD export status: ${err.message}`);
@@ -285,7 +330,15 @@ function handleOrthoExportPost(req, res) {
     });
 }
 
+function handleOrthoExportEstimatePost(req, res) {
+    handleOrthoExportEstimate(req, res).catch(err => {
+        logger.error(`CAD export estimate: ${err.message}`);
+        if (!res.headersSent) res.status(500).json({ error: "Could not estimate the CAD orthophoto." });
+    });
+}
+
 module.exports = {
     handleOrthoExportGet,
-    handleOrthoExportPost
+    handleOrthoExportPost,
+    handleOrthoExportEstimatePost
 };

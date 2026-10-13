@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <title>User guide — NodeODM</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/theme.css?t=1">
+    <link rel="stylesheet" href="css/guide.css?t=4">
+</head>
+<body>
+    <header class="guide-header">
+        <div class="guide-header__inner">
+            <div class="guide-header__title-row">
+                <a class="guide-back" href="/">← Back to the app</a>
+                <h1 class="guide-header__title">User guide</h1>
+            </div>
+            <div class="guide-search" role="search">
+                <label class="guide-search__label" for="guideSearch">Search the guide</label>
+                <div class="guide-search__field">
+                    <span class="guide-search__icon" aria-hidden="true">⌕</span>
+                    <input type="search" id="guideSearch" class="guide-search__input" placeholder="Search topics, e.g. “resume upload” or “CAD”" autocomplete="off" spellcheck="false" aria-describedby="guideSearchStatus">
+                    <button type="button" class="guide-search__clear" id="guideSearchClear" aria-label="Clear search" hidden>×</button>
+                    <kbd class="guide-search__kbd" aria-hidden="true">/</kbd>
+                </div>
+                <p class="guide-search__status" id="guideSearchStatus" aria-live="polite"></p>
+            </div>
+        </div>
+    </header>
+
+    <div class="guide-layout">
+        <nav class="guide-toc" id="guideToc" aria-label="Table of contents">
+            <p class="guide-toc__heading">Contents</p>
+            <ol class="guide-toc__list" id="guideTocList"></ol>
+        </nav>
+
+        <main class="guide-content" id="guideContent">
+            <div class="guide-empty" id="guideEmpty" hidden>
+                <p class="guide-empty__title">No topics match your search.</p>
+                <p>Try fewer or different words, or <button type="button" class="guide-link-btn" id="guideEmptyClear">clear the search</button>.</p>
+            </div>
+
+            <section class="guide-chapter" id="getting-started">
+                <h2>Getting started</h2>
+
+                <article class="guide-topic" id="what-this-app-does">
+                    <h3>What this app does</h3>
+                    <p>This app turns drone photos into maps. You upload a set of overlapping aerial images, the server processes them with OpenDroneMap (ODM), and you get back an orthophoto (a single, flat, measurable map image) plus related outputs such as a point cloud and a PDF report.</p>
+                    <p>Finished outputs are saved to cloud storage under the project name you choose, so the whole team can find, download, preview, and re-process them later from the <strong>Projects</strong> page.</p>
+                </article>
+
+                <article class="guide-topic" id="signing-in">
+                    <h3>Signing in</h3>
+                    <p>Open the app and click <strong>Continue with Google</strong>. Only <strong>@aspadeco.com</strong> Google accounts can sign in; other accounts see “This Google account is not allowed for this site.”</p>
+                    <p>Your sign-in lasts about 30 days on the same browser. When you are signed in, your email and a <strong>Sign out</strong> button appear at the top of the Home page.</p>
+                </article>
+
+                <article class="guide-topic" id="finding-your-way-around">
+                    <h3>Finding your way around</h3>
+                    <p>The sidebar on the left switches between the main pages:</p>
+                    <ul>
+                        <li><strong>Home</strong> — upload drone images and start a processing job. Your running and finished jobs are listed on the right.</li>
+                        <li><strong>Uploads</strong> — send files that are already processed (GeoTIFFs, point clouds, ZIP archives) straight to cloud storage.</li>
+                        <li><strong>Projects</strong> — every project in cloud storage, with its status, downloads, previews, and re-processing.</li>
+                        <li><strong>Feedback</strong> — report a bug or suggest an idea (shown when feedback is set up on the server).</li>
+                        <li><strong>User guide</strong> — opens this page.</li>
+                    </ul>
+                    <p>Use the <strong>‹</strong> button at the top of the sidebar to collapse it and give the page more room.</p>
+                </article>
+            </section>
+
+            <section class="guide-chapter" id="processing-a-job">
+                <h2>Processing a drone job</h2>
+
+                <article class="guide-topic" id="adding-images">
+                    <h3>Adding images and GCP files</h3>
+                    <p>On the <strong>Home</strong> page, drag your drone photos into the drop zone under <strong>Images &amp; GCP (optional)</strong>, or click the drop zone to pick files. You can add more files in several batches before starting.</p>
+                    <p>If you have ground control points (GCPs), add the GCP file along with the images. GCPs tie the map to surveyed positions on the ground and improve its accuracy.</p>
+                    <p>The number of selected files is shown under the drop zone. Use <strong>Remove all files</strong> to empty the drop zone and start over.</p>
+                </article>
+
+                <article class="guide-topic" id="zip-url">
+                    <h3>Using a ZIP URL instead</h3>
+                    <p>If your images are already online in a single ZIP file, click <strong>Use ZIP URL instead</strong> and paste the link. The server downloads the ZIP itself, so nothing has to pass through your browser. Click <strong>Switch to file upload</strong> to go back to the drop zone.</p>
+                </article>
+
+                <article class="guide-topic" id="project-name">
+                    <h3>Naming your project</h3>
+                    <p>Every job needs a <strong>Project name</strong>. It appears in the task list and becomes the folder name in cloud storage, so choose something you will recognise later, such as <em>North field survey</em>.</p>
+                    <p>Names must be unique. Special characters are removed when comparing names, so <em>North-field survey</em> and <em>North field survey</em> count as the same project. A message under the field warns you if the name is already taken.</p>
+                    <p>Click <strong>↺</strong> next to the field to clear it.</p>
+                </article>
+
+                <article class="guide-topic" id="image-locations-map">
+                    <h3>Checking image locations on the map</h3>
+                    <p>As soon as you add images, the <strong>Image locations</strong> map reads the GPS position stored in each photo and shows it as a pin. Use it to confirm that you picked the right flight and that no photos are missing or out of place.</p>
+                    <p>Click a pin to see the file name and coordinates. Use <strong>Hide map</strong> to collapse the map if you do not need it.</p>
+                    <p>If you see pins but no map background, the map imagery service is not set up on this server. The pins and all other features still work.</p>
+                </article>
+
+                <article class="guide-topic" id="excluding-photos">
+                    <h3>Excluding photos from processing</h3>
+                    <p>You can leave out photos you do not want processed, such as takeoff and landing shots or images over the wrong area. Excluded photos are marked as deselected on the map and are not sent to the job.</p>
+                    <ul>
+                        <li><strong>Deselect mode</strong> (the circle-with-a-line button on the map): turn it on, then click individual pins to exclude or include them.</li>
+                        <li><strong>Draw polygon</strong> (the shape button): click the map to place the corners of an area, then click <strong>Finish area</strong>. Every photo inside the shape is excluded. Click <strong>Cancel</strong> to stop drawing.</li>
+                    </ul>
+                </article>
+
+                <article class="guide-topic" id="rtk-analysis">
+                    <h3>Checking RTK quality</h3>
+                    <p>When you add photos from a DJI drone with RTK positioning, the <strong>RTK Analysis</strong> panel checks the positioning quality stored in each image automatically. A badge summarises the result, and a banner warns you if many photos have a weak position fix.</p>
+                    <p>Open <strong>Flagged images &amp; full report</strong> to see which photos were flagged and why. This helps you decide whether to exclude them or re-fly the area before spending time on processing.</p>
+                </article>
+
+                <article class="guide-topic" id="starting-a-task">
+                    <h3>Starting the task</h3>
+                    <p>When your images and project name are ready, click <strong>Start task</strong>. The button changes to <strong>Uploading…</strong> and progress bars show how many files have reached the server. Keep the tab open until the upload finishes.</p>
+                    <p>Once the upload is complete, the job appears in the <strong>Tasks</strong> list on the right and processing begins. You can close the tab after that; the job keeps running on the server.</p>
+                    <p><strong>Clear files</strong> removes the selected images without starting anything.</p>
+                </article>
+            </section>
+
+            <section class="guide-chapter" id="processing-options">
+                <h2>Processing options</h2>
+
+                <article class="guide-topic" id="hidden-options">
+                    <h3>Showing hidden options</h3>
+                    <p>The defaults are tuned for our usual orthophoto work, so most jobs need no changes. To adjust settings, click <strong>Show hidden options</strong> under the Start task button.</p>
+                    <p>Hover over or focus the <strong>i</strong> icon next to any option to read what it does. Click <strong>↺</strong> to put a single option back to its default.</p>
+                </article>
+
+                <article class="guide-topic" id="point-cloud-tiles">
+                    <h3>Point cloud tiles</h3>
+                    <p><strong>Generate 2D and Potree point cloud tiles</strong> adds an extra step after processing that builds web-friendly versions of the point cloud. It uses more disk space and time, so leave it off if you only need the standard outputs.</p>
+                </article>
+
+                <article class="guide-topic" id="webhook">
+                    <h3>Webhook URL</h3>
+                    <p>A webhook lets another system know when a job finishes. Enter an HTTPS address and the server sends it a message when the job completes, fails, or is cancelled. Leave the field empty if you do not need this.</p>
+                </article>
+
+                <article class="guide-topic" id="max-concurrency">
+                    <h3>Processing speed (max-concurrency)</h3>
+                    <p><strong>max-concurrency</strong> controls how many parts of a single job run side by side. More means faster, but each part needs memory.</p>
+                    <p>If you leave it unchanged, the server picks a value based on how much memory the machine has, which keeps large jobs fast without running out of memory. Only change it if you have a specific reason; if you set a value that is too high for the machine, the server lowers it automatically.</p>
+                </article>
+            </section>
+
+            <section class="guide-chapter" id="tracking-tasks">
+                <h2>Tracking your tasks</h2>
+
+                <article class="guide-topic" id="task-statuses">
+                    <h3>Task statuses</h3>
+                    <p>Each job in the <strong>Tasks</strong> list shows its name and status. The list refreshes every few seconds.</p>
+                    <ul>
+                        <li><strong>⏳ Queued</strong> — waiting for a free processing slot.</li>
+                        <li><strong>⚙ Running</strong> — being processed. Expand the task to see a progress bar.</li>
+                        <li><strong>✓ Completed</strong> — finished successfully; downloads are available.</li>
+                        <li><strong>! Failed</strong> — processing stopped with an error. Check the console output for the reason.</li>
+                        <li><strong>⊘ Canceled</strong> — stopped by someone before it finished.</li>
+                    </ul>
+                </article>
+
+                <article class="guide-topic" id="task-details">
+                    <h3>Task details and console output</h3>
+                    <p>Click a task to expand it. You will see its ID, name, number of images, status, and how long it has been running.</p>
+                    <p>Next to <strong>Console output</strong>, click <strong>View</strong> to watch the processing log live, or <strong>Export</strong> to save it as a file. The log is the best place to look when a job fails, and it is useful to attach when reporting a problem.</p>
+                </article>
+
+                <article class="guide-topic" id="downloading-results">
+                    <h3>Downloading results</h3>
+                    <p>When a task is completed, expand it and click <strong>All assets (ZIP)</strong> to download everything it produced.</p>
+                    <p>When cloud storage is connected, quick links also appear for the most common files: <strong>GeoTIFF Orthophoto</strong>, <strong>Point Cloud</strong>, and <strong>Report PDF</strong>. If map tiles were generated, <strong>Preview orthophoto</strong> opens the map in your browser without downloading it.</p>
+                </article>
+
+                <article class="guide-topic" id="cancel-restart-remove">
+                    <h3>Cancelling, restarting, and removing tasks</h3>
+                    <ul>
+                        <li><strong>Cancel</strong> stops a queued or running job.</li>
+                        <li><strong>Restart</strong> runs a cancelled job again.</li>
+                        <li><strong>Remove</strong> takes a finished, failed, or cancelled job off the list and frees space on the processing server. Outputs already saved to cloud storage are kept and remain available from <strong>Projects</strong>.</li>
+                    </ul>
+                </article>
+            </section>
+
+            <section class="guide-chapter" id="recovering-uploads">
+                <h2>Recovering interrupted uploads</h2>
+
+                <article class="guide-topic" id="retry-failed-files">
+                    <h3>Retrying files that did not upload</h3>
+                    <p>If some files fail to upload, a message tells you how many and confirms that nothing has been processed yet. Click <strong>Retry failed files</strong> to send just those files again.</p>
+                </article>
+
+                <article class="guide-topic" id="resume-task">
+                    <h3>Resuming a task after a dropped connection</h3>
+                    <p>If all files uploaded but the job did not start (for example, your connection dropped at the last step), click <strong>Resume task</strong> to start processing with the files already on the server. Click <strong>Discard upload</strong> to throw them away instead.</p>
+                </article>
+
+                <article class="guide-topic" id="processing-never-started">
+                    <h3>Uploads where processing never started</h3>
+                    <p>If you closed the tab or lost your connection partway through, the app lists the unfinished upload the next time you open it. The file count shows only the files that reached the server, which can be fewer than you selected.</p>
+                    <ul>
+                        <li><strong>Resume</strong> starts processing with the files that arrived.</li>
+                        <li><strong>Add remaining files</strong> lets you add the missing files to the same upload before starting.</li>
+                        <li><strong>Discard</strong> deletes the partial upload.</li>
+                    </ul>
+                </article>
+            </section>
+
+            <section class="guide-chapter" id="uploads-page">
+                <h2>Uploading to cloud storage</h2>
+
+                <article class="guide-topic" id="choosing-project-title">
+                    <h3>Choosing a project title</h3>
+                    <p>The <strong>Uploads</strong> page sends files that are already processed straight to a project in cloud storage. Start typing in <strong>Project title</strong> to search existing projects, then pick one from the list to add files to it. To create a new project, type a new title and press Enter.</p>
+                    <p>The line under the field shows the exact folder name the files will go into. Spaces become underscores. Click <strong>Refresh</strong> if a recently created project is missing from the list.</p>
+                </article>
+
+                <article class="guide-topic" id="adding-files-to-upload">
+                    <h3>Adding files or folders</h3>
+                    <p>Drop files, a folder, or a <strong>.zip</strong> into the drop zone, or click it to browse. Use <strong>Choose folder…</strong> to pick a whole folder; your browser may ask you to confirm once.</p>
+                    <p>For very large outputs, or folders with thousands of small files (such as point cloud tile folders), zip the folder first and upload the single .zip. It is much faster, and the server unpacks it into the project for you.</p>
+                    <p>Click <strong>Remove</strong> next to a file to drop it from the list, or <strong>Clear files</strong> to start over.</p>
+                </article>
+
+                <article class="guide-topic" id="upload-progress">
+                    <h3>Upload progress and the activity log</h3>
+                    <p>Click <strong>Upload</strong> to start. The progress bar covers two steps: first your files are sent, then the server finishes copying them into the project (and unpacks any .zip). The elapsed time, a live status line, and a log of each step appear under the bar.</p>
+                    <p>Errors are labelled in red in the log. If an upload stalls or the server restarts, the app tries to pick up where it left off automatically.</p>
+                </article>
+            </section>
+
+            <section class="guide-chapter" id="projects-page">
+                <h2>Managing projects</h2>
+
+                <article class="guide-topic" id="searching-projects">
+                    <h3>Searching and filtering projects</h3>
+                    <p>The <strong>Projects</strong> page lists every project folder in cloud storage. Type in <strong>Search by project name…</strong> to narrow the list, and use the filter buttons to show only one status: <strong>All</strong>, <strong>Incomplete</strong>, <strong>Succeeded</strong>, <strong>Failed</strong>, <strong>In progress</strong>, or <strong>Archived</strong>.</p>
+                    <p>Click <strong>Refresh</strong> to reload the list.</p>
+                </article>
+
+                <article class="guide-topic" id="project-statuses">
+                    <h3>Project statuses</h3>
+                    <ul>
+                        <li><strong>Succeeded</strong> — processing finished and an orthophoto was produced.</li>
+                        <li><strong>In progress</strong> — a job for this project is queued or running.</li>
+                        <li><strong>Failed</strong> — the last job failed or was cancelled.</li>
+                        <li><strong>Incomplete</strong> — the folder has no orthophoto yet, for example only raw images were uploaded.</li>
+                        <li><strong>Archived</strong> — moved out of the main list. Its files are kept.</li>
+                    </ul>
+                    <p>Each project shows when it was started, how many images it used, and who started it. Open <strong>Activity</strong> to see the history of what happened to it and who did it.</p>
+                </article>
+
+                <article class="guide-topic" id="browsing-and-downloading">
+                    <h3>Browsing and downloading files</h3>
+                    <p>Click <strong>Download ZIP</strong> to download a whole project at once.</p>
+                    <p>To get individual files, open <strong>Browse files</strong>. You can open folders, download a single file, or tick several files (or a whole folder) and click <strong>Download selected as ZIP</strong>.</p>
+                </article>
+
+                <article class="guide-topic" id="previewing-orthophoto">
+                    <h3>Previewing an orthophoto</h3>
+                    <p>If a project has map tiles, a <strong>Preview orthophoto</strong> button opens the orthophoto on an interactive map in your browser. Zoom and pan to check the result without downloading a large file. Close the preview with <strong>Close</strong> or the <strong>×</strong> button.</p>
+                </article>
+
+                <article class="guide-topic" id="cad-orthophoto">
+                    <h3>Creating a CAD orthophoto</h3>
+                    <p>Full-resolution orthophotos are often too large for CAD software. Under <strong>Browse files</strong>, the <strong>CAD orthophoto</strong> section makes a smaller GeoTIFF that CAD tools can open.</p>
+                    <ol>
+                        <li>Enter the ground resolution you need (for example <em>5</em>) and choose the unit: <strong>cm</strong>, <strong>m</strong>, or <strong>ft (US survey)</strong>. A larger number gives a smaller file.</li>
+                        <li>Choose <strong>Keep source CRS</strong> to keep the map's current coordinate system, or <strong>Reproject</strong> and pick a target zone. Use <strong>Other EPSG</strong> to type a code that is not in the list.</li>
+                        <li>Click <strong>Create CAD orthophoto</strong>. The job runs in the background; large orthophotos can take a while.</li>
+                        <li>When it is ready, click <strong>Download CAD orthophoto</strong>.</li>
+                    </ol>
+                </article>
+
+                <article class="guide-topic" id="reprocessing">
+                    <h3>Re-processing a project</h3>
+                    <p>If a project still has its raw images in cloud storage, click <strong>Re-process</strong> to run it again, for example after a failed job or to try different options.</p>
+                    <p>The app takes you to the Home page and prepares the images directly on the processing server, so nothing large is downloaded to your computer. Review the map, exclude photos or change options if needed, then click <strong>Start task</strong>.</p>
+                    <p>If the project already succeeded, you are asked to confirm first. Its existing outputs are replaced when the new job finishes.</p>
+                </article>
+
+                <article class="guide-topic" id="archiving-projects">
+                    <h3>Cancelling, archiving, and restoring projects</h3>
+                    <p><strong>Cancel</strong> appears while a project's job is queued or running, and stops it.</p>
+                    <p><strong>Archive</strong> moves a project out of the main list to keep things tidy. Nothing is deleted. Find it again with the <strong>Archived</strong> filter, and click <strong>Restore</strong> to bring it back.</p>
+                </article>
+            </section>
+
+            <section class="guide-chapter" id="feedback">
+                <h2>Sending feedback</h2>
+
+                <article class="guide-topic" id="submitting-feedback">
+                    <h3>Reporting a bug or suggesting an idea</h3>
+                    <p>Click <strong>Feedback</strong> in the sidebar (or on the Projects page). Choose a <strong>Category</strong> first; the form then shows the fields that category needs, such as severity or priority for a bug. Fill them in and click <strong>Send feedback</strong>.</p>
+                    <p>For problems with a job, include the project name and, if possible, the exported console output. That helps the team find the cause quickly.</p>
+                </article>
+            </section>
+
+            <section class="guide-chapter" id="troubleshooting">
+                <h2>Troubleshooting</h2>
+
+                <article class="guide-topic" id="cloud-storage-not-connected">
+                    <h3>“Cloud storage is not connected”</h3>
+                    <p>The Projects and Uploads pages need cloud storage. If you see this message, the server cannot reach it right now. Processing jobs can still run, but their outputs will not appear in Projects. Let the team know through Feedback.</p>
+                </article>
+
+                <article class="guide-topic" id="map-no-background">
+                    <h3>The map shows pins but no background</h3>
+                    <p>The map imagery service is not configured on this server. GPS pins, excluding photos, and processing all still work normally.</p>
+                </article>
+
+                <article class="guide-topic" id="name-already-used">
+                    <h3>“A project named … already exists in cloud storage”</h3>
+                    <p>Project names must be unique, and names that differ only by punctuation or spaces count as the same. Pick a different name, or use <strong>Re-process</strong> on the Projects page if you meant to run the existing project again.</p>
+                </article>
+
+                <article class="guide-topic" id="slow-jobs">
+                    <h3>My job is taking a long time</h3>
+                    <p>Large flights (hundreds of images) can take hours. Jobs may also wait as <strong>Queued</strong> while the server finishes other work. Check the task's progress bar and console output; if the log is still moving, the job is working normally.</p>
+                </article>
+
+                <article class="guide-topic" id="job-failed">
+                    <h3>My job failed</h3>
+                    <p>Expand the task and open the console output; the last lines usually explain the problem. Common causes are too little overlap between photos, photos without GPS, or very few images. Fix the input and use <strong>Re-process</strong>, or send the exported log through Feedback.</p>
+                </article>
+            </section>
+        </main>
+    </div>
+
+    <button type="button" class="guide-to-top" id="guideToTop" aria-label="Back to top" title="Back to top" tabindex="-1">
+        <span aria-hidden="true">↑</span>
+        <span class="guide-to-top__label">Back to top</span>
+    </button>
+
+    <script src="js/guide.js?t=3"></script>
+</body>
+</html>
